@@ -251,15 +251,8 @@ function getButton(root: HTMLElement, text: string) {
     .find(button => button.textContent?.includes(text))
 }
 
-function getLastButton(root: HTMLElement, text: string) {
-  return Array.from(root.querySelectorAll('button'))
-    .filter(button => button.textContent?.includes(text))
-    .at(-1)
-}
-
 function getImportTextarea(root: HTMLElement) {
-  const textareas = Array.from(root.querySelectorAll('textarea'))
-  const textarea = textareas.at(-1)
+  const textarea = root.querySelector('textarea')
   if (!(textarea instanceof HTMLTextAreaElement)) {
     throw new Error('Expected import textarea to exist')
   }
@@ -392,44 +385,5 @@ describe('OAuthAccountDialog Grok import', () => {
       browser_profile: 'chrome136',
       user_id: 'user-1',
     }))
-  })
-
-  it('routes sub2api account export packages to the batch task path', async () => {
-    const root = mountDialog('codex')
-    await settle()
-
-    getButton(root, '导入授权')?.click()
-    await settle()
-
-    const payload = JSON.stringify({
-      exported_at: '2026-07-09T20:33:56+08:00',
-      proxies: [],
-      accounts: [
-        {
-          platform: 'openai',
-          type: 'oauth',
-          name: 'alice@example.com',
-          credentials: {
-            refresh_token: 'refresh-alice',
-            access_token: 'access-alice',
-            email: 'alice@example.com',
-          },
-        },
-      ],
-    })
-    const textarea = getImportTextarea(root)
-    textarea.value = payload
-    textarea.dispatchEvent(new Event('input'))
-    await settle()
-
-    getLastButton(root, '导入')?.click()
-    await settle()
-
-    expect(endpointMocks.startBatchImportOAuthTask).toHaveBeenCalledWith(
-      'provider-1',
-      payload,
-      undefined,
-    )
-    expect(endpointMocks.importProviderRefreshToken).not.toHaveBeenCalled()
   })
 })

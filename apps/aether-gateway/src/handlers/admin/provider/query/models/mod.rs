@@ -93,11 +93,6 @@ const ADMIN_PROVIDER_QUERY_INVALID_MAPPED_MODEL_DETAIL: &str =
     "mapped_model_name is not valid for the selected model and endpoint";
 const ANTIGRAVITY_PROVIDER_CACHE_KEY_PREFIX: &str = "upstream_models_provider:";
 const DEFAULT_PROVIDER_QUERY_TEST_MESSAGE: &str = "Hello! This is a test message.";
-const CODEX_RELEASED_MODEL_OVERRIDES: &[(&str, &str)] = &[
-    ("gpt-5.6-sol", "GPT-5.6 Sol"),
-    ("gpt-5.6-terra", "GPT-5.6 Terra"),
-    ("gpt-5.6-luna", "GPT-5.6 Luna"),
-];
 static PROVIDER_QUERY_POOL_LOAD_BALANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -245,33 +240,6 @@ fn provider_query_filter_models_for_key(
         .collect()
 }
 
-fn provider_query_append_codex_released_models(
-    provider: &StoredProviderCatalogProvider,
-    mut models: Vec<Value>,
-) -> Vec<Value> {
-    if !provider.provider_type.trim().eq_ignore_ascii_case("codex") {
-        return models;
-    }
-
-    let mut seen = models
-        .iter()
-        .filter_map(provider_query_model_id)
-        .map(ToOwned::to_owned)
-        .collect::<BTreeSet<_>>();
-    for (model_id, display_name) in CODEX_RELEASED_MODEL_OVERRIDES {
-        if seen.insert((*model_id).to_string()) {
-            models.push(json!({
-                "id": model_id,
-                "object": "model",
-                "owned_by": "openai",
-                "display_name": display_name,
-                "api_formats": ["openai:responses"],
-            }));
-        }
-    }
-    models
-}
-
 fn provider_query_attach_model_test_capabilities(
     provider: &StoredProviderCatalogProvider,
     models: Vec<Value>,
@@ -308,6 +276,21 @@ fn provider_query_attach_model_test_capabilities(
             model
         })
         .collect()
+}
+
+fn provider_query_codex_preset_fallback(
+    provider: &StoredProviderCatalogProvider,
+) -> Option<ProviderQueryKeyFetchResult> {
+    if !provider.provider_type.trim().eq_ignore_ascii_case("codex") {
+        return None;
+    }
+    let models = preset_models_for_provider(&provider.provider_type)?;
+    Some(ProviderQueryKeyFetchResult {
+        models: aggregate_models_for_cache(&models),
+        error: None,
+        from_cache: false,
+        has_success: true,
+    })
 }
 
 mod model_test;
@@ -440,11 +423,7 @@ async fn provider_query_fetch_models_for_key(
         if let Some(cached_models) =
             provider_query_read_cached_models(state, &provider.id, &key.id).await
         {
-            let models = provider_query_filter_models_for_key(
-                provider,
-                key,
-                provider_query_append_codex_released_models(provider, cached_models),
-            );
+            let models = provider_query_filter_models_for_key(provider, key, cached_models);
             return Ok(ProviderQueryKeyFetchResult {
                 models,
                 error: None,
@@ -507,6 +486,9 @@ async fn provider_query_fetch_models_for_key(
         Ok(outcome) => outcome,
         Err(err) => {
             all_errors.push(err);
+            if let Some(fallback) = provider_query_codex_preset_fallback(provider) {
+                return Ok(fallback);
+            }
             return Ok(ProviderQueryKeyFetchResult {
                 models: Vec::new(),
                 error: Some(all_errors.join("; ")),
@@ -528,6 +510,12 @@ async fn provider_query_fetch_models_for_key(
         .await;
     }
 
+    if unique_models.is_empty() && !all_errors.is_empty() {
+        if let Some(fallback) = provider_query_codex_preset_fallback(provider) {
+            return Ok(fallback);
+        }
+    }
+
     let mut error = if all_errors.is_empty() {
         None
     } else {
@@ -536,14 +524,9 @@ async fn provider_query_fetch_models_for_key(
     if unique_models.is_empty() && error.is_none() {
         error = Some(ADMIN_PROVIDER_QUERY_NO_MODELS_FROM_ENDPOINT_DETAIL.to_string());
     }
-    let models = if outcome.has_success {
-        provider_query_append_codex_released_models(provider, unique_models)
-    } else {
-        unique_models
-    };
 
     Ok(ProviderQueryKeyFetchResult {
-        models: provider_query_filter_models_for_key(provider, key, models),
+        models: provider_query_filter_models_for_key(provider, key, unique_models),
         error,
         from_cache: false,
         has_success: outcome.has_success,
@@ -743,18 +726,6 @@ mod tests {
         provider
     }
 
-    fn codex_provider() -> StoredProviderCatalogProvider {
-        let mut provider = StoredProviderCatalogProvider::new(
-            "provider-codex".to_string(),
-            "Codex".to_string(),
-            None,
-            "codex".to_string(),
-        )
-        .expect("provider should build");
-        provider.provider_type = "codex".to_string();
-        provider
-    }
-
     fn grok_key_with_quota(quota: Value) -> StoredProviderCatalogKey {
         let mut key = StoredProviderCatalogKey::new(
             "key-1".to_string(),
@@ -771,21 +742,6 @@ mod tests {
 
     fn model(id: &str) -> Value {
         json!({ "id": id })
-    }
-
-    #[test]
-    fn provider_query_codex_models_include_released_gpt_56_overrides() {
-        let models =
-            provider_query_append_codex_released_models(&codex_provider(), vec![model("gpt-5.5")]);
-        let ids = models
-            .into_iter()
-            .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            ids,
-            ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
-        );
     }
 
     fn filtered_ids(key: &StoredProviderCatalogKey) -> Vec<String> {

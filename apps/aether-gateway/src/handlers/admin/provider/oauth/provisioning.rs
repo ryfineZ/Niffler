@@ -1,4 +1,3 @@
-use super::runtime::spawn_provider_oauth_model_fetch_after_update;
 use super::state::{
     decode_jwt_claims, enrich_admin_provider_oauth_auth_config, json_non_empty_string,
     json_u64_value,
@@ -188,7 +187,6 @@ pub(crate) async fn create_provider_oauth_catalog_key(
     record.success_count = Some(0);
     record.error_count = Some(0);
     record.total_response_time_ms = Some(0);
-    record.auto_fetch_models = provider_oauth_default_auto_fetch_models(provider_type);
     record.health_by_format = Some(json!({}));
     record.circuit_breaker_by_format = Some(json!({}));
     record.created_at_unix_ms = Some(now_unix_secs);
@@ -200,7 +198,6 @@ pub(crate) async fn create_provider_oauth_catalog_key(
             .invalidate_local_oauth_refresh_entry(&key.id)
             .await;
         seed_provider_oauth_pool_score(state, provider_id, key, now_unix_secs).await;
-        spawn_provider_oauth_model_fetch_for_key(state, provider_type, key);
     }
     Ok(created)
 }
@@ -239,9 +236,6 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
     updated.expires_at_unix_secs = expires_at_unix_secs;
     updated.oauth_invalid_at_unix_secs = None;
     updated.oauth_invalid_reason = None;
-    if provider_oauth_default_auto_fetch_models(provider_type) {
-        updated.auto_fetch_models = true;
-    }
     if updated.fingerprint.is_none() {
         updated.fingerprint = grok_oauth_catalog_key_fingerprint(provider_type, auth_config);
     }
@@ -259,25 +253,8 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
             .invalidate_local_oauth_refresh_entry(&key.id)
             .await;
         seed_provider_oauth_pool_score(state, &existing_key.provider_id, key, now_unix_secs).await;
-        spawn_provider_oauth_model_fetch_for_key(state, provider_type, key);
     }
     Ok(persisted)
-}
-
-fn spawn_provider_oauth_model_fetch_for_key(
-    state: &AdminAppState<'_>,
-    provider_type: &str,
-    key: &StoredProviderCatalogKey,
-) {
-    if !key.is_active || !key.auto_fetch_models {
-        return;
-    }
-    spawn_provider_oauth_model_fetch_after_update(
-        state.cloned_app(),
-        key.provider_id.clone(),
-        provider_type.to_string(),
-        key.id.clone(),
-    );
 }
 
 async fn seed_provider_oauth_pool_score(
@@ -355,15 +332,10 @@ fn provider_oauth_catalog_key_api_formats(
     }
 }
 
-fn provider_oauth_default_auto_fetch_models(provider_type: &str) -> bool {
-    provider_type.trim().eq_ignore_ascii_case("codex")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         build_provider_oauth_auth_config_from_token_payload, grok_oauth_catalog_key_fingerprint,
-        provider_oauth_default_auto_fetch_models,
         provider_oauth_token_payload_expires_at_unix_secs,
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -414,15 +386,6 @@ mod tests {
             provider_oauth_token_payload_expires_at_unix_secs(&payload, 1_000),
             Some(2_000_000_000)
         );
-    }
-
-    #[test]
-    fn codex_oauth_keys_default_to_auto_model_fetch() {
-        assert!(provider_oauth_default_auto_fetch_models("codex"));
-        assert!(provider_oauth_default_auto_fetch_models(" Codex "));
-        assert!(!provider_oauth_default_auto_fetch_models("grok"));
-        assert!(!provider_oauth_default_auto_fetch_models("kiro"));
-        assert!(!provider_oauth_default_auto_fetch_models("gemini_cli"));
     }
 
     #[test]

@@ -50,10 +50,7 @@ use self::execution_failures::{
 use crate::ai_serving::api::{
     maybe_bridge_standard_sync_json_to_stream, maybe_build_provider_private_stream_normalizer,
     maybe_build_stream_response_rewriter, normalize_provider_private_report_context,
-    StreamingStandardTerminalObserver, CLAUDE_CHAT_STREAM_PLAN_KIND, CLAUDE_CLI_STREAM_PLAN_KIND,
-    GEMINI_CHAT_STREAM_PLAN_KIND, GEMINI_CLI_STREAM_PLAN_KIND, OPENAI_CHAT_STREAM_PLAN_KIND,
-    OPENAI_IMAGE_STREAM_PLAN_KIND, OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND,
-    OPENAI_RESPONSES_STREAM_PLAN_KIND,
+    StreamingStandardTerminalObserver,
 };
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
@@ -116,6 +113,7 @@ use crate::{
     AppState, GatewayError, GEMINI_FILES_DOWNLOAD_PLAN_KIND, OPENAI_VIDEO_CONTENT_PLAN_KIND,
 };
 
+const OPENAI_IMAGE_STREAM_PLAN_KIND: &str = "openai_image_stream";
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const SSE_KEEPALIVE_BYTES: &[u8] = b": aether-keepalive\n\n";
 const STREAM_IDLE_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -1180,73 +1178,13 @@ fn decode_stream_data_chunk(
     Ok(text.unwrap_or_default().as_bytes().to_vec())
 }
 
-fn response_header_value<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
-}
-
-fn remove_response_header(headers: &mut BTreeMap<String, String>, name: &str) {
-    let keys = headers
-        .keys()
-        .filter(|key| key.eq_ignore_ascii_case(name))
-        .cloned()
-        .collect::<Vec<_>>();
-    for key in keys {
-        headers.remove(&key);
-    }
-}
-
-fn set_response_header(headers: &mut BTreeMap<String, String>, name: &str, value: &str) {
-    remove_response_header(headers, name);
-    headers.insert(name.to_string(), value.to_string());
-}
-
 fn response_headers_indicate_sse(headers: &BTreeMap<String, String>) -> bool {
-    response_header_value(headers, "content-type")
+    headers
+        .get("content-type")
+        .map(String::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-}
-
-fn stream_plan_outputs_sse(plan_kind: &str) -> bool {
-    matches!(
-        plan_kind,
-        OPENAI_CHAT_STREAM_PLAN_KIND
-            | OPENAI_RESPONSES_STREAM_PLAN_KIND
-            | OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND
-            | OPENAI_IMAGE_STREAM_PLAN_KIND
-            | CLAUDE_CHAT_STREAM_PLAN_KIND
-            | CLAUDE_CLI_STREAM_PLAN_KIND
-            | GEMINI_CHAT_STREAM_PLAN_KIND
-            | GEMINI_CLI_STREAM_PLAN_KIND
-    )
-}
-
-fn normalize_client_stream_response_headers(
-    headers: &mut BTreeMap<String, String>,
-    client_body_is_sse: bool,
-) {
-    if !client_body_is_sse {
-        return;
-    }
-
-    remove_response_header(headers, "content-encoding");
-    remove_response_header(headers, "content-length");
-    set_response_header(headers, "content-type", "text/event-stream");
-}
-
-fn normalize_client_stream_response_headers_after_rules(
-    headers: &mut BTreeMap<String, String>,
-    known_client_body_is_sse: bool,
-) -> bool {
-    let headers_mark_response_as_sse = response_headers_indicate_sse(headers);
-    normalize_client_stream_response_headers(
-        headers,
-        known_client_body_is_sse || headers_mark_response_as_sse,
-    );
-    headers_mark_response_as_sse
 }
 
 fn parse_prefetched_sync_json_body(body: &[u8]) -> Option<Value> {
@@ -2306,11 +2244,6 @@ async fn execute_stream_from_frame_stream(
             }
         }
     }
-    let known_client_body_is_sse = response_headers_indicate_sse(&headers)
-        || stream_plan_outputs_sse(plan_kind)
-        || private_stream_normalizer.is_some()
-        || local_stream_rewriter.is_some()
-        || sync_json_stream_bridge_active;
     drop(private_stream_normalizer);
     drop(local_stream_rewriter);
 
@@ -2341,10 +2274,6 @@ async fn execute_stream_from_frame_stream(
     }
 
     apply_endpoint_response_header_rules(state, &plan, &mut headers, None).await?;
-    let emit_sse_keepalive = normalize_client_stream_response_headers_after_rules(
-        &mut headers,
-        known_client_body_is_sse,
-    );
 
     let request_id = request_id.to_string();
     let candidate_id = candidate_id.map(ToOwned::to_owned);
@@ -2789,12 +2718,10 @@ async fn execute_stream_from_frame_stream(
                                         "gateway failed to normalize execution runtime stream chunk"
                                     );
                                     terminal_failure = Some(build_stream_failure_report(
-                                        "execution_runtime_stream_rewrite_error",
-                                        format!(
-                                            "failed to normalize execution runtime stream chunk: {err:?}"
-                                        ),
-                                        502,
-                                    ));
+                                            "execution_runtime_stream_rewrite_error",
+                                            format!("failed to normalize execution runtime stream chunk: {err:?}"),
+                                            502,
+                                        ));
                                     break;
                                 }
                             }
@@ -2828,9 +2755,7 @@ async fn execute_stream_from_frame_stream(
                                     );
                                     terminal_failure = Some(build_stream_failure_report(
                                         "execution_runtime_stream_rewrite_error",
-                                        format!(
-                                            "failed to rewrite execution runtime stream chunk: {err:?}"
-                                        ),
+                                        format!("failed to rewrite execution runtime stream chunk: {err:?}"),
                                         502,
                                     ));
                                     break;
@@ -3393,6 +3318,10 @@ async fn execute_stream_from_frame_stream(
         );
     }
 
+    let emit_sse_keepalive = response_headers_indicate_sse(&headers);
+    if emit_sse_keepalive {
+        headers.remove("content-length");
+    }
     let body_stream = build_sse_body_stream(
         prefetched_chunks_for_body,
         rx,
@@ -3427,7 +3356,7 @@ mod tests {
 
     use aether_contracts::{
         ExecutionPlan, ExecutionStreamTerminalSummary, ExecutionTimeouts, RequestBody,
-        StandardizedUsage, StreamFrame, StreamFramePayload, StreamFrameType,
+        StandardizedUsage,
     };
     use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
     use aether_data::repository::usage::InMemoryUsageReadRepository;
@@ -3468,17 +3397,6 @@ mod tests {
         .with_execution_runtime_candidate(true)
     }
 
-    fn responses_test_decision() -> GatewayControlDecision {
-        GatewayControlDecision::synthetic(
-            "/v1/responses",
-            Some("ai_public".to_string()),
-            Some("openai".to_string()),
-            Some("responses".to_string()),
-            Some("openai:responses".to_string()),
-        )
-        .with_execution_runtime_candidate(true)
-    }
-
     fn tunnel_proxy_snapshot(base_url: String) -> aether_contracts::ProxySnapshot {
         aether_contracts::ProxySnapshot {
             enabled: Some(true),
@@ -3488,99 +3406,6 @@ mod tests {
             url: None,
             extra: Some(json!({"tunnel_base_url": base_url})),
         }
-    }
-
-    fn stream_frame_bytes(frame: StreamFrame) -> Bytes {
-        crate::execution_runtime::ndjson::encode_stream_frame_ndjson(&frame)
-            .expect("stream frame should encode")
-    }
-
-    fn stream_headers_frame(status_code: u16, headers: BTreeMap<String, String>) -> Bytes {
-        stream_frame_bytes(StreamFrame {
-            frame_type: StreamFrameType::Headers,
-            payload: StreamFramePayload::Headers {
-                status_code,
-                headers,
-            },
-        })
-    }
-
-    fn stream_data_frame(text: &str) -> Bytes {
-        stream_frame_bytes(StreamFrame {
-            frame_type: StreamFrameType::Data,
-            payload: StreamFramePayload::Data {
-                chunk_b64: None,
-                text: Some(text.to_string()),
-            },
-        })
-    }
-
-    async fn execute_test_stream_with_headers(
-        upstream_headers: BTreeMap<String, String>,
-        plan_kind: &str,
-        client_api_format: &str,
-        provider_api_format: &str,
-        decision: &GatewayControlDecision,
-    ) -> axum::http::Response<Body> {
-        let state = AppState::new().expect("app state should build");
-        let plan = ExecutionPlan {
-            request_id: format!("req-header-normalization-{plan_kind}"),
-            candidate_id: Some(format!("cand-header-normalization-{plan_kind}")),
-            provider_name: Some("openai".into()),
-            provider_id: "prov-1".into(),
-            endpoint_id: "ep-1".into(),
-            key_id: "key-1".into(),
-            method: "POST".into(),
-            url: "https://example.com/v1/responses".into(),
-            headers: BTreeMap::from([
-                ("content-type".into(), "application/json".into()),
-                ("accept".into(), "text/event-stream".into()),
-            ]),
-            content_type: Some("application/json".into()),
-            content_encoding: None,
-            body: RequestBody::from_json(json!({
-                "model": "gpt-5.5",
-                "input": "hello",
-                "stream": true
-            })),
-            stream: true,
-            client_api_format: client_api_format.into(),
-            provider_api_format: provider_api_format.into(),
-            model_name: Some("gpt-5.5".into()),
-            proxy: None,
-            transport_profile: None,
-            timeouts: None,
-        };
-        let frame_stream = stream! {
-            yield Ok::<Bytes, std::io::Error>(stream_headers_frame(200, upstream_headers));
-            yield Ok::<Bytes, std::io::Error>(stream_data_frame("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"));
-            yield Ok::<Bytes, std::io::Error>(stream_frame_bytes(StreamFrame::eof()));
-        }
-        .boxed();
-
-        execute_stream_from_frame_stream(
-            &state,
-            plan,
-            "trace-header-normalization",
-            decision,
-            plan_kind,
-            None,
-            Some(json!({
-                "request_id": format!("req-header-normalization-{plan_kind}"),
-                "candidate_id": format!("cand-header-normalization-{plan_kind}"),
-                "candidate_index": 0,
-                "retry_index": 0,
-                "provider_api_format": provider_api_format,
-                "client_api_format": client_api_format
-            })),
-            crate::clock::current_unix_ms(),
-            Instant::now(),
-            frame_stream,
-            None,
-        )
-        .await
-        .expect("execution should succeed")
-        .expect("execution should return a client response")
     }
 
     #[test]
@@ -4280,121 +4105,6 @@ mod tests {
             "openai_chat_stream",
             false
         ));
-    }
-
-    #[test]
-    fn response_header_rules_marking_sse_are_included_in_stream_header_cleanup() {
-        let mut headers = BTreeMap::from([
-            ("content-type".to_string(), "text/event-stream".to_string()),
-            ("Content-Encoding".to_string(), "gzip".to_string()),
-            ("Content-Length".to_string(), "999".to_string()),
-        ]);
-
-        let emit_sse_keepalive =
-            super::normalize_client_stream_response_headers_after_rules(&mut headers, false);
-
-        assert!(emit_sse_keepalive);
-        assert_eq!(
-            super::response_header_value(&headers, "content-type"),
-            Some("text/event-stream")
-        );
-        assert!(super::response_header_value(&headers, "content-encoding").is_none());
-        assert!(super::response_header_value(&headers, "content-length").is_none());
-    }
-
-    #[test]
-    fn known_sse_streams_do_not_enable_keepalive_only_because_headers_are_normalized() {
-        let mut headers = BTreeMap::new();
-
-        let emit_sse_keepalive =
-            super::normalize_client_stream_response_headers_after_rules(&mut headers, true);
-
-        assert!(!emit_sse_keepalive);
-        assert_eq!(
-            super::response_header_value(&headers, "content-type"),
-            Some("text/event-stream")
-        );
-    }
-
-    #[tokio::test]
-    async fn sse_streams_normalize_missing_or_wrong_content_type_without_rewriting_body() {
-        for upstream_headers in [
-            BTreeMap::new(),
-            BTreeMap::from([
-                ("content-type".to_string(), "application/x-gzip".to_string()),
-                ("content-encoding".to_string(), "gzip".to_string()),
-                ("content-length".to_string(), "999".to_string()),
-            ]),
-            BTreeMap::from([
-                ("Content-Type".to_string(), "application/x-gzip".to_string()),
-                ("Content-Encoding".to_string(), "gzip".to_string()),
-                ("Content-Length".to_string(), "999".to_string()),
-            ]),
-        ] {
-            let response = execute_test_stream_with_headers(
-                upstream_headers,
-                "openai_responses_stream",
-                "openai:responses",
-                "openai:responses",
-                &responses_test_decision(),
-            )
-            .await;
-
-            assert_eq!(
-                response
-                    .headers()
-                    .get(header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok()),
-                Some("text/event-stream")
-            );
-            assert_eq!(
-                response
-                    .headers()
-                    .get(header::CACHE_CONTROL)
-                    .and_then(|value| value.to_str().ok()),
-                Some("no-cache, no-transform")
-            );
-            assert_eq!(
-                response
-                    .headers()
-                    .get("x-accel-buffering")
-                    .and_then(|value| value.to_str().ok()),
-                Some("no")
-            );
-            assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
-            assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
-
-            let body = to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("response body should read");
-            assert_eq!(
-                body.as_ref(),
-                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn non_sse_streams_keep_non_sse_content_type() {
-        let response = execute_test_stream_with_headers(
-            BTreeMap::from([(
-                "content-type".to_string(),
-                "application/octet-stream".to_string(),
-            )]),
-            "openai_video_content",
-            "openai:video",
-            "openai:video",
-            &test_decision(),
-        )
-        .await;
-
-        assert_eq!(
-            response
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok()),
-            Some("application/octet-stream")
-        );
     }
 
     #[tokio::test]

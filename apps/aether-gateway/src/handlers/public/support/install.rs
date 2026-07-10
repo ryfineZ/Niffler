@@ -256,497 +256,6 @@ fn cli_binary(target_cli: InstallTargetCli) -> &'static str {
     }
 }
 
-pub(super) fn codex_model_catalog_json() -> &'static str {
-    r#"{
-  "models": [
-    {
-      "slug": "gpt-5.6-sol",
-      "display_name": "GPT-5.6-Sol",
-      "description": "Latest frontier agentic coding model.",
-      "default_reasoning_level": "low",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
-        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
-        { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 372000,
-      "max_context_window": 372000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 1
-    },
-    {
-      "slug": "gpt-5.6-terra",
-      "display_name": "GPT-5.6-Terra",
-      "description": "Balanced agentic coding model for everyday work.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
-        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
-        { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 372000,
-      "max_context_window": 372000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 2
-    },
-    {
-      "slug": "gpt-5.6-luna",
-      "display_name": "GPT-5.6-Luna",
-      "description": "Fast and affordable agentic coding model.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
-        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 372000,
-      "max_context_window": 372000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 3
-    },
-    {
-      "slug": "gpt-5.5",
-      "display_name": "GPT-5.5",
-      "description": "Frontier model for complex coding, research, and real-world work.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 272000,
-      "max_context_window": 272000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 7
-    },
-    {
-      "slug": "gpt-5.4",
-      "display_name": "GPT-5.4",
-      "description": "Strong model for everyday coding.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 272000,
-      "max_context_window": 1000000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 16
-    },
-    {
-      "slug": "gpt-5.4-mini",
-      "display_name": "GPT-5.4-Mini",
-      "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 272000,
-      "max_context_window": 272000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "medium",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 23
-    },
-    {
-      "slug": "gpt-5.2",
-      "display_name": "GPT-5.2",
-      "description": "Optimized for professional work and long-running agents.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Balances speed with some reasoning; useful for straightforward queries and short explanations" },
-        { "effort": "medium", "description": "Provides a solid balance of reasoning depth and latency for general-purpose tasks" },
-        { "effort": "high", "description": "Maximizes reasoning depth for complex or ambiguous problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning for complex problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "context_window": 272000,
-      "max_context_window": 272000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "auto",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": false,
-      "truncation_policy": { "mode": "bytes", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 29
-    },
-    {
-      "slug": "codex-auto-review",
-      "display_name": "Codex Auto Review",
-      "description": "Automatic approval review model for Codex.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
-        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "hide",
-      "context_window": 272000,
-      "max_context_window": 1000000,
-      "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "low",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "input_modalities": ["text", "image"],
-      "supports_image_detail_original": true,
-      "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "experimental_supported_tools": [],
-      "supported_in_api": true,
-      "priority": 43
-    }
-  ]
-}"#
-}
-
-fn build_codex_model_catalog_unix_script() -> String {
-    format!(
-        r###"#!/bin/sh
-set -eu
-
-say() {{ printf '%s\n' "[Niffler] $1"; }}
-fail() {{ printf '%s\n' "[Niffler] $1" >&2; exit 1; }}
-
-os="$(uname -s 2>/dev/null || printf unknown)"
-case "$os" in
-  Darwin|Linux) ;;
-  MINGW*|MSYS*|CYGWIN*) fail "检测到 Windows shell，请在 PowerShell 中执行：irm https://niffler.org/install/codex-models.ps1 | iex" ;;
-  *) fail "不支持的系统：$os" ;;
-esac
-
-command -v python3 >/dev/null 2>&1 || fail "未找到 python3，无法安全更新 Codex config.toml。请先安装 Python 3 后重试。"
-
-if [ -n "${{CODEX_HOME:-}}" ]; then
-  CODEX_DIR="$CODEX_HOME"
-  say "检测到 CODEX_HOME，使用自定义 Codex 主目录：$CODEX_DIR"
-else
-  CODEX_DIR="$HOME/.codex"
-  say "未检测到 CODEX_HOME，使用默认 Codex 主目录：$CODEX_DIR"
-fi
-
-umask 077
-mkdir -p "$CODEX_DIR"
-
-python3 - "$CODEX_DIR" <<'PY'
-import json, pathlib, re, shutil, subprocess, sys
-
-codex_dir = pathlib.Path(sys.argv[1]).expanduser()
-codex_dir.mkdir(parents=True, exist_ok=True)
-config_path = codex_dir / 'config.toml'
-catalog_path = codex_dir / 'niffler_model_catalog.json'
-niffler_catalog = json.loads(r'''{codex_model_catalog_json}''')
-bundled_models = []
-existing_models = []
-if shutil.which('codex'):
-    try:
-        bundled = json.loads(subprocess.check_output(
-            ['codex', 'debug', 'models', '--bundled'],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ))
-        bundled_models = bundled.get('models') or []
-    except Exception:
-        bundled_models = []
-if catalog_path.exists():
-    try:
-        existing_catalog = json.loads(catalog_path.read_text() or '{{}}')
-        existing_models = existing_catalog.get('models') or []
-    except Exception:
-        existing_models = []
-
-models_by_slug = {{}}
-for model in list(bundled_models) + list(existing_models):
-    slug = model.get('slug') if isinstance(model, dict) else None
-    if not slug:
-        continue
-    models_by_slug.setdefault(slug, model)
-for model in niffler_catalog.get('models') or []:
-    slug = model.get('slug') if isinstance(model, dict) else None
-    if not slug:
-        continue
-    models_by_slug.setdefault(slug, model)
-
-catalog_path.write_text(json.dumps({{'models': list(models_by_slug.values())}}, ensure_ascii=False, indent=2) + '\n')
-
-text = config_path.read_text() if config_path.exists() else ''
-lines = text.splitlines()
-
-def quote_toml(value: str) -> str:
-    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
-
-managed_top = {{
-    'model': quote_toml('gpt-5.6-sol'),
-    'review_model': quote_toml('gpt-5.6-sol'),
-    'model_catalog_json': quote_toml(str(catalog_path)),
-}}
-
-result = []
-managed_top_written = set()
-seen_section = False
-for line in lines:
-    stripped = line.strip()
-    if re.match(r'^\[.*\]$', stripped):
-        seen_section = True
-    if not seen_section:
-        key_match = re.match(r'^([A-Za-z0-9_-]+)\s*=', stripped)
-        key = key_match.group(1) if key_match else None
-        if key in managed_top:
-            if key not in managed_top_written:
-                result.append(f'{{key}} = {{managed_top[key]}}')
-                managed_top_written.add(key)
-            continue
-    result.append(line)
-
-insert_lines = [
-    f'{{key}} = {{managed_top[key]}}'
-    for key in ('model', 'review_model', 'model_catalog_json')
-    if key not in managed_top_written
-]
-if insert_lines:
-    insert_at = next((idx for idx, line in enumerate(result) if line.strip().startswith('[')), len(result))
-    while insert_at > 0 and result[insert_at - 1].strip() == '':
-        insert_at -= 1
-    if insert_at > 0:
-        insert_lines.append('')
-    result[insert_at:insert_at] = insert_lines
-
-while result and result[-1].strip() == '':
-    result.pop()
-config_path.write_text('\n'.join(result) + ('\n' if result else ''))
-
-PY
-
-chmod 600 "$CODEX_DIR/config.toml" "$CODEX_DIR/niffler_model_catalog.json" 2>/dev/null || true
-
-if ! grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "$CODEX_DIR/config.toml" 2>/dev/null; then
-  say "已更新模型目录，但未发现 model_provider。请先用 CC Switch 导入 Niffler，或执行 Niffler 一键配置。"
-fi
-
-say "已写入 $CODEX_DIR/niffler_model_catalog.json"
-say "已设置默认模型 gpt-5.6-sol，模型列表包含 GPT-5.6 Sol / Terra / Luna。"
-say "如果 Codex App 已打开，请完全退出后重新启动，再查看模型下拉列表。"
-"###,
-        codex_model_catalog_json = codex_model_catalog_json(),
-    )
-}
-
-fn build_codex_model_catalog_powershell_script() -> String {
-    format!(
-        r###"$ErrorActionPreference = 'Stop'
-
-function Say($Message) {{ Write-Host "[Niffler] $Message" }}
-
-$HomeDir = [Environment]::GetFolderPath('UserProfile')
-if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {{
-  $CodexHome = $env:CODEX_HOME
-  Say "检测到 CODEX_HOME，使用自定义 Codex 主目录：$CodexHome"
-}} else {{
-  $CodexHome = Join-Path $HomeDir '.codex'
-  Say "未检测到 CODEX_HOME，使用默认 Codex 主目录：$CodexHome"
-}}
-
-New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null
-$ConfigPath = Join-Path $CodexHome 'config.toml'
-$CatalogPath = Join-Path $CodexHome 'niffler_model_catalog.json'
-
-$NifflerCatalog = @'
-{codex_model_catalog_json}
-'@ | ConvertFrom-Json
-$BundledModels = @()
-$ExistingModels = @()
-if (Get-Command codex -ErrorAction SilentlyContinue) {{
-  try {{
-    $Bundled = codex debug models --bundled | ConvertFrom-Json
-    if ($null -ne $Bundled.models) {{ $BundledModels = @($Bundled.models) }}
-  }} catch {{
-    $BundledModels = @()
-  }}
-}}
-if (Test-Path $CatalogPath) {{
-  try {{
-    $ExistingCatalog = Get-Content $CatalogPath -Raw | ConvertFrom-Json
-    if ($null -ne $ExistingCatalog.models) {{ $ExistingModels = @($ExistingCatalog.models) }}
-  }} catch {{
-    $ExistingModels = @()
-  }}
-}}
-$ModelsBySlug = [ordered]@{{}}
-foreach ($ModelItem in @($BundledModels) + @($ExistingModels)) {{
-  $Slug = [string]$ModelItem.slug
-  if ([string]::IsNullOrWhiteSpace($Slug)) {{ continue }}
-  if (-not $ModelsBySlug.Contains($Slug)) {{ $ModelsBySlug[$Slug] = $ModelItem }}
-}}
-foreach ($ModelItem in @($NifflerCatalog.models)) {{
-  $Slug = [string]$ModelItem.slug
-  if ([string]::IsNullOrWhiteSpace($Slug)) {{ continue }}
-  if (-not $ModelsBySlug.Contains($Slug)) {{ $ModelsBySlug[$Slug] = $ModelItem }}
-}}
-@{{ models = @($ModelsBySlug.Values) }} | ConvertTo-Json -Depth 32 | Set-Content $CatalogPath -Encoding UTF8
-
-$Text = if (Test-Path $ConfigPath) {{ Get-Content $ConfigPath -Raw }} else {{ '' }}
-$Lines = if ($Text.Length -gt 0) {{ $Text -split "`r?`n" }} else {{ @() }}
-$Result = New-Object System.Collections.Generic.List[string]
-$SeenSection = $false
-$ManagedTop = [ordered]@{{
-  model = '"gpt-5.6-sol"'
-  review_model = '"gpt-5.6-sol"'
-  model_catalog_json = '"' + $CatalogPath.Replace('\', '\\').Replace('"', '\"') + '"'
-}}
-$ManagedTopWritten = @{{}}
-
-foreach ($Line in $Lines) {{
-  $Stripped = $Line.Trim()
-  if ($Stripped -match '^\[.*\]$') {{ $SeenSection = $true }}
-  if (-not $SeenSection -and $Stripped -match '^([A-Za-z0-9_-]+)\s*=') {{
-    $Key = $Matches[1]
-    if ($ManagedTop.Contains($Key)) {{
-      if (-not $ManagedTopWritten.ContainsKey($Key)) {{
-        $Result.Add("$Key = $($ManagedTop[$Key])")
-        $ManagedTopWritten[$Key] = $true
-      }}
-      continue
-    }}
-  }}
-  $Result.Add($Line)
-}}
-
-$InsertLines = New-Object System.Collections.Generic.List[string]
-foreach ($Key in @('model', 'review_model', 'model_catalog_json')) {{
-  if (-not $ManagedTopWritten.ContainsKey($Key)) {{
-    $InsertLines.Add("$Key = $($ManagedTop[$Key])")
-  }}
-}}
-if ($InsertLines.Count -gt 0) {{
-  $InsertAt = $Result.Count
-  for ($Index = 0; $Index -lt $Result.Count; $Index++) {{
-    if ($Result[$Index].Trim().StartsWith('[')) {{ $InsertAt = $Index; break }}
-  }}
-  while ($InsertAt -gt 0 -and $Result[$InsertAt - 1].Trim() -eq '') {{ $InsertAt-- }}
-  if ($InsertAt -gt 0) {{ $InsertLines.Add('') }}
-  for ($Index = $InsertLines.Count - 1; $Index -ge 0; $Index--) {{
-    $Result.Insert($InsertAt, $InsertLines[$Index])
-  }}
-}}
-while ($Result.Count -gt 0 -and $Result[$Result.Count - 1].Trim() -eq '') {{ $Result.RemoveAt($Result.Count - 1) }}
-Set-Content -Path $ConfigPath -Value (($Result -join "`n") + "`n") -Encoding UTF8
-
-$HasProvider = $false
-foreach ($Line in $Result) {{
-  if ($Line -match '^\s*model_provider\s*=') {{ $HasProvider = $true; break }}
-}}
-if (-not $HasProvider) {{
-  Say "已更新模型目录，但未发现 model_provider。请先用 CC Switch 导入 Niffler，或执行 Niffler 一键配置。"
-}}
-
-Say "已写入 $CatalogPath"
-Say "已设置默认模型 gpt-5.6-sol，模型列表包含 GPT-5.6 Sol / Terra / Luna。"
-Say "如果 Codex App 已打开，请完全退出后重新启动，再查看模型下拉列表。"
-"###,
-        codex_model_catalog_json = codex_model_catalog_json(),
-    )
-}
-
 fn build_unix_script(session: &StoredInstallSession) -> String {
     let target_cli = match session.target_cli {
         InstallTargetCli::ClaudeCode => "claude_code",
@@ -819,70 +328,22 @@ PY
     chmod 600 "$HOME/.claude/settings.json" 2>/dev/null || true
     ;;
   codex_cli)
-    if [ -n "${{CODEX_HOME:-}}" ]; then
-      CODEX_DIR="$CODEX_HOME"
-      say "检测到 CODEX_HOME，使用自定义 Codex 主目录：$CODEX_DIR"
-    else
-      CODEX_DIR="$HOME/.codex"
-      say "未检测到 CODEX_HOME，使用默认 Codex 主目录：$CODEX_DIR"
-    fi
-    mkdir -p "$CODEX_DIR"
-    python3 - "$CODEX_DIR/config.toml" "$AETHER_BASE_URL" "$AETHER_API_KEY" <<'PY'
-import json, pathlib, re, shutil, subprocess, sys
+    mkdir -p "$HOME/.codex"
+    python3 - "$HOME/.codex/config.toml" "$AETHER_BASE_URL" "$AETHER_API_KEY" <<'PY'
+import pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
 base_url = sys.argv[2].rstrip('/') + '/v1'
 api_key = sys.argv[3]
-catalog_path = path.parent / 'niffler_model_catalog.json'
-niffler_catalog = json.loads(r'''{codex_model_catalog_json}''')
-bundled_models = []
-existing_models = []
-if shutil.which('codex'):
-    try:
-        bundled = json.loads(subprocess.check_output(
-            ['codex', 'debug', 'models', '--bundled'],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ))
-        bundled_models = bundled.get('models') or []
-    except Exception:
-        bundled_models = []
-if catalog_path.exists():
-    try:
-        existing_catalog = json.loads(catalog_path.read_text() or '{{}}')
-        existing_models = existing_catalog.get('models') or []
-    except Exception:
-        existing_models = []
-
-models_by_slug = {{}}
-for model in list(bundled_models) + list(existing_models):
-    slug = model.get('slug') if isinstance(model, dict) else None
-    if not slug:
-        continue
-    models_by_slug.setdefault(slug, model)
-for model in niffler_catalog.get('models') or []:
-    slug = model.get('slug') if isinstance(model, dict) else None
-    if not slug:
-        continue
-    models_by_slug.setdefault(slug, model)
-
-catalog_path.write_text(json.dumps({{'models': list(models_by_slug.values())}}, ensure_ascii=False, indent=2) + '\n')
 text = path.read_text() if path.exists() else ''
 lines = text.splitlines()
 
 def quote_toml(value: str) -> str:
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
-managed_top = {{
-    'model_provider': quote_toml('aether'),
-    'model': quote_toml('gpt-5.6-sol'),
-    'review_model': quote_toml('gpt-5.6-sol'),
-    'model_catalog_json': quote_toml(str(catalog_path)),
-}}
-
 result = []
 in_aether = False
-managed_top_written = set()
+top_model_provider_set = False
 seen_section = False
 for line in lines:
     stripped = line.strip()
@@ -893,28 +354,18 @@ for line in lines:
             continue
     if in_aether:
         continue
-    if not seen_section:
-        key_match = re.match(r'^([A-Za-z0-9_-]+)\s*=', stripped)
-        key = key_match.group(1) if key_match else None
-        if key in managed_top:
-            if key not in managed_top_written:
-                result.append(f'{{key}} = {{managed_top[key]}}')
-                managed_top_written.add(key)
-            continue
+    if not seen_section and re.match(r'^model_provider\s*=', stripped):
+        if not top_model_provider_set:
+            result.append('model_provider = "aether"')
+            top_model_provider_set = True
+        continue
     result.append(line)
 
-insert_lines = [
-    f'{{key}} = {{managed_top[key]}}'
-    for key in ('model_provider', 'model', 'review_model', 'model_catalog_json')
-    if key not in managed_top_written
-]
-if insert_lines:
+if not top_model_provider_set:
     insert_at = next((idx for idx, line in enumerate(result) if line.strip().startswith('[')), len(result))
     while insert_at > 0 and result[insert_at - 1].strip() == '':
         insert_at -= 1
-    if insert_at > 0:
-        insert_lines.append('')
-    result[insert_at:insert_at] = insert_lines
+    result[insert_at:insert_at] = ['model_provider = "aether"', '']
 
 while result and result[-1].strip() == '':
     result.pop()
@@ -931,7 +382,7 @@ result.extend([
 ])
 path.write_text('\n'.join(result) + '\n')
 PY
-    chmod 600 "$CODEX_DIR/config.toml" "$CODEX_DIR/niffler_model_catalog.json" 2>/dev/null || true
+    chmod 600 "$HOME/.codex/config.toml" 2>/dev/null || true
     ;;
   gemini_cli)
     mkdir -p "$HOME/.gemini"
@@ -961,7 +412,6 @@ say "$CLI_LABEL 已配置到 Niffler。执行 $CLI_BIN --version 验证安装。
         label = shell_single_quote(cli_label(session.target_cli)),
         binary = shell_single_quote(cli_binary(session.target_cli)),
         npm_package = shell_single_quote(npm_package(session.target_cli)),
-        codex_model_catalog_json = codex_model_catalog_json(),
     )
 }
 
@@ -1030,61 +480,14 @@ if ($TargetCli -eq 'claude_code') {{
   $Data['env']['ANTHROPIC_AUTH_TOKEN'] = $AetherApiKey
   $Data | ConvertTo-Json -Depth 8 | Set-Content $Path -Encoding UTF8
 }} elseif ($TargetCli -eq 'codex_cli') {{
-  if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {{
-    $Dir = $env:CODEX_HOME
-    Say "检测到 CODEX_HOME，使用自定义 Codex 主目录：$Dir"
-  }} else {{
-    $Dir = Join-Path $HomeDir '.codex'
-    Say "未检测到 CODEX_HOME，使用默认 Codex 主目录：$Dir"
-  }}
-  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+  $Dir = Join-Path $HomeDir '.codex'; New-Item -ItemType Directory -Force -Path $Dir | Out-Null
   $Path = Join-Path $Dir 'config.toml'
-  $CatalogPath = Join-Path $Dir 'niffler_model_catalog.json'
-  $NifflerCatalog = @'
-{codex_model_catalog_json}
-'@ | ConvertFrom-Json
-  $BundledModels = @()
-  $ExistingModels = @()
-  if (Get-Command codex -ErrorAction SilentlyContinue) {{
-    try {{
-      $Bundled = codex debug models --bundled | ConvertFrom-Json
-      if ($null -ne $Bundled.models) {{ $BundledModels = @($Bundled.models) }}
-    }} catch {{
-      $BundledModels = @()
-    }}
-  }}
-  if (Test-Path $CatalogPath) {{
-    try {{
-      $ExistingCatalog = Get-Content $CatalogPath -Raw | ConvertFrom-Json
-      if ($null -ne $ExistingCatalog.models) {{ $ExistingModels = @($ExistingCatalog.models) }}
-    }} catch {{
-      $ExistingModels = @()
-    }}
-  }}
-  $ModelsBySlug = [ordered]@{{}}
-  foreach ($ModelItem in @($BundledModels) + @($ExistingModels)) {{
-    $Slug = [string]$ModelItem.slug
-    if ([string]::IsNullOrWhiteSpace($Slug)) {{ continue }}
-    if (-not $ModelsBySlug.Contains($Slug)) {{ $ModelsBySlug[$Slug] = $ModelItem }}
-  }}
-  foreach ($ModelItem in @($NifflerCatalog.models)) {{
-    $Slug = [string]$ModelItem.slug
-    if ([string]::IsNullOrWhiteSpace($Slug)) {{ continue }}
-    if (-not $ModelsBySlug.Contains($Slug)) {{ $ModelsBySlug[$Slug] = $ModelItem }}
-  }}
-  @{{ models = @($ModelsBySlug.Values) }} | ConvertTo-Json -Depth 32 | Set-Content $CatalogPath -Encoding UTF8
   $Text = if (Test-Path $Path) {{ Get-Content $Path -Raw }} else {{ '' }}
   $Lines = if ($Text.Length -gt 0) {{ $Text -split "`r?`n" }} else {{ @() }}
   $Result = New-Object System.Collections.Generic.List[string]
   $InAether = $false
+  $TopModelProviderSet = $false
   $SeenSection = $false
-  $ManagedTop = [ordered]@{{
-    model_provider = '"aether"'
-    model = '"gpt-5.6-sol"'
-    review_model = '"gpt-5.6-sol"'
-    model_catalog_json = '"' + $CatalogPath.Replace('\', '\\').Replace('"', '\"') + '"'
-  }}
-  $ManagedTopWritten = @{{}}
   foreach ($Line in $Lines) {{
     $Stripped = $Line.Trim()
     if ($Stripped -match '^\[.*\]$') {{
@@ -1093,34 +496,23 @@ if ($TargetCli -eq 'claude_code') {{
       if ($InAether) {{ continue }}
     }}
     if ($InAether) {{ continue }}
-    if (-not $SeenSection -and $Stripped -match '^([A-Za-z0-9_-]+)\s*=') {{
-      $Key = $Matches[1]
-      if ($ManagedTop.Contains($Key)) {{
-        if (-not $ManagedTopWritten.ContainsKey($Key)) {{
-          $Result.Add("$Key = $($ManagedTop[$Key])")
-          $ManagedTopWritten[$Key] = $true
-        }}
-        continue
+    if (-not $SeenSection -and $Stripped -match '^model_provider\s*=') {{
+      if (-not $TopModelProviderSet) {{
+        $Result.Add('model_provider = "aether"')
+        $TopModelProviderSet = $true
       }}
+      continue
     }}
     $Result.Add($Line)
   }}
-  $InsertLines = New-Object System.Collections.Generic.List[string]
-  foreach ($Key in @('model_provider', 'model', 'review_model', 'model_catalog_json')) {{
-    if (-not $ManagedTopWritten.ContainsKey($Key)) {{
-      $InsertLines.Add("$Key = $($ManagedTop[$Key])")
-    }}
-  }}
-  if ($InsertLines.Count -gt 0) {{
+  if (-not $TopModelProviderSet) {{
     $InsertAt = $Result.Count
     for ($Index = 0; $Index -lt $Result.Count; $Index++) {{
       if ($Result[$Index].Trim().StartsWith('[')) {{ $InsertAt = $Index; break }}
     }}
     while ($InsertAt -gt 0 -and $Result[$InsertAt - 1].Trim() -eq '') {{ $InsertAt-- }}
-    if ($InsertAt -gt 0) {{ $InsertLines.Add('') }}
-    for ($Index = $InsertLines.Count - 1; $Index -ge 0; $Index--) {{
-      $Result.Insert($InsertAt, $InsertLines[$Index])
-    }}
+    $Result.Insert($InsertAt, '')
+    $Result.Insert($InsertAt, 'model_provider = "aether"')
   }}
   while ($Result.Count -gt 0 -and $Result[$Result.Count - 1].Trim() -eq '') {{ $Result.RemoveAt($Result.Count - 1) }}
   if ($Result.Count -gt 0) {{ $Result.Add('') }}
@@ -1157,7 +549,6 @@ Say "$CliLabel 已配置到 Niffler。执行 $CliBin --version 验证安装。"
         label = powershell_single_quote(cli_label(session.target_cli)),
         binary = powershell_single_quote(cli_binary(session.target_cli)),
         npm_package = powershell_single_quote(npm_package(session.target_cli)),
-        codex_model_catalog_json = codex_model_catalog_json(),
     )
 }
 
@@ -1367,55 +758,6 @@ pub(super) async fn maybe_build_local_install_response(
         || request_context.request_path.starts_with("/install-proxy/")
     {
         return Some(maybe_build_local_tunnel_install_response(state, request_context).await);
-    }
-    if request_context.request_path == "/install/codex-model-catalog.json" {
-        let mut response = Response::new(Body::from(codex_model_catalog_json()));
-        response.headers_mut().insert(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static("application/json; charset=utf-8"),
-        );
-        response.headers_mut().insert(
-            http::header::CONTENT_DISPOSITION,
-            http::HeaderValue::from_static("attachment; filename=\"niffler_model_catalog.json\""),
-        );
-        response.headers_mut().insert(
-            http::header::CACHE_CONTROL,
-            http::HeaderValue::from_static("no-store"),
-        );
-        return Some(response);
-    }
-    if request_context.request_path == "/install/codex-models"
-        || request_context.request_path == "/install/codex-models.ps1"
-    {
-        let wants_powershell = request_context.request_path.ends_with(".ps1");
-        let body = if wants_powershell {
-            build_codex_model_catalog_powershell_script()
-        } else {
-            build_codex_model_catalog_unix_script()
-        };
-        let content_type = if wants_powershell {
-            "text/plain; charset=utf-8"
-        } else {
-            "text/x-shellscript; charset=utf-8"
-        };
-        let mut response = Response::new(Body::from(body));
-        response.headers_mut().insert(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static(content_type),
-        );
-        response.headers_mut().insert(
-            http::header::CACHE_CONTROL,
-            http::HeaderValue::from_static("no-store"),
-        );
-        response.headers_mut().insert(
-            http::header::PRAGMA,
-            http::HeaderValue::from_static("no-cache"),
-        );
-        response.headers_mut().insert(
-            http::header::HeaderName::from_static("x-content-type-options"),
-            http::HeaderValue::from_static("nosniff"),
-        );
-        return Some(response);
     }
     let Some((code, wants_powershell)) = install_code_from_path(&request_context.request_path)
     else {
@@ -1658,26 +1000,14 @@ mod tests {
     fn codex_unix_script_preserves_config_and_uses_responses_bearer_token() {
         let script = build_unix_script(&test_session(InstallTargetCli::CodexCli));
 
-        assert!(script.contains("${CODEX_HOME:-}"));
-        assert!(script.contains("CODEX_DIR=\"$CODEX_HOME\""));
         assert!(script.contains("path.read_text() if path.exists() else ''"));
         assert!(script.contains("stripped == '[model_providers.aether]'"));
-        assert!(script.contains("'model_provider': quote_toml('aether')"));
-        assert!(script.contains("'model': quote_toml('gpt-5.6-sol')"));
-        assert!(script.contains("'review_model': quote_toml('gpt-5.6-sol')"));
-        assert!(script.contains("'model_catalog_json': quote_toml(str(catalog_path))"));
-        assert!(script.contains("niffler_model_catalog.json"));
-        assert!(script.contains("'codex', 'debug', 'models', '--bundled'"));
-        assert!(script.contains("existing_models = []"));
-        assert!(script.contains("list(bundled_models) + list(existing_models)"));
-        assert!(script.contains("gpt-5.6-luna"));
-        assert!(script.contains("gpt-5.6-terra"));
+        assert!(script.contains("model_provider = \"aether\""));
         assert!(script.contains("wire_api = \"responses\""));
         assert!(script.contains("requires_openai_auth = false"));
         assert!(script.contains("experimental_bearer_token ="));
         assert!(!script.contains("wire_api = \"chat\""));
         assert!(!script.contains("cat > \"$HOME/.codex/config.toml\""));
-        assert!(!script.contains("python3 - \"$HOME/.codex/config.toml\""));
         assert!(!script.contains("auth.json"));
     }
 
@@ -1685,87 +1015,14 @@ mod tests {
     fn codex_powershell_script_preserves_config_and_uses_responses_bearer_token() {
         let script = build_powershell_script(&test_session(InstallTargetCli::CodexCli));
 
-        assert!(script.contains("$env:CODEX_HOME"));
-        assert!(script.contains("检测到 CODEX_HOME"));
         assert!(script.contains("Get-Content $Path -Raw"));
         assert!(script.contains("$Stripped -eq '[model_providers.aether]'"));
-        assert!(script.contains("model_provider = '\"aether\"'"));
-        assert!(script.contains("model = '\"gpt-5.6-sol\"'"));
-        assert!(script.contains("review_model = '\"gpt-5.6-sol\"'"));
-        assert!(script.contains("model_catalog_json ="));
-        assert!(script.contains("niffler_model_catalog.json"));
-        assert!(script.contains("codex debug models --bundled"));
-        assert!(script.contains("$ExistingModels = @()"));
-        assert!(script.contains("@($BundledModels) + @($ExistingModels)"));
-        assert!(script.contains("gpt-5.6-luna"));
-        assert!(script.contains("gpt-5.6-terra"));
+        assert!(script.contains("model_provider = \"aether\""));
         assert!(script.contains("wire_api = \"responses\""));
         assert!(script.contains("requires_openai_auth = false"));
         assert!(script.contains("experimental_bearer_token ="));
         assert!(!script.contains("wire_api = \"chat\""));
         assert!(!script.contains("auth.json"));
-    }
-
-    #[test]
-    fn codex_model_catalog_unix_script_uses_codex_home_and_preserves_bundled_models() {
-        let script = build_codex_model_catalog_unix_script();
-
-        assert!(script.contains("${CODEX_HOME:-}"));
-        assert!(script.contains("CODEX_DIR=\"$CODEX_HOME\""));
-        assert!(script.contains("$HOME/.codex"));
-        assert!(script.contains("niffler_model_catalog.json"));
-        assert!(script.contains("'model': quote_toml('gpt-5.6-sol')"));
-        assert!(script.contains("'review_model': quote_toml('gpt-5.6-sol')"));
-        assert!(script.contains("'model_catalog_json': quote_toml(str(catalog_path))"));
-        assert!(script.contains("'codex', 'debug', 'models', '--bundled'"));
-        assert!(script.contains("existing_models = []"));
-        assert!(script.contains("models_by_slug.setdefault(slug, model)"));
-        assert!(script.contains("gpt-5.6-terra"));
-        assert!(script.contains("gpt-5.6-luna"));
-        assert!(script.contains("未发现 model_provider"));
-        assert!(!script.contains("experimental_bearer_token"));
-        assert!(!script.contains("[model_providers.aether]"));
-    }
-
-    #[test]
-    fn codex_model_catalog_powershell_script_uses_codex_home_and_preserves_bundled_models() {
-        let script = build_codex_model_catalog_powershell_script();
-
-        assert!(script.contains("$env:CODEX_HOME"));
-        assert!(script.contains("Join-Path $HomeDir '.codex'"));
-        assert!(script.contains("niffler_model_catalog.json"));
-        assert!(script.contains("model = '\"gpt-5.6-sol\"'"));
-        assert!(script.contains("review_model = '\"gpt-5.6-sol\"'"));
-        assert!(script.contains("model_catalog_json ="));
-        assert!(script.contains("codex debug models --bundled"));
-        assert!(script.contains("$ExistingModels = @()"));
-        assert!(script.contains("$ModelsBySlug.Contains($Slug)"));
-        assert!(script.contains("gpt-5.6-terra"));
-        assert!(script.contains("gpt-5.6-luna"));
-        assert!(script.contains("未发现 model_provider"));
-        assert!(!script.contains("experimental_bearer_token"));
-        assert!(!script.contains("[model_providers.aether]"));
-    }
-
-    #[test]
-    fn codex_model_catalog_download_json_contains_codex_defaults_and_released_models() {
-        let payload: serde_json::Value =
-            serde_json::from_str(codex_model_catalog_json()).expect("catalog should parse");
-        let slugs = payload["models"]
-            .as_array()
-            .expect("models should be an array")
-            .iter()
-            .filter_map(|model| model["slug"].as_str())
-            .collect::<Vec<_>>();
-
-        assert!(slugs.contains(&"gpt-5.6-sol"));
-        assert!(slugs.contains(&"gpt-5.6-terra"));
-        assert!(slugs.contains(&"gpt-5.6-luna"));
-        assert!(slugs.contains(&"gpt-5.5"));
-        assert!(slugs.contains(&"gpt-5.4"));
-        assert!(slugs.contains(&"gpt-5.4-mini"));
-        assert!(slugs.contains(&"gpt-5.2"));
-        assert!(slugs.contains(&"codex-auto-review"));
     }
 
     #[test]

@@ -3,18 +3,13 @@ use super::quota::shared::provider_quota_refresh_endpoint_for_provider;
 use super::quota::shared::provider_type_supports_quota_refresh;
 use crate::handlers::admin::provider::write::provider::reconcile_admin_fixed_provider_template_endpoints;
 use crate::handlers::admin::request::AdminAppState;
-use crate::model_fetch::perform_model_fetch_for_key;
 use crate::provider_key_auth::provider_key_is_oauth_managed;
-use crate::task_runtime::{
-    spawn_fire_and_forget, TASK_KEY_PROVIDER_OAUTH_ACCOUNT_REFRESH,
-    TASK_KEY_PROVIDER_OAUTH_MODEL_FETCH,
-};
+use crate::task_runtime::{spawn_fire_and_forget, TASK_KEY_PROVIDER_OAUTH_ACCOUNT_REFRESH};
 use crate::{AppState, GatewayError};
 use aether_contracts::ProxySnapshot;
 use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogProvider,
 };
-use tracing::warn;
 
 pub(crate) fn provider_oauth_runtime_endpoint_for_provider(
     provider_type: &str,
@@ -258,41 +253,5 @@ pub(crate) fn spawn_provider_oauth_account_state_refresh_after_update(
             proxy_override.as_ref(),
         )
         .await;
-    });
-}
-
-pub(crate) fn spawn_provider_oauth_model_fetch_after_update(
-    app: AppState,
-    provider_id: String,
-    provider_type: String,
-    key_id: String,
-) {
-    if !provider_type.trim().eq_ignore_ascii_case("codex") {
-        return;
-    }
-
-    spawn_fire_and_forget(TASK_KEY_PROVIDER_OAUTH_MODEL_FETCH, async move {
-        match perform_model_fetch_for_key(&app, &provider_id, &key_id).await {
-            Ok(summary) if summary.succeeded > 0 => {}
-            Ok(summary) => {
-                warn!(
-                    provider_id = %provider_id,
-                    key_id = %key_id,
-                    attempted = summary.attempted,
-                    succeeded = summary.succeeded,
-                    failed = summary.failed,
-                    skipped = summary.skipped,
-                    "provider oauth model fetch completed without success"
-                );
-            }
-            Err(err) => {
-                warn!(
-                    provider_id = %provider_id,
-                    key_id = %key_id,
-                    error = ?err,
-                    "provider oauth model fetch failed"
-                );
-            }
-        }
     });
 }

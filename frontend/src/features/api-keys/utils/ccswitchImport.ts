@@ -1,6 +1,6 @@
 export type CcSwitchApp = 'claude' | 'codex' | 'gemini'
 
-export const DEFAULT_CCSWITCH_CODEX_MODEL = 'gpt-5.6-sol'
+export const DEFAULT_CCSWITCH_CODEX_MODEL = 'gpt-5.5'
 export const DEFAULT_CCSWITCH_CODEX_REASONING_EFFORT = 'high'
 
 interface BuildCcSwitchImportUrlInput {

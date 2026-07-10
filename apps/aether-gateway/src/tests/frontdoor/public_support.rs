@@ -2727,18 +2727,6 @@ fn sample_user_usage_audit(
     usage
 }
 
-fn stable_wallet_local_noon_usage_time(day_offset: i64) -> chrono::DateTime<Utc> {
-    let shanghai_offset =
-        chrono::FixedOffset::east_opt(8 * 3600).expect("Shanghai offset should be valid");
-    let local_date = Utc::now().with_timezone(&shanghai_offset).date_naive()
-        + chrono::Duration::days(day_offset);
-    (local_date
-        .and_hms_opt(12, 0, 0)
-        .expect("stable wallet usage test time should build")
-        - chrono::Duration::hours(8))
-    .and_utc()
-}
-
 async fn start_auth_announcement_gateway_with_state<T>(
     user: StoredUserAuthRecord,
     wallet: StoredWalletSnapshot,
@@ -4453,7 +4441,7 @@ async fn gateway_handles_wallet_balance_locally_without_proxying_upstream() {
 #[tokio::test]
 async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
     let auth_now = Utc::now();
-    let usage_now = stable_wallet_local_noon_usage_time(0);
+    let usage_now = auth_now;
     let user = sample_auth_user(auth_now);
     let access_token = build_test_auth_token(
         "access",
@@ -4485,16 +4473,7 @@ async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
             "gpt-4.1",
             "OpenAI",
             "completed",
-            stable_wallet_local_noon_usage_time(-1),
-        ),
-        sample_user_usage_audit(
-            "usage-wallet-next-1",
-            "req-wallet-next-1",
-            "user-auth-1",
-            "gpt-4.1",
-            "OpenAI",
-            "completed",
-            stable_wallet_local_noon_usage_time(1),
+            usage_now - chrono::Duration::days(1),
         ),
     ]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
@@ -4537,7 +4516,6 @@ async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
 #[tokio::test]
 async fn gateway_wallet_flow_today_entry_uses_live_settled_usage() {
     let auth_now = Utc::now();
-    let usage_now = stable_wallet_local_noon_usage_time(0);
     let user = sample_auth_user(auth_now);
     let access_token = build_test_auth_token(
         "access",
@@ -4560,16 +4538,7 @@ async fn gateway_wallet_flow_today_entry_uses_live_settled_usage() {
             "gpt-4.1",
             "OpenAI",
             "completed",
-            usage_now,
-        ),
-        sample_user_usage_audit(
-            "usage-wallet-flow-next",
-            "req-wallet-flow-next",
-            "user-auth-1",
-            "gpt-4.1",
-            "OpenAI",
-            "completed",
-            stable_wallet_local_noon_usage_time(1),
+            auth_now - chrono::Duration::minutes(5),
         ),
     ]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =

@@ -353,7 +353,7 @@ async fn gateway_handles_admin_provider_query_models_with_openai_responses_endpo
 }
 
 #[tokio::test]
-async fn gateway_handles_admin_provider_query_models_reports_codex_fetch_error_without_preset_fallback(
+async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_when_token_invalidated(
 ) {
     let execution_runtime_hits = Arc::new(Mutex::new(0usize));
     let execution_runtime_hits_clone = Arc::clone(&execution_runtime_hits);
@@ -431,15 +431,25 @@ async fn gateway_handles_admin_provider_query_models_reports_codex_fetch_error_w
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["success"], json!(false));
-    assert!(payload["data"]["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("Your authentication token has been invalidated"));
-    assert!(payload["data"]["models"]
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(payload["data"]["error"], serde_json::Value::Null);
+    let model_ids = payload["data"]["models"]
         .as_array()
         .expect("models should be an array")
-        .is_empty());
+        .iter()
+        .map(|model| model["id"].as_str().expect("model id"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        model_ids,
+        vec![
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-image-2",
+        ]
+    );
     assert_eq!(
         *execution_runtime_hits.lock().expect("mutex should lock"),
         1
@@ -781,16 +791,13 @@ async fn gateway_handles_admin_provider_query_models_for_fixed_provider_without_
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
-    assert_eq!(payload["success"], json!(false));
-    assert_eq!(
-        payload["data"]["error"],
-        json!("No active endpoints found for this provider")
-    );
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(payload["data"]["error"], serde_json::Value::Null);
     assert_eq!(payload["data"]["from_cache"], json!(false));
     let models = payload["data"]["models"]
         .as_array()
         .expect("models should be an array");
-    assert!(models.is_empty());
+    assert!(models.iter().any(|model| model["id"] == "gpt-5.4"));
     assert_eq!(
         *execution_runtime_hits.lock().expect("mutex should lock"),
         0

@@ -27,7 +27,6 @@ const CODEX_IMAGE_TOOL_DEFAULT_QUALITY: &str = "high";
 const CODEX_IMAGE_TOOL_DEFAULT_BACKGROUND: &str = "auto";
 const CODEX_IMAGE_GENERATION_BRIDGE_MARKER: &str = "<niffler-codex-image-generation>";
 const CODEX_IMAGE_GENERATION_BRIDGE_TEXT: &str = "<niffler-codex-image-generation>\nWhen the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch clients solely because `image_gen` is absent.\n</niffler-codex-image-generation>";
-const OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 const UUID_NAMESPACE_OID_BYTES: [u8; 16] = [
     0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
 ];
@@ -397,10 +396,6 @@ fn btree_map_has_non_empty_value(headers: &BTreeMap<String, String>, header_name
     headers
         .iter()
         .any(|(name, value)| name.trim().eq_ignore_ascii_case(&target) && !value.trim().is_empty())
-}
-
-fn remove_case_insensitive_header(headers: &mut BTreeMap<String, String>, header_name: &str) {
-    headers.retain(|name, _| !name.trim().eq_ignore_ascii_case(header_name));
 }
 
 fn extract_codex_account_id(decrypted_auth_config_raw: Option<&str>) -> Option<String> {
@@ -829,16 +824,6 @@ pub fn apply_codex_openai_responses_special_headers(
 ) {
     if !is_codex_openai_responses_request(provider_type, provider_api_format) {
         return;
-    }
-
-    if provider_request_body
-        .as_object()
-        .is_some_and(codex_openai_responses_has_image_generation_tool)
-    {
-        remove_case_insensitive_header(
-            provider_request_headers,
-            OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER,
-        );
     }
 
     let prompt_cache_key = provider_request_body

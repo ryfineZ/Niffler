@@ -51,7 +51,6 @@ pub(crate) const TASK_KEY_STATS_DAILY_AGG: &str = "maintenance.stats.daily.agg";
 pub(crate) const TASK_KEY_STATS_HOURLY_AGG: &str = "maintenance.stats.hourly.agg";
 pub(crate) const TASK_KEY_USAGE_SYNC_REPORT: &str = "usage.sync.report";
 pub(crate) const TASK_KEY_PROVIDER_OAUTH_ACCOUNT_REFRESH: &str = "provider.oauth.account.refresh";
-pub(crate) const TASK_KEY_PROVIDER_OAUTH_MODEL_FETCH: &str = "provider.oauth.model.fetch";
 pub(crate) const TASK_KEY_PROVIDER_BALANCE_REFRESH: &str = "provider.ops.balance.refresh";
 
 const RETRY_ONCE: RetryPolicy = RetryPolicy { max_attempts: 1 };
@@ -292,14 +291,6 @@ const TASK_DEFINITIONS: &[TaskDefinition] = &[
     ),
     TaskDefinition::new(
         TASK_KEY_PROVIDER_OAUTH_ACCOUNT_REFRESH,
-        TaskKind::FireAndForget,
-        "internal",
-        false,
-        false,
-        RETRY_ONCE,
-    ),
-    TaskDefinition::new(
-        TASK_KEY_PROVIDER_OAUTH_MODEL_FETCH,
         TaskKind::FireAndForget,
         "internal",
         false,

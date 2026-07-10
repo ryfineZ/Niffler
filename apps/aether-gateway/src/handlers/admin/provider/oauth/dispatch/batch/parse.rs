@@ -24,8 +24,6 @@ pub(super) struct AdminProviderOAuthBatchImportEntry {
     pub refresh_token: Option<String>,
     pub access_token: Option<String>,
     pub id_token: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
     pub expires_at: Option<u64>,
     pub disabled: bool,
     pub account_id: Option<String>,
@@ -81,24 +79,6 @@ fn coerce_admin_provider_oauth_import_str(value: Option<&serde_json::Value>) -> 
         .map(ToOwned::to_owned)
 }
 
-fn coerce_admin_provider_oauth_import_str_from_sources(
-    sources: &[Option<&serde_json::Value>],
-    keys: &[&str],
-) -> Option<String> {
-    keys.iter().find_map(|key| {
-        sources
-            .iter()
-            .find_map(|source| source.and_then(|value| value.get(*key)))
-            .and_then(|value| coerce_admin_provider_oauth_import_str(Some(value)))
-    })
-}
-
-fn admin_provider_oauth_sub2api_account_credentials(
-    object: &Map<String, Value>,
-) -> Option<&Map<String, Value>> {
-    object.get("credentials").and_then(Value::as_object)
-}
-
 fn admin_provider_oauth_import_expiry_value(value: Option<&serde_json::Value>) -> Option<u64> {
     match value? {
         serde_json::Value::Number(number) => number.as_u64(),
@@ -115,10 +95,6 @@ fn admin_provider_oauth_import_expiry_value(value: Option<&serde_json::Value>) -
         }
         _ => None,
     }
-}
-
-fn admin_provider_oauth_import_expires_in_value(value: Option<&serde_json::Value>) -> Option<u64> {
-    json_u64_value(value).map(|expires_in| current_unix_secs().saturating_add(expires_in))
 }
 
 fn admin_provider_oauth_import_bool_value(value: Option<&serde_json::Value>) -> Option<bool> {
@@ -227,8 +203,6 @@ fn extract_admin_provider_oauth_batch_import_entry(
                     refresh_token,
                     access_token,
                     id_token: None,
-                    client_id: None,
-                    client_secret: None,
                     expires_at: None,
                     disabled: false,
                     account_id: None,
@@ -248,43 +222,18 @@ fn extract_admin_provider_oauth_batch_import_entry(
             }
         }
         serde_json::Value::Object(object) => {
-            let credentials = admin_provider_oauth_sub2api_account_credentials(object);
-            let credential_value = object.get("credentials");
-            let extra_value = object.get("extra");
-            let sources = [Some(item), credential_value, extra_value];
             let refresh_token = coerce_admin_provider_oauth_import_str(
                 object
                     .get("refresh_token")
-                    .or_else(|| object.get("refreshToken"))
-                    .or_else(|| credentials.and_then(|value| value.get("refresh_token")))
-                    .or_else(|| credentials.and_then(|value| value.get("refreshToken"))),
+                    .or_else(|| object.get("refreshToken")),
             );
             let access_token = coerce_admin_provider_oauth_import_str(
                 object
                     .get("access_token")
-                    .or_else(|| object.get("accessToken"))
-                    .or_else(|| credentials.and_then(|value| value.get("access_token")))
-                    .or_else(|| credentials.and_then(|value| value.get("accessToken"))),
+                    .or_else(|| object.get("accessToken")),
             );
             let id_token = coerce_admin_provider_oauth_import_str(
-                object
-                    .get("id_token")
-                    .or_else(|| object.get("idToken"))
-                    .or_else(|| credentials.and_then(|value| value.get("id_token")))
-                    .or_else(|| credentials.and_then(|value| value.get("idToken"))),
-            );
-            let client_id = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &["client_id", "clientId", "oauth_client_id", "oauthClientId"],
-            );
-            let client_secret = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &[
-                    "client_secret",
-                    "clientSecret",
-                    "oauth_client_secret",
-                    "oauthClientSecret",
-                ],
+                object.get("id_token").or_else(|| object.get("idToken")),
             );
             let grok_token_alias = if provider_type.trim().eq_ignore_ascii_case("grok") {
                 object.get("token")
@@ -328,66 +277,50 @@ fn extract_admin_provider_oauth_batch_import_entry(
                     .or_else(|| object.get("expired"))
                     .or_else(|| object.get("expire"))
                     .or_else(|| object.get("expiry"))
-                    .or_else(|| object.get("expires"))
-                    .or_else(|| credentials.and_then(|value| value.get("expires_at")))
-                    .or_else(|| credentials.and_then(|value| value.get("expiresAt")))
-                    .or_else(|| credentials.and_then(|value| value.get("expired")))
-                    .or_else(|| credentials.and_then(|value| value.get("expire")))
-                    .or_else(|| credentials.and_then(|value| value.get("expiry")))
-                    .or_else(|| credentials.and_then(|value| value.get("expires"))),
-            )
-            .or_else(|| {
-                admin_provider_oauth_import_expires_in_value(
-                    object
-                        .get("expires_in")
-                        .or_else(|| object.get("expiresIn"))
-                        .or_else(|| credentials.and_then(|value| value.get("expires_in")))
-                        .or_else(|| credentials.and_then(|value| value.get("expiresIn"))),
-                )
-            });
+                    .or_else(|| object.get("expires")),
+            );
             let disabled =
                 admin_provider_oauth_import_bool_value(object.get("disabled")).unwrap_or(false);
-            let account_id = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &[
-                    "account_id",
-                    "accountId",
-                    "chatgpt_account_id",
-                    "chatgptAccountId",
-                ],
+            let account_id = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("account_id")
+                    .or_else(|| object.get("accountId"))
+                    .or_else(|| object.get("chatgpt_account_id"))
+                    .or_else(|| object.get("chatgptAccountId")),
             )
             .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "account_id"));
-            let account_user_id = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &[
-                    "account_user_id",
-                    "accountUserId",
-                    "chatgpt_account_user_id",
-                    "chatgptAccountUserId",
-                ],
+            let account_user_id = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("account_user_id")
+                    .or_else(|| object.get("accountUserId"))
+                    .or_else(|| object.get("chatgpt_account_user_id"))
+                    .or_else(|| object.get("chatgptAccountUserId")),
             )
             .or_else(|| {
                 admin_provider_oauth_import_hint_string(&id_token_hints, "account_user_id")
             });
-            let plan_type = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &[
-                    "plan_type",
-                    "planType",
-                    "chatgpt_plan_type",
-                    "chatgptPlanType",
-                ],
+            let plan_type = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("plan_type")
+                    .or_else(|| object.get("planType"))
+                    .or_else(|| object.get("chatgpt_plan_type"))
+                    .or_else(|| object.get("chatgptPlanType")),
             )
             .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "plan_type"))
             .map(|value| value.to_ascii_lowercase());
-            let pool_tier = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &["pool_tier", "poolTier", "tier"],
+            let pool_tier = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("pool_tier")
+                    .or_else(|| object.get("poolTier"))
+                    .or_else(|| object.get("tier")),
             )
             .map(|value| value.to_ascii_lowercase());
-            let user_id = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &["user_id", "userId", "chatgpt_user_id", "chatgptUserId"],
+            let user_id = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("user_id")
+                    .or_else(|| object.get("userId"))
+                    .or_else(|| object.get("chatgpt_user_id"))
+                    .or_else(|| object.get("chatgptUserId")),
             )
             .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "user_id"))
             .or_else(|| {
@@ -395,18 +328,12 @@ fn extract_admin_provider_oauth_batch_import_entry(
                     .as_deref()
                     .and_then(|cookie| grok_cookie_value(cookie, "x-userid"))
             });
-            let email = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &["email", "oauth_email", "oauthEmail"],
-            )
-            .or_else(|| {
-                coerce_admin_provider_oauth_import_str(object.get("name"))
-                    .filter(|value| value.contains('@'))
-            })
-            .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "email"));
-            let account_name = coerce_admin_provider_oauth_import_str_from_sources(
-                &sources,
-                &["account_name", "accountName", "name"],
+            let email = coerce_admin_provider_oauth_import_str(object.get("email"))
+                .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "email"));
+            let account_name = coerce_admin_provider_oauth_import_str(
+                object
+                    .get("account_name")
+                    .or_else(|| object.get("accountName")),
             )
             .or_else(|| admin_provider_oauth_import_hint_string(&id_token_hints, "account_name"));
             let sso_rw_token = coerce_admin_provider_oauth_import_str(
@@ -454,8 +381,6 @@ fn extract_admin_provider_oauth_batch_import_entry(
                 refresh_token,
                 access_token,
                 id_token,
-                client_id,
-                client_secret,
                 expires_at,
                 disabled,
                 account_id,
@@ -499,20 +424,12 @@ pub(super) fn parse_admin_provider_oauth_batch_import_entries(
     }
 
     if raw.starts_with('{') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let serde_json::Value::Object(object) = &value {
-                if let Some(accounts) = object.get("accounts").and_then(Value::as_array) {
-                    return accounts
-                        .iter()
-                        .filter_map(|item| {
-                            extract_admin_provider_oauth_batch_import_entry(provider_type, item)
-                        })
-                        .collect();
-                }
-                return extract_admin_provider_oauth_batch_import_entry(provider_type, &value)
-                    .into_iter()
-                    .collect();
-            }
+        if let Ok(value @ serde_json::Value::Object(_)) =
+            serde_json::from_str::<serde_json::Value>(raw)
+        {
+            return extract_admin_provider_oauth_batch_import_entry(provider_type, &value)
+                .into_iter()
+                .collect();
         }
     }
 
@@ -542,16 +459,6 @@ pub(super) fn apply_admin_provider_oauth_batch_import_hints(
     auth_config: &mut serde_json::Map<String, serde_json::Value>,
 ) {
     let provider_type = provider_type.trim().to_ascii_lowercase();
-    if let Some(client_id) = entry.client_id.as_ref() {
-        auth_config
-            .entry("client_id".to_string())
-            .or_insert_with(|| json!(client_id));
-    }
-    if let Some(client_secret) = entry.client_secret.as_ref() {
-        auth_config
-            .entry("client_secret".to_string())
-            .or_insert_with(|| json!(client_secret));
-    }
     if !matches!(provider_type.as_str(), "codex" | "chatgpt_web" | "grok") {
         return;
     }
@@ -722,10 +629,7 @@ pub(super) fn build_admin_provider_oauth_batch_task_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_admin_provider_oauth_batch_import_hints,
-        parse_admin_provider_oauth_batch_import_entries,
-    };
+    use super::parse_admin_provider_oauth_batch_import_entries;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
 
@@ -799,91 +703,6 @@ mod tests {
         assert_eq!(
             entries[0].last_refresh.as_deref(),
             Some("2026-05-27T20:10:51.855318Z")
-        );
-    }
-
-    #[test]
-    fn parses_sub2api_account_export_package() {
-        let before_parse = super::current_unix_secs();
-        let entries = parse_admin_provider_oauth_batch_import_entries(
-            "codex",
-            &json!({
-                "exported_at": "2026-07-09T20:33:56+08:00",
-                "proxies": [],
-                "accounts": [
-                    {
-                        "platform": "openai",
-                        "type": "oauth",
-                        "name": "alice@example.com",
-                        "credentials": {
-                            "refresh_token": "refresh-alice",
-                            "access_token": "access-alice",
-                            "client_id": "sub2api-client-id",
-                            "client_secret": "sub2api-client-secret",
-                            "id_token": unsigned_jwt(json!({
-                                "email": "alice@example.com",
-                                "https://api.openai.com/auth": {
-                                    "chatgpt_account_id": "acct-alice",
-                                    "chatgpt_plan_type": "plus"
-                                }
-                            })),
-                            "email": "credential-alice@example.com"
-                        },
-                        "extra": {
-                            "email": "extra-alice@example.com"
-                        }
-                    },
-                    {
-                        "platform": "openai",
-                        "type": "oauth",
-                        "name": "bob@example.com",
-                        "credentials": {
-                            "refreshToken": "refresh-bob",
-                            "accessToken": "access-bob",
-                            "expires_in": 3600
-                        }
-                    }
-                ]
-            })
-            .to_string(),
-        );
-        let after_parse = super::current_unix_secs();
-
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].refresh_token.as_deref(), Some("refresh-alice"));
-        assert_eq!(entries[0].access_token.as_deref(), Some("access-alice"));
-        assert_eq!(
-            entries[0].email.as_deref(),
-            Some("credential-alice@example.com")
-        );
-        assert_eq!(
-            entries[0].account_name.as_deref(),
-            Some("alice@example.com")
-        );
-        assert_eq!(entries[0].account_id.as_deref(), Some("acct-alice"));
-        assert_eq!(entries[0].plan_type.as_deref(), Some("plus"));
-        assert_eq!(entries[0].client_id.as_deref(), Some("sub2api-client-id"));
-        assert_eq!(
-            entries[0].client_secret.as_deref(),
-            Some("sub2api-client-secret")
-        );
-        assert_eq!(entries[1].refresh_token.as_deref(), Some("refresh-bob"));
-        assert_eq!(entries[1].access_token.as_deref(), Some("access-bob"));
-        assert_eq!(entries[1].email.as_deref(), Some("bob@example.com"));
-        assert_eq!(entries[1].account_name.as_deref(), Some("bob@example.com"));
-        let bob_expires_at = entries[1].expires_at.expect("expires_in should be parsed");
-        assert!(bob_expires_at >= before_parse.saturating_add(3600));
-        assert!(bob_expires_at <= after_parse.saturating_add(3600));
-
-        let mut auth_config = serde_json::Map::new();
-        apply_admin_provider_oauth_batch_import_hints("codex", &entries[0], &mut auth_config);
-        assert_eq!(
-            auth_config.get("client_id"),
-            Some(&json!("sub2api-client-id"))
-        );
-        assert_eq!(
-            auth_config.get("client_secret"),
-            Some(&json!("sub2api-client-secret"))
         );
     }
 

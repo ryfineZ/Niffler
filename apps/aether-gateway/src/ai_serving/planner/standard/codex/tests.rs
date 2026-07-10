@@ -198,62 +198,6 @@ fn injects_chatgpt_account_id_and_session_headers_for_codex_requests() {
 }
 
 #[test]
-fn removes_codex_responses_lite_header_when_image_tool_is_present() {
-    let mut headers = BTreeMap::new();
-    headers.insert(
-        "X-OpenAI-Internal-Codex-Responses-Lite".to_string(),
-        "true".to_string(),
-    );
-    let body = json!({
-        "model": "gpt-5.6-sol",
-        "tools": [{"type": "image_generation"}],
-        "tool_choice": "auto"
-    });
-
-    apply_codex_openai_responses_special_headers(
-        &mut headers,
-        &body,
-        &HeaderMap::new(),
-        "codex",
-        "openai:responses",
-        Some("trace-codex-123"),
-        Some(r#"{"account_id":"acc-123"}"#),
-    );
-
-    assert!(!headers
-        .keys()
-        .any(|name| name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite")));
-}
-
-#[test]
-fn keeps_codex_responses_lite_header_without_image_tool() {
-    let mut headers = BTreeMap::new();
-    headers.insert(
-        "x-openai-internal-codex-responses-lite".to_string(),
-        "true".to_string(),
-    );
-    let body = json!({
-        "model": "gpt-5.6-sol",
-        "tool_choice": "auto"
-    });
-
-    apply_codex_openai_responses_special_headers(
-        &mut headers,
-        &body,
-        &HeaderMap::new(),
-        "codex",
-        "openai:responses",
-        Some("trace-codex-123"),
-        Some(r#"{"account_id":"acc-123"}"#),
-    );
-
-    assert_eq!(
-        headers.get("x-openai-internal-codex-responses-lite"),
-        Some(&"true".to_string())
-    );
-}
-
-#[test]
 fn respects_existing_codex_request_and_session_headers() {
     let mut headers = BTreeMap::new();
     headers.insert(

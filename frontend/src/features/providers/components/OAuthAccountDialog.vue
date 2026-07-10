@@ -1110,15 +1110,7 @@ function isBatchImport(text: string): boolean {
   // 单个 JSON 对象（可能是 pretty-printed 多行）不算批量导入
   if (trimmed.startsWith('{')) {
     try {
-      const parsed = JSON.parse(trimmed)
-      if (
-        parsed
-        && typeof parsed === 'object'
-        && Array.isArray((parsed as { accounts?: unknown }).accounts)
-        && (parsed as { accounts: unknown[] }).accounts.length >= 1
-      ) {
-        return true
-      }
+      JSON.parse(trimmed)
       return false // 可解析的单个 JSON 对象，走单条导入
     } catch {
       // 解析失败：可能是多个 JSON 对象（JSON Lines 格式），继续检查

@@ -1,8 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aether_data_contracts::repository::candidate_selection::StoredMinimalCandidateSelectionRow;
-use axum::{body::Body, http, response::Response};
-use url::form_urlencoded;
+use axum::{body::Body, response::Response};
 
 use super::models_responses::{
     build_claude_model_detail_response, build_claude_models_list_response,
@@ -14,27 +13,7 @@ use super::models_responses::{
 use super::models_shared::{
     filter_rows_for_models, models_api_format, models_detail_id, models_query_api_formats,
 };
-use super::{codex_model_catalog_json, query_param_value, AppState, GatewayPublicRequestContext};
-
-fn query_has_param(query: Option<&str>, key: &str) -> bool {
-    let Some(query) = query else {
-        return false;
-    };
-    form_urlencoded::parse(query.as_bytes()).any(|(entry_key, _)| entry_key == key)
-}
-
-fn build_codex_client_models_response() -> Response<Body> {
-    let mut response = Response::new(Body::from(codex_model_catalog_json()));
-    response.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    response.headers_mut().insert(
-        http::header::CACHE_CONTROL,
-        http::HeaderValue::from_static("no-store"),
-    );
-    response
-}
+use super::{query_param_value, AppState, GatewayPublicRequestContext};
 
 fn sort_and_dedup_model_rows(
     mut rows: Vec<StoredMinimalCandidateSelectionRow>,
@@ -131,12 +110,6 @@ pub(super) async fn maybe_build_local_models_route_response(
 
     match decision.route_kind.as_deref() {
         Some("list") => {
-            if query_has_param(
-                request_context.request_query_string.as_deref(),
-                "client_version",
-            ) {
-                return Some(build_codex_client_models_response());
-            }
             let rows = list_model_rows_for_client_format(state, api_format, auth_snapshot).await?;
             if rows.is_empty() {
                 return Some(build_empty_models_list_response(api_format));

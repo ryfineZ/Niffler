@@ -38,29 +38,6 @@ struct AdminProviderOAuthResolvedBatchImport {
     expires_at: Option<u64>,
 }
 
-fn admin_provider_oauth_batch_import_client_config(
-    entry: &AdminProviderOAuthBatchImportEntry,
-) -> Option<Value> {
-    let mut config = Map::new();
-    if let Some(client_id) = entry
-        .client_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        config.insert("client_id".to_string(), json!(client_id));
-    }
-    if let Some(client_secret) = entry
-        .client_secret
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        config.insert("client_secret".to_string(), json!(client_secret));
-    }
-    (!config.is_empty()).then(|| Value::Object(config))
-}
-
 pub(super) fn estimate_admin_provider_oauth_batch_import_total(
     provider_type: &str,
     raw_credentials: &str,
@@ -154,7 +131,7 @@ async fn resolve_admin_provider_oauth_batch_import_tokens(
             None,
             None,
             provider_config,
-            admin_provider_oauth_batch_import_client_config(entry),
+            None,
             request_proxy.clone(),
         );
         let token_payload = match exchange_admin_provider_oauth_refresh_token(
