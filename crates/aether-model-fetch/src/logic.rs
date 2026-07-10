@@ -15,6 +15,7 @@ const MODEL_FETCH_FORMAT_PRIORITY: &[&[&str]] = &[
     &["claude:messages"],
     &["gemini:generate_content"],
 ];
+const CODEX_MODELS_CLIENT_VERSION: &str = "0.144.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelFetchRunSummary {
@@ -518,7 +519,8 @@ fn build_codex_models_url(base_url: &str) -> Option<String> {
     if !has_client_version {
         let separator = if url.contains('?') { '&' } else { '?' };
         url.push(separator);
-        url.push_str("client_version=0.128.0-alpha.1");
+        url.push_str("client_version=");
+        url.push_str(CODEX_MODELS_CLIENT_VERSION);
     }
     Some(url)
 }
@@ -772,8 +774,7 @@ mod tests {
                 "https://chatgpt.com/backend-api/codex"
             ),
             Some((
-                "https://chatgpt.com/backend-api/codex/models?client_version=0.128.0-alpha.1"
-                    .to_string(),
+                "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1".to_string(),
                 "openai:responses".to_string()
             ))
         );

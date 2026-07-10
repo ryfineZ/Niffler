@@ -759,7 +759,7 @@ mod tests {
 
         assert_eq!(
             plan.url,
-            "https://chatgpt.com/backend-api/codex/models?client_version=0.128.0-alpha.1"
+            "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
         );
         assert_eq!(
             plan.headers.get("authorization").map(String::as_str),

@@ -1559,7 +1559,7 @@ mod tests {
         let urls = executed_urls.lock().expect("executed_urls lock");
         assert_eq!(
             urls.as_slice(),
-            &["https://chatgpt.com/backend-api/codex/models?client_version=0.128.0-alpha.1"]
+            &["https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"]
         );
         assert_eq!(outcome.fetched_model_ids, vec!["gpt-5.4-upstream"]);
         assert_eq!(outcome.cached_models.len(), 1);

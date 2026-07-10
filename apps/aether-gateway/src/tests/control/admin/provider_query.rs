@@ -367,7 +367,7 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
                     .expect("mutex should lock") += 1;
                 assert_eq!(
                     plan.url,
-                    "https://chatgpt.com/backend-api/codex/models?client_version=0.128.0-alpha.1"
+                    "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
                 );
                 Json(json!({
                     "request_id": "req-provider-query-codex-invalidated",
