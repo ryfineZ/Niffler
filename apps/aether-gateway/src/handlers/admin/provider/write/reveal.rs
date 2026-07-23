@@ -31,6 +31,16 @@ pub(crate) fn build_admin_reveal_key_payload(
     key: &StoredProviderCatalogKey,
 ) -> Result<serde_json::Value, String> {
     let parsed_auth_config = state.parse_catalog_auth_config_json(key);
+    if parsed_auth_config.as_ref().is_some_and(|auth_config| {
+        aether_provider_transport::is_codex_agent_identity_auth_config_value(
+            &serde_json::Value::Object(auth_config.clone()),
+        )
+    }) {
+        return Err(
+            "Agent Identity 凭据不能通过通用 Key 查看接口读取，请使用专属 provider-oauth 管理面"
+                .to_string(),
+        );
+    }
     let provider_type = reveal_provider_type_from_auth_config(parsed_auth_config.as_ref());
     let auth_semantics = provider_key_auth_semantics(key, provider_type.as_str());
     let auth_type = if auth_semantics.oauth_managed() {
@@ -182,6 +192,15 @@ pub(crate) async fn build_admin_export_key_payload(
         .ok()
         .and_then(|value| value.as_object().cloned())
         .ok_or_else(|| "无法解密认证配置".to_string())?;
+
+    if aether_provider_transport::is_codex_agent_identity_auth_config_value(
+        &serde_json::Value::Object(auth_config.clone()),
+    ) {
+        return Err(
+            "Agent Identity 凭据不能通过通用 Key 导出接口导出，请使用专属 provider-oauth 管理面"
+                .to_string(),
+        );
+    }
 
     let provider_type_from_config = auth_config
         .get("provider_type")

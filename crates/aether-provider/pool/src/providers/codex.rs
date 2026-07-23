@@ -92,7 +92,15 @@ fn build_codex_wham_headers(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    if let Some(authorization) = auth_config_authorization {
+    let is_agent_identity = auth_config
+        .is_some_and(aether_provider_transport::is_codex_agent_identity_auth_config_value);
+
+    if is_agent_identity {
+        let Some((name, value)) = resolved_oauth_auth else {
+            return Err("缺少 Agent Identity 认证信息，请先注册任务".to_string());
+        };
+        headers.insert(name.to_ascii_lowercase(), value);
+    } else if let Some(authorization) = auth_config_authorization {
         headers.insert("authorization".to_string(), authorization.to_string());
     } else if let Some((name, value)) = resolved_oauth_auth {
         headers.insert(name.to_ascii_lowercase(), value);

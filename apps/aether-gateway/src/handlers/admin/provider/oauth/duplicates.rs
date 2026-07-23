@@ -1,7 +1,38 @@
 use crate::handlers::admin::request::AdminAppState;
 use crate::provider_key_auth::provider_key_is_oauth_managed;
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
-use std::time::{SystemTime, UNIX_EPOCH};
+use aether_runtime_state::RuntimeLockLease;
+use axum::http;
+use sha2::{Digest, Sha256};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+const CODEX_OAUTH_ACCOUNT_LOCK_TTL: Duration = Duration::from_secs(180);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexOAuthAccountLockError {
+    MissingIdentity,
+    Contended,
+    Unavailable,
+}
+
+impl CodexOAuthAccountLockError {
+    pub(crate) const fn status_code(self) -> http::StatusCode {
+        match self {
+            Self::MissingIdentity => http::StatusCode::BAD_REQUEST,
+            Self::Contended => http::StatusCode::CONFLICT,
+            Self::Unavailable => http::StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    pub(crate) const fn detail(self) -> &'static str {
+        match self {
+            Self::MissingIdentity => "Codex 账号身份字段缺失，无法安全写入授权",
+            Self::Contended => "该 ChatGPT 账号正在更新授权，请稍后重试",
+            Self::Unavailable => "Codex 账号授权锁暂不可用，请稍后重试",
+        }
+    }
+}
 
 fn normalize_codex_plan_group_for_provider_oauth(
     plan_type: Option<&serde_json::Value>,
@@ -24,6 +55,174 @@ fn normalize_provider_oauth_identity_value(value: Option<&serde_json::Value>) ->
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn normalize_provider_oauth_identity_value_from_keys(
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter()
+        .find_map(|key| normalize_provider_oauth_identity_value(auth_config.get(*key)))
+}
+
+fn codex_agent_identity_account_lock_key(
+    provider_id: &str,
+    identity_kind: &str,
+    identity_parts: &[&str],
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(provider_id.trim().as_bytes());
+    digest.update([0]);
+    digest.update(identity_kind.as_bytes());
+    for part in identity_parts {
+        digest.update([0]);
+        digest.update(part.as_bytes());
+    }
+    format!(
+        "provider_oauth_agent_identity_account:{:x}",
+        digest.finalize()
+    )
+}
+
+pub(crate) fn codex_agent_identity_account_lock_keys(
+    provider_id: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let account_user_id = normalize_provider_oauth_identity_value_from_keys(
+        auth_config,
+        &[
+            "account_user_id",
+            "accountUserId",
+            "chatgpt_account_user_id",
+            "chatgptAccountUserId",
+        ],
+    );
+    let account_id = normalize_provider_oauth_identity_value_from_keys(
+        auth_config,
+        &[
+            "account_id",
+            "accountId",
+            "chatgpt_account_id",
+            "chatgptAccountId",
+        ],
+    );
+    let user_id = normalize_provider_oauth_identity_value_from_keys(
+        auth_config,
+        &["user_id", "userId", "chatgpt_user_id", "chatgptUserId"],
+    );
+    let email = normalize_provider_oauth_identity_value_from_keys(auth_config, &["email"]);
+
+    let mut keys = Vec::with_capacity(5);
+    if let Some(account_user_id) = account_user_id.as_deref() {
+        keys.push(codex_agent_identity_account_lock_key(
+            provider_id,
+            "account_user_id",
+            &[account_user_id],
+        ));
+    }
+    if let (Some(account_id), Some(user_id)) = (account_id.as_deref(), user_id.as_deref()) {
+        keys.push(codex_agent_identity_account_lock_key(
+            provider_id,
+            "account_id_user_id",
+            &[account_id, user_id],
+        ));
+    }
+    if let (Some(account_id), Some(email)) = (account_id.as_deref(), email.as_deref()) {
+        keys.push(codex_agent_identity_account_lock_key(
+            provider_id,
+            "account_id_email",
+            &[account_id, email],
+        ));
+    }
+    if let Some(user_id) = user_id.as_deref() {
+        keys.push(codex_agent_identity_account_lock_key(
+            provider_id,
+            "user_id",
+            &[user_id],
+        ));
+    }
+    if let Some(email) = email.as_deref() {
+        keys.push(codex_agent_identity_account_lock_key(
+            provider_id,
+            "email",
+            &[email],
+        ));
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+pub(crate) async fn acquire_codex_oauth_account_locks(
+    state: &AdminAppState<'_>,
+    provider_id: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    operation: &str,
+) -> Result<Vec<RuntimeLockLease>, CodexOAuthAccountLockError> {
+    let lock_keys = codex_agent_identity_account_lock_keys(provider_id, auth_config);
+    if lock_keys.is_empty() {
+        return Err(CodexOAuthAccountLockError::MissingIdentity);
+    }
+
+    let owner = format!(
+        "aether-gateway-codex-oauth-{}-{}",
+        operation.trim(),
+        Uuid::new_v4()
+    );
+    let mut leases = Vec::with_capacity(lock_keys.len());
+    for lock_key in lock_keys {
+        match state
+            .runtime_state()
+            .lock_try_acquire(
+                lock_key.as_str(),
+                owner.as_str(),
+                CODEX_OAUTH_ACCOUNT_LOCK_TTL,
+            )
+            .await
+        {
+            Ok(Some(lease)) => leases.push(lease),
+            Ok(None) => {
+                release_codex_oauth_account_locks(state, leases).await;
+                return Err(CodexOAuthAccountLockError::Contended);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    lock_key = %lock_key,
+                    operation,
+                    error = ?error,
+                    "gateway Codex OAuth account lock unavailable"
+                );
+                release_codex_oauth_account_locks(state, leases).await;
+                return Err(CodexOAuthAccountLockError::Unavailable);
+            }
+        }
+    }
+
+    // The lock is distributed, while the catalog cache is process-local. A
+    // fresh read inside the lease is required to observe the previous holder.
+    state.app().data.clear_provider_catalog_cache();
+    Ok(leases)
+}
+
+pub(crate) async fn release_codex_oauth_account_locks(
+    state: &AdminAppState<'_>,
+    leases: Vec<RuntimeLockLease>,
+) {
+    for lease in leases.into_iter().rev() {
+        match state.runtime_state().lock_release(&lease).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!(
+                lock_key = %lease.key,
+                "gateway Codex OAuth account lock was not owned during release"
+            ),
+            Err(error) => tracing::warn!(
+                lock_key = %lease.key,
+                error = ?error,
+                "gateway Codex OAuth account lock release failed"
+            ),
+        }
+    }
 }
 
 fn is_openai_provider_oauth_provider_type(value: Option<&serde_json::Value>) -> bool {
@@ -53,6 +252,24 @@ fn match_codex_provider_oauth_identity(
         && !is_openai_provider_oauth_provider_type(existing_provider_type)
     {
         return None;
+    }
+
+    let new_agent_runtime_id = normalize_provider_oauth_identity_value(
+        new_auth_config
+            .get("agent_runtime_id")
+            .or_else(|| new_auth_config.get("agentRuntimeId")),
+    );
+    let existing_agent_runtime_id = normalize_provider_oauth_identity_value(
+        existing_auth_config
+            .get("agent_runtime_id")
+            .or_else(|| existing_auth_config.get("agentRuntimeId")),
+    );
+    if new_agent_runtime_id
+        .as_deref()
+        .zip(existing_agent_runtime_id.as_deref())
+        .is_some_and(|(left, right)| left == right)
+    {
+        return Some(true);
     }
 
     let new_account_user_id =
@@ -212,6 +429,11 @@ pub(crate) async fn find_duplicate_provider_oauth_key(
     let new_email = normalize_provider_oauth_identity_value(auth_config.get("email"));
     let new_user_id = normalize_provider_oauth_identity_value(auth_config.get("user_id"));
     let new_account_id = normalize_provider_oauth_identity_value(auth_config.get("account_id"));
+    let new_agent_runtime_id = normalize_provider_oauth_identity_value(
+        auth_config
+            .get("agent_runtime_id")
+            .or_else(|| auth_config.get("agentRuntimeId")),
+    );
     let new_credential_fingerprint =
         normalize_provider_oauth_identity_value(auth_config.get("credential_fingerprint"));
     let new_auth_method = normalize_provider_oauth_identity_value(auth_config.get("auth_method"));
@@ -220,11 +442,15 @@ pub(crate) async fn find_duplicate_provider_oauth_key(
     if new_email.is_none()
         && new_user_id.is_none()
         && new_account_id.is_none()
+        && new_agent_runtime_id.is_none()
         && new_credential_fingerprint.is_none()
     {
         return Ok(None);
     }
 
+    // Duplicate checks are write admission checks. Never let a process-local
+    // read-through cache hide a row committed by the previous lock holder.
+    state.app().data.clear_provider_catalog_cache();
     let existing_keys = state
         .list_provider_catalog_keys_by_provider_ids(&[provider_id.to_string()])
         .await
@@ -325,6 +551,7 @@ pub(crate) async fn find_duplicate_provider_oauth_key(
         let identifier =
             normalize_provider_oauth_identity_value(auth_config.get("account_user_id"))
                 .or_else(|| normalize_provider_oauth_identity_value(auth_config.get("account_id")))
+                .or_else(|| new_agent_runtime_id.clone())
                 .or_else(|| {
                     normalize_provider_oauth_identity_value(
                         auth_config.get("credential_fingerprint"),
@@ -345,7 +572,13 @@ pub(crate) async fn find_duplicate_provider_oauth_key(
 
 #[cfg(test)]
 mod tests {
-    use super::match_windsurf_provider_oauth_identity;
+    use super::{
+        acquire_codex_oauth_account_locks, codex_agent_identity_account_lock_keys,
+        match_codex_provider_oauth_identity, match_windsurf_provider_oauth_identity,
+        release_codex_oauth_account_locks, CodexOAuthAccountLockError,
+    };
+    use crate::handlers::admin::request::AdminAppState;
+    use crate::AppState;
     use serde_json::{json, Map, Value};
 
     fn auth_config(value: Value) -> Map<String, Value> {
@@ -369,6 +602,189 @@ mod tests {
             match_windsurf_provider_oauth_identity(&new_auth_config, &existing_auth_config),
             Some(true)
         );
+    }
+
+    #[test]
+    fn codex_agent_identity_matches_runtime_without_account_metadata() {
+        let new_auth_config = auth_config(json!({
+            "provider_type": "codex",
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "agent_private_key": "new-private-key"
+        }));
+        let existing_auth_config = auth_config(json!({
+            "provider_type": "codex",
+            "auth_mode": "agentIdentity",
+            "agentRuntimeId": "runtime-1",
+            "agent_private_key": "existing-private-key"
+        }));
+
+        assert_eq!(
+            match_codex_provider_oauth_identity(&new_auth_config, &existing_auth_config),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn direct_and_json_agent_identity_imports_share_account_lock_keys() {
+        let direct_identity_hints = auth_config(json!({
+            "provider_type": "codex",
+            "account_id": "account-1",
+            "account_user_id": "account-user-1",
+            "user_id": "user-1",
+            "email": "agent@example.com"
+        }));
+        let imported_auth_config = auth_config(json!({
+            "provider_type": "codex",
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "accountId": "account-1",
+            "chatgptAccountUserId": "account-user-1",
+            "chatgptUserId": "user-1",
+            "email": "agent@example.com"
+        }));
+
+        let direct_keys =
+            codex_agent_identity_account_lock_keys("provider-codex", &direct_identity_hints);
+        let imported_keys =
+            codex_agent_identity_account_lock_keys("provider-codex", &imported_auth_config);
+        let shared_keys = direct_keys
+            .iter()
+            .filter(|key| imported_keys.contains(key))
+            .collect::<Vec<_>>();
+
+        assert_eq!(shared_keys.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn ordinary_codex_oauth_and_agent_identity_share_runtime_account_locks() {
+        let app = AppState::new().expect("app state should build");
+        let state = AdminAppState::new(&app);
+        let ordinary = auth_config(json!({
+            "provider_type": "codex",
+            "account_id": "account-1",
+            "account_user_id": "account-user-1",
+            "user_id": "user-1",
+            "email": "agent@example.com"
+        }));
+        let agent = auth_config(json!({
+            "provider_type": "codex",
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "account_id": "account-1",
+            "account_user_id": "account-user-1",
+            "user_id": "user-1",
+            "email": "agent@example.com"
+        }));
+
+        let first =
+            acquire_codex_oauth_account_locks(&state, "provider-codex", &ordinary, "ordinary-test")
+                .await
+                .expect("ordinary OAuth lock should acquire");
+        let second =
+            acquire_codex_oauth_account_locks(&state, "provider-codex", &agent, "agent-test")
+                .await
+                .expect_err("Agent Identity must contend on the same account locks");
+        assert_eq!(second, CodexOAuthAccountLockError::Contended);
+
+        release_codex_oauth_account_locks(&state, first).await;
+        let third =
+            acquire_codex_oauth_account_locks(&state, "provider-codex", &agent, "agent-retry-test")
+                .await
+                .expect("account locks should be reusable after release");
+        release_codex_oauth_account_locks(&state, third).await;
+    }
+
+    #[tokio::test]
+    async fn codex_oauth_account_lock_rejects_identity_free_config() {
+        let app = AppState::new().expect("app state should build");
+        let state = AdminAppState::new(&app);
+        let config = auth_config(json!({"provider_type": "codex"}));
+
+        let error = acquire_codex_oauth_account_locks(
+            &state,
+            "provider-codex",
+            &config,
+            "missing-identity-test",
+        )
+        .await
+        .expect_err("identity-free Codex writes must not proceed unlocked");
+
+        assert_eq!(error, CodexOAuthAccountLockError::MissingIdentity);
+    }
+
+    #[tokio::test]
+    async fn codex_oauth_account_lock_releases_partial_acquisition() {
+        let app = AppState::new().expect("app state should build");
+        let state = AdminAppState::new(&app);
+        let config = auth_config(json!({
+            "provider_type": "codex",
+            "account_id": "account-partial",
+            "account_user_id": "account-user-partial",
+            "user_id": "user-partial",
+            "email": "partial@example.com"
+        }));
+        let keys = codex_agent_identity_account_lock_keys("provider-codex", &config);
+        let held_key = keys.last().expect("account locks should not be empty");
+        let held = state
+            .runtime_state()
+            .lock_try_acquire(held_key, "other-owner", std::time::Duration::from_secs(30))
+            .await
+            .expect("runtime lock should be available")
+            .expect("last account lock should acquire");
+
+        let error =
+            acquire_codex_oauth_account_locks(&state, "provider-codex", &config, "partial-test")
+                .await
+                .expect_err("held final lock should cause contention");
+        assert_eq!(error, CodexOAuthAccountLockError::Contended);
+
+        let first_key = keys.first().expect("account locks should not be empty");
+        let first = state
+            .runtime_state()
+            .lock_try_acquire(
+                first_key,
+                "verification-owner",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("runtime lock should be available")
+            .expect("partially acquired account lock should have been released");
+        assert!(state
+            .runtime_state()
+            .lock_release(&first)
+            .await
+            .expect("verification lock should release"));
+        assert!(state
+            .runtime_state()
+            .lock_release(&held)
+            .await
+            .expect("held lock should release"));
+    }
+
+    #[test]
+    fn agent_identity_account_locks_cover_generic_user_and_email_deduplication() {
+        let first = auth_config(json!({
+            "provider_type": "codex",
+            "agent_runtime_id": "runtime-1",
+            "user_id": "user-1",
+            "email": "agent@example.com"
+        }));
+        let second = auth_config(json!({
+            "provider_type": "codex",
+            "agent_runtime_id": "runtime-2",
+            "user_id": "user-1",
+            "email": "agent@example.com"
+        }));
+
+        let first_keys = codex_agent_identity_account_lock_keys("provider-codex", &first);
+        let second_keys = codex_agent_identity_account_lock_keys("provider-codex", &second);
+        let shared_keys = first_keys
+            .iter()
+            .filter(|key| second_keys.contains(key))
+            .collect::<Vec<_>>();
+
+        assert_eq!(shared_keys.len(), 2);
     }
 
     #[test]

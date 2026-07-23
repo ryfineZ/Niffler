@@ -1,11 +1,13 @@
 use super::{
     ApiKeyLastUsedDelta, DataLayerError, GatewayDataState, GeminiFileMappingListQuery,
-    GeminiFileMappingStats, ProviderCatalogKeyListQuery, PublicHealthStatusCount,
-    PublicHealthTimelineBucket, StoredGeminiFileMapping, StoredGeminiFileMappingListPage,
-    StoredProviderCatalogEndpoint, StoredProviderCatalogKey,
-    StoredProviderCatalogKeyMaintenanceSummary, StoredProviderCatalogKeyPage,
-    StoredProviderCatalogKeyStats, StoredProviderCatalogProvider, StoredRequestCandidate,
-    UpsertGeminiFileMappingRecord, UpsertRequestCandidateRecord,
+    GeminiFileMappingStats, ProviderCatalogKeyAdaptiveStateUpdate,
+    ProviderCatalogKeyHealthStateUpdate, ProviderCatalogKeyListQuery,
+    ProviderCatalogKeyOAuthRuntimeStateCasUpdate, ProviderCatalogKeyRuntimeMetadataUpdate,
+    ProviderCatalogKeyStatusSnapshotUpdate, PublicHealthStatusCount, PublicHealthTimelineBucket,
+    StoredGeminiFileMapping, StoredGeminiFileMappingListPage, StoredProviderCatalogEndpoint,
+    StoredProviderCatalogKey, StoredProviderCatalogKeyMaintenanceSummary,
+    StoredProviderCatalogKeyPage, StoredProviderCatalogKeyStats, StoredProviderCatalogProvider,
+    StoredRequestCandidate, UpsertGeminiFileMappingRecord, UpsertRequestCandidateRecord,
 };
 
 impl GatewayDataState {
@@ -370,6 +372,52 @@ impl GatewayDataState {
         Ok(updated)
     }
 
+    pub(crate) async fn update_provider_catalog_key_oauth_runtime_state(
+        &self,
+        key_id: &str,
+        oauth_invalid_at_unix_secs: Option<u64>,
+        oauth_invalid_reason: Option<&str>,
+        encrypted_auth_config_update: Option<&str>,
+        updated_at_unix_secs: Option<u64>,
+    ) -> Result<bool, DataLayerError> {
+        let updated = match &self.provider_catalog_writer {
+            Some(repository) => {
+                repository
+                    .update_key_oauth_runtime_state(
+                        key_id,
+                        oauth_invalid_at_unix_secs,
+                        oauth_invalid_reason,
+                        encrypted_auth_config_update,
+                        updated_at_unix_secs,
+                    )
+                    .await
+            }
+            None => Ok(false),
+        }?;
+        if updated {
+            self.clear_provider_catalog_cache();
+        }
+        Ok(updated)
+    }
+
+    pub(crate) async fn compare_and_update_provider_catalog_key_oauth_runtime_state(
+        &self,
+        update: &ProviderCatalogKeyOAuthRuntimeStateCasUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let updated = match &self.provider_catalog_writer {
+            Some(repository) => {
+                repository
+                    .compare_and_update_key_oauth_runtime_state(update)
+                    .await
+            }
+            None => Ok(false),
+        }?;
+        // A false result is a credential CAS conflict. Clear cached snapshots
+        // either way so the next read observes the authoritative row.
+        self.clear_provider_catalog_cache();
+        Ok(updated)
+    }
+
     pub(crate) async fn create_provider_catalog_key(
         &self,
         key: &StoredProviderCatalogKey,
@@ -679,6 +727,78 @@ impl GatewayDataState {
         if updated {
             self.clear_provider_catalog_cache();
         }
+        Ok(updated)
+    }
+
+    pub(crate) async fn reset_provider_catalog_key_error_count(
+        &self,
+        key_id: &str,
+    ) -> Result<bool, DataLayerError> {
+        let updated = match &self.provider_catalog_writer {
+            Some(repository) => repository.reset_key_error_count(key_id).await,
+            None => Ok(false),
+        }?;
+        if updated {
+            self.clear_provider_catalog_cache();
+        }
+        Ok(updated)
+    }
+
+    pub(crate) async fn compare_and_update_provider_catalog_key_adaptive_state(
+        &self,
+        update: &ProviderCatalogKeyAdaptiveStateUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let Some(repository) = &self.provider_catalog_writer else {
+            return Ok(false);
+        };
+        let updated = repository
+            .compare_and_update_key_adaptive_state(update)
+            .await?;
+        // A false CAS result normally means another instance won the write. Drop the
+        // five-second read cache before the caller reloads and retries.
+        self.clear_provider_catalog_cache();
+        Ok(updated)
+    }
+
+    pub(crate) async fn update_provider_catalog_key_runtime_metadata(
+        &self,
+        update: &ProviderCatalogKeyRuntimeMetadataUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let Some(repository) = &self.provider_catalog_writer else {
+            return Ok(false);
+        };
+        let updated = repository.update_key_runtime_metadata(update).await?;
+        // A false result is a namespace CAS conflict.  Drop the read cache so
+        // the caller's retry observes the writer that won the race.
+        self.clear_provider_catalog_cache();
+        Ok(updated)
+    }
+
+    pub(crate) async fn update_provider_catalog_key_status_snapshot(
+        &self,
+        update: &ProviderCatalogKeyStatusSnapshotUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let Some(repository) = &self.provider_catalog_writer else {
+            return Ok(false);
+        };
+        let updated = repository.update_key_status_snapshot(update).await?;
+        if updated {
+            self.clear_provider_catalog_cache();
+        }
+        Ok(updated)
+    }
+
+    pub(crate) async fn compare_and_update_provider_catalog_key_health_state(
+        &self,
+        update: &ProviderCatalogKeyHealthStateUpdate,
+    ) -> Result<bool, DataLayerError> {
+        let Some(repository) = &self.provider_catalog_writer else {
+            return Ok(false);
+        };
+        let updated = repository
+            .compare_and_update_key_health_state(update)
+            .await?;
+        self.clear_provider_catalog_cache();
         Ok(updated)
     }
 }

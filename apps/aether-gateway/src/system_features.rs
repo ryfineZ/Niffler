@@ -124,8 +124,11 @@ impl ModelDirectivePolicySnapshot {
             Some(suffixes) => suffixes
                 .iter()
                 .filter(|suffix| {
-                    model_directive_suffix_has_builtin_mapping(suffix)
-                        || mappings.is_some_and(|mappings| mappings.contains_key(*suffix))
+                    if model_directive_suffix_has_builtin_mapping(suffix) {
+                        model_directive_builtin_suffix_supported_for_api_format(&api_format, suffix)
+                    } else {
+                        mappings.is_some_and(|mappings| mappings.contains_key(*suffix))
+                    }
                 })
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -157,6 +160,12 @@ impl ModelDirectivePolicySnapshot {
             custom_mapping: model_directive_mapping_for_suffixes(&directive.suffixes, mappings),
         }
     }
+}
+
+fn model_directive_builtin_suffix_supported_for_api_format(api_format: &str, suffix: &str) -> bool {
+    default_model_directive_suffixes(api_format)
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(suffix))
 }
 
 fn model_directive_policy_snapshot_from_config_reads<E>(
@@ -654,6 +663,35 @@ mod tests {
             default_reasoning_mapping("gemini:generate_content", "fast"),
             None
         );
+    }
+
+    #[test]
+    fn model_directives_search_does_not_enable_the_unsupported_fast_suffix() {
+        let default_snapshot =
+            ModelDirectivePolicySnapshot::from_config_values(Some(&json!(true)), None);
+        assert!(default_snapshot
+            .resolve_reasoning("openai:responses", Some("gpt-5.4-fast"))
+            .enabled());
+        assert!(!default_snapshot
+            .resolve_reasoning("openai:search", Some("gpt-5.4-fast"))
+            .enabled());
+
+        let explicitly_configured = ModelDirectivePolicySnapshot::from_config_values(
+            Some(&json!(true)),
+            Some(&json!({
+                "reasoning_effort": {
+                    "api_formats": {
+                        "openai:search": {
+                            "suffixes": ["fast"],
+                            "mappings": {}
+                        }
+                    }
+                }
+            })),
+        );
+        assert!(!explicitly_configured
+            .resolve_reasoning("openai:search", Some("gpt-5.4-fast"))
+            .enabled());
     }
 
     #[test]

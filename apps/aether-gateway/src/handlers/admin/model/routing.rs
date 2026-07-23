@@ -190,7 +190,10 @@ pub(crate) async fn build_admin_global_model_routing_payload(
                     let payload = json!({
                         "id": key.id,
                         "name": key.name,
-                        "masked_key": state.masked_catalog_api_key(key),
+                        "masked_key": state.masked_catalog_api_key_for_provider(
+                            key,
+                            &provider.provider_type,
+                        ),
                         "is_active": key.is_active,
                         "is_adaptive": is_adaptive,
                         "effective_rpm": effective_rpm,
@@ -252,9 +255,9 @@ pub(crate) async fn build_admin_global_model_routing_payload(
         .iter()
         .map(|provider| provider.id.clone())
         .collect::<Vec<_>>();
-    let active_provider_name_by_id = active_providers
+    let active_provider_metadata_by_id = active_providers
         .into_iter()
-        .map(|provider| (provider.id, provider.name))
+        .map(|provider| (provider.id, (provider.name, provider.provider_type)))
         .collect::<BTreeMap<_, _>>();
     let active_keys = if active_provider_ids.is_empty() {
         Vec::new()
@@ -273,14 +276,14 @@ pub(crate) async fn build_admin_global_model_routing_payload(
         if allowed_models.is_empty() {
             continue;
         }
-        let provider_name = active_provider_name_by_id
+        let (provider_name, provider_type) = active_provider_metadata_by_id
             .get(&key.provider_id)
             .cloned()
             .unwrap_or_default();
         all_keys_whitelist.push(json!({
             "key_id": key.id,
             "key_name": key.name,
-            "masked_key": state.masked_catalog_api_key(&key),
+            "masked_key": state.masked_catalog_api_key_for_provider(&key, &provider_type),
             "provider_id": key.provider_id,
             "provider_name": provider_name,
             "allowed_models": allowed_models,

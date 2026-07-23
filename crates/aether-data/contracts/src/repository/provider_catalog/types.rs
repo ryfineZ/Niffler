@@ -7,6 +7,104 @@ pub struct ProviderCatalogUpstreamMetadataNamespaceUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyAdaptiveState {
+    pub learned_rpm_limit: Option<u32>,
+    pub concurrent_429_count: Option<u32>,
+    pub rpm_429_count: Option<u32>,
+    pub last_429_at_unix_secs: Option<u64>,
+    pub last_429_type: Option<String>,
+    pub adjustment_history: Option<serde_json::Value>,
+    pub utilization_samples: Option<serde_json::Value>,
+    pub last_probe_increase_at_unix_secs: Option<u64>,
+    pub last_rpm_peak: Option<u32>,
+}
+
+impl ProviderCatalogKeyAdaptiveState {
+    pub fn canonicalized(&self) -> Self {
+        let mut state = self.clone();
+        state.concurrent_429_count = Some(state.concurrent_429_count.unwrap_or(0));
+        state.rpm_429_count = Some(state.rpm_429_count.unwrap_or(0));
+        state
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyAdaptiveStateUpdate {
+    pub key_id: String,
+    /// Optional auth_config fence for request-owned adaptive feedback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_encrypted_auth_config: Option<String>,
+    pub expected: ProviderCatalogKeyAdaptiveState,
+    pub next: ProviderCatalogKeyAdaptiveState,
+    /// Top-level status fields owned by adaptive rate-limit learning.
+    pub status_snapshot_patch: serde_json::Value,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyRuntimeMetadataUpdate {
+    pub key_id: String,
+    pub namespace: String,
+    /// Value observed for `namespace` immediately before calculating the update.
+    ///
+    /// `None` means that the namespace was absent.  The repository must compare
+    /// this value atomically with the stored namespace and return `false` when a
+    /// concurrent writer changed it.  This makes read/modify/write metadata
+    /// producers safe across gateway instances without replacing the whole
+    /// `upstream_metadata` document.
+    pub expected_upstream_metadata_value: Option<serde_json::Value>,
+    pub upstream_metadata_value: serde_json::Value,
+    /// Top-level status fields owned by the metadata producer, normally `quota`.
+    pub status_snapshot_patch: serde_json::Value,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyStatusSnapshotUpdate {
+    pub key_id: String,
+    /// Top-level status fields owned by the caller.
+    pub status_snapshot_patch: serde_json::Value,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+/// Agent/runtime-owned OAuth state update fenced by the exact encrypted
+/// auth_config observed before the refresh started. Repositories must update
+/// only these fields and return `false` when the expected config changed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyOAuthRuntimeStateCasUpdate {
+    pub key_id: String,
+    pub expected_encrypted_auth_config: Option<String>,
+    pub encrypted_auth_config: String,
+    /// Optional access-token ciphertext replacement owned by refresh success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_api_key_update: Option<String>,
+    /// `None` preserves expiry; `Some(None)` clears it; `Some(Some(_))` replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix_secs_update: Option<Option<u64>>,
+    pub oauth_invalid_at_unix_secs: Option<u64>,
+    pub oauth_invalid_reason: Option<String>,
+    /// Top-level runtime metadata namespaces to merge in the same fenced write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_metadata_patch: Option<serde_json::Value>,
+    pub status_snapshot_patch: serde_json::Value,
+    #[serde(default)]
+    pub reset_error_count: bool,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderCatalogKeyHealthStateUpdate {
+    pub key_id: String,
+    /// Optional auth_config fence for lifecycle-owned health recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_encrypted_auth_config: Option<String>,
+    pub expected_health_by_format: Option<serde_json::Value>,
+    pub expected_circuit_breaker_by_format: Option<serde_json::Value>,
+    pub health_by_format: Option<serde_json::Value>,
+    pub circuit_breaker_by_format: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StoredProviderCatalogProvider {
     pub id: String,
     pub name: String,
@@ -478,6 +576,22 @@ impl StoredProviderCatalogKey {
     }
 }
 
+impl From<&StoredProviderCatalogKey> for ProviderCatalogKeyAdaptiveState {
+    fn from(key: &StoredProviderCatalogKey) -> Self {
+        Self {
+            learned_rpm_limit: key.learned_rpm_limit,
+            concurrent_429_count: Some(key.concurrent_429_count.unwrap_or(0)),
+            rpm_429_count: Some(key.rpm_429_count.unwrap_or(0)),
+            last_429_at_unix_secs: key.last_429_at_unix_secs,
+            last_429_type: key.last_429_type.clone(),
+            adjustment_history: key.adjustment_history.clone(),
+            utilization_samples: key.utilization_samples.clone(),
+            last_probe_increase_at_unix_secs: key.last_probe_increase_at_unix_secs,
+            last_rpm_peak: key.last_rpm_peak,
+        }
+    }
+}
+
 #[cfg(test)]
 mod transport_tests {
     use super::StoredProviderCatalogKey;
@@ -737,6 +851,27 @@ pub trait ProviderCatalogWriteRepository: Send + Sync {
         expires_at_unix_secs: Option<u64>,
     ) -> Result<bool, crate::DataLayerError>;
 
+    async fn update_key_oauth_runtime_state(
+        &self,
+        key_id: &str,
+        oauth_invalid_at_unix_secs: Option<u64>,
+        oauth_invalid_reason: Option<&str>,
+        encrypted_auth_config_update: Option<&str>,
+        updated_at_unix_secs: Option<u64>,
+    ) -> Result<bool, crate::DataLayerError>;
+
+    /// Compare-and-swap OAuth runtime credentials/status without replacing any
+    /// administrator-owned key fields.
+    async fn compare_and_update_key_oauth_runtime_state(
+        &self,
+        _update: &ProviderCatalogKeyOAuthRuntimeStateCasUpdate,
+    ) -> Result<bool, crate::DataLayerError> {
+        Err(crate::DataLayerError::InvalidConfiguration(
+            "provider catalog OAuth runtime CAS updates are not supported by this repository"
+                .to_string(),
+        ))
+    }
+
     async fn update_key_health_state(
         &self,
         key_id: &str,
@@ -744,6 +879,53 @@ pub trait ProviderCatalogWriteRepository: Send + Sync {
         health_by_format: Option<&serde_json::Value>,
         circuit_breaker_by_format: Option<&serde_json::Value>,
     ) -> Result<bool, crate::DataLayerError>;
+
+    /// Explicit administrator recovery action; does not replace other usage counters.
+    async fn reset_key_error_count(&self, key_id: &str) -> Result<bool, crate::DataLayerError>;
+
+    /// Compare-and-swap adaptive fields without replacing unrelated key columns.
+    async fn compare_and_update_key_adaptive_state(
+        &self,
+        _update: &ProviderCatalogKeyAdaptiveStateUpdate,
+    ) -> Result<bool, crate::DataLayerError> {
+        Err(crate::DataLayerError::InvalidConfiguration(
+            "provider catalog adaptive state updates are not supported by this repository"
+                .to_string(),
+        ))
+    }
+
+    /// Atomically replaces one upstream metadata namespace and merges owned status fields.
+    async fn update_key_runtime_metadata(
+        &self,
+        _update: &ProviderCatalogKeyRuntimeMetadataUpdate,
+    ) -> Result<bool, crate::DataLayerError> {
+        Err(crate::DataLayerError::InvalidConfiguration(
+            "provider catalog runtime metadata updates are not supported by this repository"
+                .to_string(),
+        ))
+    }
+
+    /// Atomically merges caller-owned top-level status fields.
+    async fn update_key_status_snapshot(
+        &self,
+        _update: &ProviderCatalogKeyStatusSnapshotUpdate,
+    ) -> Result<bool, crate::DataLayerError> {
+        Err(crate::DataLayerError::InvalidConfiguration(
+            "provider catalog status snapshot patches are not supported by this repository"
+                .to_string(),
+        ))
+    }
+
+    /// Compare-and-swap health JSON without changing administrator-owned activation state.
+    async fn compare_and_update_key_health_state(
+        &self,
+        _update: &ProviderCatalogKeyHealthStateUpdate,
+    ) -> Result<bool, crate::DataLayerError> {
+        Err(crate::DataLayerError::InvalidConfiguration(
+            "provider catalog runtime health updates are not supported by this repository"
+                .to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

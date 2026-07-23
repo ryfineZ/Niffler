@@ -910,6 +910,48 @@ export const MOCK_SYSTEM_CONFIGS: Array<{ key: string; value: unknown; descripti
   { key: 'default_cache_ttl', value: 3600, description: '默认缓存 TTL（秒）' },
   { key: 'fallback_enabled', value: true, description: '是否启用故障转移' },
   { key: 'max_fallback_attempts', value: 3, description: '最大故障转移次数' },
+  { key: 'enable_model_directives', value: true, description: '模型后缀参数模块开关' },
+  {
+    key: 'model_directives',
+    value: {
+      reasoning_effort: {
+        enabled: true,
+        api_formats: {
+          'openai:chat': {
+            enabled: true,
+            suffixes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'fast'],
+            mappings: {},
+          },
+          'openai:responses': {
+            enabled: true,
+            suffixes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'fast'],
+            mappings: {},
+          },
+          'openai:responses:compact': {
+            enabled: true,
+            suffixes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'fast'],
+            mappings: {},
+          },
+          'openai:search': {
+            enabled: true,
+            suffixes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+            mappings: {},
+          },
+          'claude:messages': {
+            enabled: true,
+            suffixes: ['low', 'medium', 'high', 'xhigh', 'max'],
+            mappings: {},
+          },
+          'gemini:generate_content': {
+            enabled: true,
+            suffixes: ['low', 'medium', 'high', 'xhigh', 'max'],
+            mappings: {},
+          },
+        },
+      },
+    },
+    description: '模型后缀参数配置',
+  },
   { key: 'module.important_notification.enabled', value: false, description: '通知服务总开关' },
   { key: 'module.important_notification.email_enabled', value: false, description: '通知服务邮件推送开关' },
   { key: 'module.important_notification.email_recipients', value: '', description: '通知服务管理员收件人' },
@@ -1085,7 +1127,7 @@ const MOCK_MODULE_DEFINITIONS: Array<Omit<ModuleStatus, 'active' | 'health'> & {
   {
     name: 'model_directives',
     display_name: '模型后缀参数',
-    description: '允许通过模型名后缀覆盖推理参数',
+    description: '允许通过模型名后缀覆盖推理参数或服务层级',
     category: 'integration',
     available: true,
     enabled: true,

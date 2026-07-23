@@ -62,27 +62,41 @@
       <!-- Tab 切换 -->
       <div
         v-if="showAuthorizationMode"
-        class="flex rounded-lg border border-border p-0.5 bg-muted/30"
+        class="grid rounded-lg border border-border p-0.5 bg-muted/30"
+        :class="isCodexProvider ? 'grid-cols-3' : 'grid-cols-2'"
       >
         <button
-          class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all"
+          class="min-w-0 min-h-8 px-2 py-1.5 text-xs font-medium leading-4 rounded-md transition-all disabled:cursor-not-allowed disabled:opacity-60"
           :class="[
             mode === 'oauth'
               ? 'bg-background text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground',
           ]"
+          :disabled="importing || creatingAgentIdentity"
           @click="switchMode('oauth')"
         >
           {{ authorizationModeLabel }}
         </button>
         <button
-          class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all"
+          class="min-w-0 min-h-8 px-2 py-1.5 text-xs font-medium leading-4 rounded-md transition-all disabled:cursor-not-allowed disabled:opacity-60"
           :class="mode === 'import'
             ? 'bg-background text-foreground shadow-sm'
             : 'text-muted-foreground hover:text-foreground'"
+          :disabled="importing || creatingAgentIdentity"
           @click="switchMode('import')"
         >
           {{ importModeLabel }}
+        </button>
+        <button
+          v-if="isCodexProvider"
+          class="min-w-0 min-h-8 px-2 py-1.5 text-xs font-medium leading-4 rounded-md transition-all disabled:cursor-not-allowed disabled:opacity-60"
+          :class="mode === 'agent_identity'
+            ? 'bg-background text-foreground shadow-sm'
+            : 'text-muted-foreground hover:text-foreground'"
+          :disabled="importing || creatingAgentIdentity"
+          @click="switchMode('agent_identity')"
+        >
+          {{ legacyT('Agent Identity') }}
         </button>
       </div>
 
@@ -645,20 +659,21 @@
             </div>
           </div>
 
-          <JsonImportInput
-            v-else
-            v-model="importText"
-            :disabled="importing"
-            :reset-key="importInputResetKey"
-            :drop-title="importDropTitle"
-            :drop-hint="importDropHint"
-            :manual-placeholder="importManualPlaceholder"
-            :manual-description="importManualDescription"
-            :paste-toggle-text="importPasteToggleText"
-            :file-toggle-text="importFileToggleText"
-            textarea-class="min-h-[200px] text-xs font-mono break-all !rounded-xl"
-            @error="handleImportInputError"
-          />
+          <template v-else>
+            <JsonImportInput
+              v-model="importText"
+              :disabled="importing"
+              :reset-key="importInputResetKey"
+              :drop-title="importDropTitle"
+              :drop-hint="importDropHint"
+              :manual-placeholder="importManualPlaceholder"
+              :manual-description="importManualDescription"
+              :paste-toggle-text="importPasteToggleText"
+              :file-toggle-text="importFileToggleText"
+              textarea-class="min-h-[200px] text-xs font-mono break-all !rounded-xl"
+              @error="handleImportInputError"
+            />
+          </template>
 
           <div
             v-if="importTask && !isWindsurfEmailPasswordImport"
@@ -705,6 +720,22 @@
             </div>
           </div>
         </div>
+
+        <!-- ===== 创建 Agent Identity ===== -->
+        <div
+          v-if="isCodexProvider"
+          class="flex flex-col gap-3 justify-center transition-opacity duration-150"
+          :class="mode === 'agent_identity' ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+        >
+          <Textarea
+            v-model="agentIdentityInput"
+            :disabled="creatingAgentIdentity"
+            :placeholder="legacyT('粘贴 AT 或 ChatGPT auth/session JSON')"
+            class="min-h-[200px] text-xs font-mono break-all !rounded-xl"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
       </div>
     </div>
 
@@ -735,6 +766,13 @@
         @click="handleImport"
       >
         {{ importButtonText }}
+      </Button>
+      <Button
+        v-if="mode === 'agent_identity'"
+        :disabled="!canCreateAgentIdentity"
+        @click="handleCreateAgentIdentity"
+      >
+        {{ creatingAgentIdentity ? legacyT('创建中...') : legacyT('创建') }}
       </Button>
     </template>
   </Dialog>
@@ -789,7 +827,7 @@ const emit = defineEmits<{
   saved: []
 }>()
 
-const { success, error: showError } = useToast()
+const { success, warning, error: showError } = useToast()
 const { copyToClipboard } = useClipboard()
 const { legacyT, locale } = useI18n()
 const proxyNodesStore = useProxyNodesStore()
@@ -847,7 +885,7 @@ function localizedApiError(error: unknown, fallback: string): string {
 }
 
 // 模式
-type DialogMode = 'oauth' | 'import'
+type DialogMode = 'oauth' | 'import' | 'agent_identity'
 const mode = ref<DialogMode>((props.providerType || '').toLowerCase() === 'grok' ? 'import' : 'oauth')
 type WindsurfImportMethod = 'email_password' | 'token_json'
 
@@ -943,6 +981,9 @@ const windsurfImportMethod = ref<WindsurfImportMethod>('email_password')
 const windsurfEmail = ref('')
 const windsurfPassword = ref('')
 const windsurfAccountName = ref('')
+const agentIdentityInput = ref('')
+const creatingAgentIdentity = ref(false)
+let agentIdentityRequestId = 0
 
 const isOpen = computed(() => props.open)
 
@@ -950,6 +991,7 @@ const isKiroProvider = computed(() => (props.providerType || '').toLowerCase() =
 const isGrokProvider = computed(() => (props.providerType || '').toLowerCase() === 'grok')
 const isGrokOAuthProvider = computed(() => (props.providerType || '').toLowerCase() === 'grok_oauth')
 const isWindsurfProvider = computed(() => (props.providerType || '').toLowerCase() === 'windsurf')
+const isCodexProvider = computed(() => (props.providerType || '').toLowerCase() === 'codex')
 const isDeviceBrowserProvider = computed(() => isKiroProvider.value || isWindsurfProvider.value)
 const showAuthorizationMode = computed(() => !isGrokProvider.value)
 const defaultMode = computed<DialogMode>(() => (isGrokProvider.value ? 'import' : 'oauth'))
@@ -1028,6 +1070,12 @@ const canImport = computed(() => {
   return importText.value.trim().length > 0 && !importing.value
 })
 
+const canCreateAgentIdentity = computed(() =>
+  isCodexProvider.value
+  && agentIdentityInput.value.trim().length > 0
+  && !creatingAgentIdentity.value
+)
+
 const importModeLabel = computed(() => legacyT(isGrokProvider.value ? '导入账号' : '导入授权'))
 const importButtonLabel = computed(() => legacyT(isGrokProvider.value ? '导入账号' : '导入'))
 const importDropTitle = computed(() => (
@@ -1041,7 +1089,7 @@ const importManualPlaceholder = computed(() => (
     ? legacyT('粘贴 Grok sso/session token，支持每行一个；或粘贴包含 token、sso_token、access_token、plan_type、pool_tier 的 JSON')
     : isWindsurfProvider.value
       ? legacyT('粘贴 show-auth-token Token、API key 或 JSON 内容')
-      : legacyT('粘贴 Refresh Token / Access Token 或 JSON 内容')
+      : legacyT('粘贴 Refresh Token / Access Token / Agent Identity JSON 内容')
 ))
 const importManualDescription = computed(() => (
   isGrokProvider.value
@@ -1067,7 +1115,6 @@ const proxyUsageDescription = computed(() => {
 const isWindsurfEmailPasswordImport = computed(() =>
   isWindsurfProvider.value && windsurfImportMethod.value === 'email_password'
 )
-
 const importButtonText = computed(() => {
   if (importing.value) {
     return importTask.value && !isWindsurfEmailPasswordImport.value
@@ -1124,7 +1171,7 @@ function getImportTaskStatusText(status: OAuthBatchImportTaskStatus): string {
 }
 
 function getOAuthSuccessMessage(
-  action: '授权' | '导入',
+  action: '授权' | '导入' | '创建',
   options?: { email?: string | null; replaced?: boolean }
 ): string {
   const email = typeof options?.email === 'string' ? options.email.trim() : ''
@@ -1314,6 +1361,7 @@ function resetForm() {
   oauthInitRequestId += 1
   oauthCompleteRequestId += 1
   deviceAuthRequestId += 1
+  agentIdentityRequestId += 1
   oauth.value = createInitialOAuthState()
   stopImportPolling()
   stopDevicePolling()
@@ -1330,6 +1378,8 @@ function resetForm() {
   windsurfEmail.value = ''
   windsurfPassword.value = ''
   windsurfAccountName.value = ''
+  agentIdentityInput.value = ''
+  creatingAgentIdentity.value = false
   proxyPopoverOpen.value = false
   selectedProxyNodeId.value = ''
   mode.value = defaultMode.value
@@ -1338,6 +1388,8 @@ function resetForm() {
 function switchMode(newMode: DialogMode) {
   if (mode.value === newMode) return
   if (newMode === 'oauth' && !showAuthorizationMode.value) return
+  if (newMode === 'agent_identity' && !isCodexProvider.value) return
+  if (importing.value || creatingAgentIdentity.value) return
 
   mode.value = newMode
   if (newMode === 'oauth') {
@@ -1722,6 +1774,70 @@ function handleImportInputError(payload: { message: string; title?: string }) {
   showError(legacyT(payload.message), payload.title ? legacyT(payload.title) : undefined)
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+type AgentIdentityAccessTokenResolution =
+  | { ok: true, accessToken: string }
+  | { ok: false, message: string }
+
+function resolveAgentIdentityAccessToken(input: string): AgentIdentityAccessTokenResolution {
+  const normalized = input.trim()
+  if (!normalized.startsWith('{') && !normalized.startsWith('[')) {
+    return { ok: true, accessToken: normalized }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(normalized)
+  } catch {
+    return { ok: false, message: 'ChatGPT auth/session JSON 格式无效' }
+  }
+  if (!isObjectRecord(parsed)) {
+    return { ok: false, message: 'ChatGPT auth/session JSON 缺少 accessToken' }
+  }
+
+  const accessToken = normalizeStringField(parsed.accessToken)
+    ?? normalizeStringField(parsed.access_token)
+  return accessToken
+    ? { ok: true, accessToken }
+    : { ok: false, message: 'ChatGPT auth/session JSON 缺少 accessToken' }
+}
+
+function isCodexAgentIdentityObject(root: Record<string, unknown>): boolean {
+  const nestedValue = root.agent_identity ?? root.agentIdentity
+  const nested = isObjectRecord(nestedValue) ? nestedValue : null
+  const authMode = normalizeStringField(root.auth_mode)
+    ?? normalizeStringField(root.authMode)
+    ?? (nested
+      ? normalizeStringField(nested.auth_mode) ?? normalizeStringField(nested.authMode)
+      : undefined)
+  if (authMode?.toLowerCase() === 'agentidentity') return true
+
+  return nested !== null
+    && Boolean(
+      normalizeStringField(nested.agent_runtime_id) ?? normalizeStringField(nested.agentRuntimeId),
+    )
+    && Boolean(
+      normalizeStringField(nested.agent_private_key) ?? normalizeStringField(nested.agentPrivateKey),
+    )
+}
+
+function requiresCodexBatchImport(credentials: string): boolean {
+  if (!isCodexProvider.value) return false
+
+  try {
+    const parsed: unknown = JSON.parse(credentials)
+    if (!isObjectRecord(parsed)) return false
+
+    return isCodexAgentIdentityObject(parsed)
+      || normalizeStringField(parsed.type)?.toLowerCase() === 'sub2api-data'
+  } catch {
+    return false
+  }
+}
+
 function setWindsurfImportMethod(method: WindsurfImportMethod) {
   if (!isWindsurfProvider.value || importing.value) return
   windsurfImportMethod.value = method
@@ -1780,8 +1896,12 @@ async function handleImport() {
   let keepImporting = false
   try {
     const proxyNodeId = selectedProxyNodeId.value || undefined
-    // Kiro 的单条 JSON 凭据也必须走 batch-import 路径，后端需要完整 auth_config。
-    if (isKiroProvider.value || normalizedCredentials.isBatch) {
+    // Kiro, Codex Agent Identity, and sub2api exports need their full JSON on the batch path.
+    if (
+      isKiroProvider.value
+      || normalizedCredentials.isBatch
+      || requiresCodexBatchImport(normalizedCredentials.credentials)
+    ) {
       const task = await startBatchImportOAuthTask(props.providerId, normalizedCredentials.credentials, proxyNodeId)
       importTask.value = {
         task_id: task.task_id,
@@ -1826,6 +1946,42 @@ async function handleImport() {
   } finally {
     if (!keepImporting) {
       importing.value = false
+    }
+  }
+}
+
+async function handleCreateAgentIdentity() {
+  if (!canCreateAgentIdentity.value || !props.providerId) return
+
+  const resolvedInput = resolveAgentIdentityAccessToken(agentIdentityInput.value)
+  if (!resolvedInput.ok) {
+    showError(legacyT(resolvedInput.message), legacyT('格式错误'))
+    return
+  }
+  const requestId = ++agentIdentityRequestId
+  creatingAgentIdentity.value = true
+  try {
+    const result = await importProviderRefreshToken(props.providerId, {
+      access_token: resolvedInput.accessToken,
+      create_agent_identity: true,
+      proxy_node_id: selectedProxyNodeId.value || undefined,
+    })
+    if (requestId !== agentIdentityRequestId) return
+
+    if (result.task_ready === false) {
+      warning(legacyT('Agent Identity 已保存，任务将在后台初始化'), legacyT('已保存'))
+    } else {
+      success(getOAuthSuccessMessage('创建', result))
+    }
+    emit('saved')
+    handleClose()
+  } catch (err: unknown) {
+    if (requestId !== agentIdentityRequestId) return
+    const errorMessage = localizedApiError(err, '创建 Agent Identity 失败')
+    showError(errorMessage, legacyT('错误'))
+  } finally {
+    if (requestId === agentIdentityRequestId) {
+      creatingAgentIdentity.value = false
     }
   }
 }
@@ -2036,6 +2192,9 @@ watch(
     if (props.open && !showAuthorizationMode.value) {
       mode.value = 'import'
       return
+    }
+    if (props.open && mode.value === 'agent_identity' && !isCodexProvider.value) {
+      mode.value = defaultMode.value
     }
     if (props.open && isWindsurfProvider.value && mode.value === 'oauth') {
       device.value.auth_type = ['default', 'google', 'github'].includes(device.value.auth_type)

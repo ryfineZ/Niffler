@@ -46,6 +46,25 @@ impl<'a> AdminAppState<'a> {
         .await
     }
 
+    pub(crate) async fn update_provider_catalog_key_oauth_runtime_state(
+        &self,
+        key_id: &str,
+        oauth_invalid_at_unix_secs: Option<u64>,
+        oauth_invalid_reason: Option<&str>,
+        encrypted_auth_config_update: Option<&str>,
+        updated_at_unix_secs: Option<u64>,
+    ) -> Result<bool, GatewayError> {
+        self.app
+            .update_provider_catalog_key_oauth_runtime_state(
+                key_id,
+                oauth_invalid_at_unix_secs,
+                oauth_invalid_reason,
+                encrypted_auth_config_update,
+                updated_at_unix_secs,
+            )
+            .await
+    }
+
     pub(crate) async fn clear_provider_catalog_key_oauth_invalid_marker(
         &self,
         key_id: &str,
@@ -71,6 +90,7 @@ impl<'a> AdminAppState<'a> {
         provider_id: &str,
         provider_type: &str,
         pkce_verifier: Option<&str>,
+        expected_encrypted_auth_config: Option<&str>,
     ) -> Result<String, GatewayError> {
         let nonce = aether_admin::provider::state::generate_provider_oauth_nonce();
         let payload = json!({
@@ -79,6 +99,7 @@ impl<'a> AdminAppState<'a> {
             "provider_id": provider_id,
             "provider_type": provider_type,
             "pkce_verifier": pkce_verifier,
+            "expected_encrypted_auth_config": expected_encrypted_auth_config,
             "created_at": aether_admin::provider::state::current_unix_secs(),
         });
         let key = provider_oauth_state_storage_key(&nonce);

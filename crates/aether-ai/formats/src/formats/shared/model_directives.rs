@@ -11,6 +11,9 @@ pub const MODEL_DIRECTIVE_API_FORMATS: [&str; 6] = [
 pub const OPENAI_MODEL_DIRECTIVE_SUFFIXES: [&str; 9] = [
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "fast",
 ];
+const OPENAI_SEARCH_MODEL_DIRECTIVE_SUFFIXES: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 pub const CROSS_PROVIDER_MODEL_DIRECTIVE_SUFFIXES: [&str; 5] =
     ["low", "medium", "high", "xhigh", "max"];
 
@@ -434,9 +437,10 @@ pub fn default_model_directive_mapping_patch(
 
 pub fn default_model_directive_suffixes(provider_api_format: &str) -> &'static [&'static str] {
     match crate::normalize_api_format_alias(provider_api_format).as_str() {
-        "openai:chat" | "openai:responses" | "openai:responses:compact" | "openai:search" => {
+        "openai:chat" | "openai:responses" | "openai:responses:compact" => {
             &OPENAI_MODEL_DIRECTIVE_SUFFIXES
         }
+        "openai:search" => &OPENAI_SEARCH_MODEL_DIRECTIVE_SUFFIXES,
         "claude:messages" | "gemini:generate_content" => &CROSS_PROVIDER_MODEL_DIRECTIVE_SUFFIXES,
         _ => &[],
     }
@@ -551,7 +555,6 @@ fn apply_service_tier_override(
             "service_tier",
             tier.as_openai_value(),
         ),
-        "openai:search" => Some(()),
         _ => None,
     }
 }
@@ -970,6 +973,8 @@ mod tests {
                 json!(default_model_directive_suffixes(api_format))
             );
         }
+        assert!(default_model_directive_suffixes("openai:responses").contains(&"fast"));
+        assert!(!default_model_directive_suffixes("openai:search").contains(&"fast"));
     }
 
     #[test]
@@ -1266,6 +1271,17 @@ mod tests {
         )
         .expect("directive should apply");
         assert_eq!(responses["service_tier"], "priority");
+
+        let mut search = json!({"model": "gpt-5-upstream"});
+        let original = search.clone();
+        assert!(apply_model_directive_overrides_from_model(
+            &mut search,
+            "openai:search",
+            "gpt-5-upstream",
+            "gpt-5.4-fast",
+        )
+        .is_none());
+        assert_eq!(search, original);
     }
 
     #[test]

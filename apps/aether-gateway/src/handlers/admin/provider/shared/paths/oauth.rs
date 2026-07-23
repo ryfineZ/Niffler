@@ -44,6 +44,12 @@ pub(crate) fn admin_provider_oauth_batch_import_task_provider_id(
     provider_oauth_provider_id_for_suffix(request_path, "/batch-import/tasks")
 }
 
+pub(crate) fn admin_provider_oauth_agent_identity_import_task_provider_id(
+    request_path: &str,
+) -> Option<String> {
+    provider_oauth_provider_id_for_suffix(request_path, "/agent-identity-import/tasks")
+}
+
 pub(crate) fn admin_provider_oauth_batch_import_task_path(
     request_path: &str,
 ) -> Option<(String, String)> {
@@ -56,6 +62,25 @@ pub(crate) fn admin_provider_oauth_batch_import_task_path(
         || provider_id.contains('/')
         || task_path.is_empty()
         || task_path.contains('/')
+    {
+        return None;
+    }
+    Some((provider_id.to_string(), task_path.to_string()))
+}
+
+pub(crate) fn admin_provider_oauth_agent_identity_import_task_path(
+    request_path: &str,
+) -> Option<(String, String)> {
+    let suffix = request_path
+        .strip_prefix("/api/admin/provider-oauth/providers/")?
+        .strip_suffix("/")
+        .unwrap_or(request_path.strip_prefix("/api/admin/provider-oauth/providers/")?);
+    let (provider_id, task_path) = suffix.split_once("/agent-identity-import/tasks/")?;
+    if provider_id.is_empty()
+        || provider_id.contains('/')
+        || task_path.is_empty()
+        || task_path.contains('/')
+        || !task_path.starts_with("agent-identity-")
     {
         return None;
     }
@@ -78,4 +103,40 @@ fn provider_oauth_provider_id_for_suffix(request_path: &str, suffix: &str) -> Op
         .strip_suffix(suffix)
         .filter(|provider_id| !provider_id.is_empty() && !provider_id.contains('/'))
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        admin_provider_oauth_agent_identity_import_task_path,
+        admin_provider_oauth_agent_identity_import_task_provider_id,
+    };
+
+    #[test]
+    fn parses_dedicated_agent_identity_import_task_paths() {
+        assert_eq!(
+            admin_provider_oauth_agent_identity_import_task_provider_id(
+                "/api/admin/provider-oauth/providers/provider-codex/agent-identity-import/tasks",
+            )
+            .as_deref(),
+            Some("provider-codex")
+        );
+        assert_eq!(
+            admin_provider_oauth_agent_identity_import_task_path(
+                "/api/admin/provider-oauth/providers/provider-codex/agent-identity-import/tasks/agent-identity-task-1",
+            ),
+            Some((
+                "provider-codex".to_string(),
+                "agent-identity-task-1".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn dedicated_status_path_rejects_generic_batch_task_ids() {
+        assert!(admin_provider_oauth_agent_identity_import_task_path(
+            "/api/admin/provider-oauth/providers/provider-codex/agent-identity-import/tasks/task-1",
+        )
+        .is_none());
+    }
 }

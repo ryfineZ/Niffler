@@ -6,6 +6,7 @@ use aether_oauth::provider::providers::{
 use aether_oauth::provider::{ProviderOAuthAccount, ProviderOAuthAdapter, ProviderOAuthTokenSet};
 use async_trait::async_trait;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::oauth_refresh::{
     oauth_error_to_local_refresh_error, provider_oauth_transport_context_from_snapshot,
@@ -73,6 +74,7 @@ impl GenericOAuthRefreshAdapter {
                 entry
                     .provider_type
                     .eq_ignore_ascii_case(transport.provider.provider_type.as_str())
+                    && generic_oauth_cached_entry_matches_transport(transport, entry)
             })
             .cloned()
     }
@@ -147,6 +149,7 @@ impl GenericOAuthRefreshAdapter {
 
     fn build_cached_entry(
         provider_type: &'static str,
+        transport: &GatewayProviderTransportSnapshot,
         refreshed: ProviderOAuthTokenSet,
     ) -> CachedOAuthEntry {
         CachedOAuthEntry {
@@ -155,6 +158,7 @@ impl GenericOAuthRefreshAdapter {
             auth_header_value: refreshed.token_set.bearer_header_value(),
             expires_at_unix_secs: refreshed.token_set.expires_at_unix_secs,
             metadata: Some(refreshed.auth_config),
+            source_fingerprint: Some(generic_oauth_transport_source_fingerprint(transport)),
         }
     }
 }
@@ -187,6 +191,9 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
                 name: AUTH_HEADER_NAME.to_string(),
                 value,
             });
+        }
+        if !generic_oauth_cached_entry_matches_transport(transport, entry) {
+            return None;
         }
         if expires_at_requires_refresh(entry.expires_at_unix_secs) {
             return None;
@@ -293,8 +300,44 @@ impl LocalOAuthRefreshAdapter for GenericOAuthRefreshAdapter {
             "gateway generic oauth refresh succeeded"
         );
 
-        Ok(Some(Self::build_cached_entry(provider_type, refreshed)))
+        Ok(Some(Self::build_cached_entry(
+            provider_type,
+            transport,
+            refreshed,
+        )))
     }
+}
+
+fn generic_oauth_transport_source_fingerprint(
+    transport: &GatewayProviderTransportSnapshot,
+) -> String {
+    let provider_type = transport.provider.provider_type.trim().to_ascii_lowercase();
+    let auth_type = transport.key.auth_type.trim().to_ascii_lowercase();
+    let auth_config = transport
+        .key
+        .decrypted_auth_config
+        .as_deref()
+        .unwrap_or_default();
+    let api_key = transport.key.decrypted_api_key.as_str();
+    let mut digest = Sha256::new();
+    for field in [
+        provider_type.as_bytes(),
+        auth_type.as_bytes(),
+        auth_config.as_bytes(),
+        api_key.as_bytes(),
+    ] {
+        digest.update((field.len() as u64).to_be_bytes());
+        digest.update(field);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn generic_oauth_cached_entry_matches_transport(
+    transport: &GatewayProviderTransportSnapshot,
+    entry: &CachedOAuthEntry,
+) -> bool {
+    let transport_fingerprint = generic_oauth_transport_source_fingerprint(transport);
+    entry.source_fingerprint.as_deref() == Some(transport_fingerprint.as_str())
 }
 
 fn generic_provider_type(provider_type: &str) -> Option<&'static str> {
@@ -362,6 +405,7 @@ fn current_access_token(
     entry: Option<&CachedOAuthEntry>,
 ) -> Option<String> {
     entry
+        .filter(|entry| generic_oauth_cached_entry_matches_transport(transport, entry))
         .and_then(|entry| {
             entry
                 .auth_header_value
@@ -388,7 +432,10 @@ mod tests {
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider, GatewayProviderTransportSnapshot,
     };
-    use super::GenericOAuthRefreshAdapter;
+    use super::{
+        current_access_token, generic_oauth_transport_source_fingerprint,
+        GenericOAuthRefreshAdapter,
+    };
 
     fn sample_transport() -> GatewayProviderTransportSnapshot {
         GatewayProviderTransportSnapshot {
@@ -481,6 +528,7 @@ mod tests {
             auth_header_value: "Bearer refreshed-access-token".to_string(),
             expires_at_unix_secs: Some(u64::MAX),
             metadata: None,
+            source_fingerprint: None,
         };
         let auth = adapter
             .resolve_cached(&sample_transport(), &entry)
@@ -492,6 +540,100 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer imported-session".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn rejects_cached_bearer_and_metadata_from_replaced_credential_generation() {
+        let adapter = GenericOAuthRefreshAdapter::default();
+        let mut original = sample_transport();
+        original.key.decrypted_api_key = "access-a".to_string();
+        original.key.decrypted_auth_config = Some(
+            json!({
+                "provider_type": "codex",
+                "refresh_token": "refresh-a",
+                "expires_at": 1,
+                "updated_at": 100,
+            })
+            .to_string(),
+        );
+        let entry = CachedOAuthEntry {
+            provider_type: "codex".to_string(),
+            auth_header_name: "authorization".to_string(),
+            auth_header_value: "Bearer cached-access-a".to_string(),
+            expires_at_unix_secs: Some(u64::MAX),
+            metadata: Some(json!({
+                "provider_type": "codex",
+                "refresh_token": "rotated-refresh-a",
+                "expires_at": u64::MAX,
+                "updated_at": 200,
+            })),
+            source_fingerprint: Some(generic_oauth_transport_source_fingerprint(&original)),
+        };
+
+        let mut replacement = original.clone();
+        replacement.key.decrypted_api_key = "access-b".to_string();
+        replacement.key.decrypted_auth_config = Some(
+            json!({
+                "provider_type": "codex",
+                "refresh_token": "refresh-b",
+                "expires_at": 1,
+                "updated_at": 300,
+            })
+            .to_string(),
+        );
+
+        assert!(adapter.resolve_cached(&replacement, &entry).is_none());
+        assert_eq!(
+            adapter.base_auth_config(&replacement, Some(&entry)),
+            replacement
+                .key
+                .decrypted_auth_config
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok())
+        );
+        assert_eq!(
+            current_access_token(&replacement, Some(&entry)).as_deref(),
+            Some("access-b")
+        );
+    }
+
+    #[test]
+    fn reuses_cached_bearer_from_matching_credential_generation() {
+        let adapter = GenericOAuthRefreshAdapter::default();
+        let mut transport = sample_transport();
+        transport.key.decrypted_api_key = "access-a".to_string();
+        transport.key.decrypted_auth_config = Some(
+            json!({
+                "provider_type": "codex",
+                "refresh_token": "refresh-a",
+                "expires_at": 1,
+            })
+            .to_string(),
+        );
+        let entry = CachedOAuthEntry {
+            provider_type: "codex".to_string(),
+            auth_header_name: "authorization".to_string(),
+            auth_header_value: "Bearer refreshed-access-a".to_string(),
+            expires_at_unix_secs: Some(u64::MAX),
+            metadata: Some(json!({
+                "provider_type": "codex",
+                "refresh_token": "rotated-refresh-a",
+                "expires_at": u64::MAX,
+            })),
+            source_fingerprint: Some(generic_oauth_transport_source_fingerprint(&transport)),
+        };
+
+        assert_eq!(
+            adapter.resolve_cached(&transport, &entry),
+            Some(LocalResolvedOAuthRequestAuth::Header {
+                name: "authorization".to_string(),
+                value: "Bearer refreshed-access-a".to_string(),
+            })
+        );
+        assert_eq!(
+            current_access_token(&transport, Some(&entry)).as_deref(),
+            Some("refreshed-access-a")
         );
     }
 }

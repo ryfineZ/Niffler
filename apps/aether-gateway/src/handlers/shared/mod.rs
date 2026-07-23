@@ -24,7 +24,8 @@ pub(crate) use self::api_keys::{
 pub(crate) use self::catalog::{
     build_admin_provider_key_response, decrypt_catalog_secret_with_fallbacks,
     default_provider_key_status_snapshot, effective_catalog_encryption_key,
-    encrypt_catalog_secret_with_fallbacks, masked_catalog_api_key, parse_catalog_auth_config_json,
+    encrypt_catalog_secret_with_fallbacks, masked_catalog_api_key,
+    masked_catalog_api_key_for_provider, parse_catalog_auth_config_json,
     provider_catalog_key_supports_format, provider_key_health_summary,
     provider_key_health_summary_at, provider_key_status_snapshot_payload,
     sync_provider_key_oauth_status_snapshot, sync_provider_key_quota_status_snapshot,

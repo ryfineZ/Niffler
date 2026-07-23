@@ -821,10 +821,25 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
     let namespaced_auth = value
         .get("https://api.openai.com/auth")
         .and_then(Value::as_object);
+    let agent_identity = value
+        .get("agent_identity")
+        .or_else(|| value.get("agentIdentity"))
+        .and_then(Value::as_object);
     let account_id = value
         .get("account_id")
+        .or_else(|| value.get("accountId"))
         .or_else(|| value.get("chatgpt_account_id"))
+        .or_else(|| value.get("chatgptAccountId"))
         .or_else(|| namespaced_auth.and_then(|auth| auth.get("chatgpt_account_id")))
+        .or_else(|| {
+            agent_identity.and_then(|identity| {
+                identity
+                    .get("account_id")
+                    .or_else(|| identity.get("accountId"))
+                    .or_else(|| identity.get("chatgpt_account_id"))
+                    .or_else(|| identity.get("chatgptAccountId"))
+            })
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -832,14 +847,28 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
     let is_fedramp = value
         .get("is_fedramp")
         .or_else(|| value.get("chatgpt_account_is_fedramp"))
+        .or_else(|| value.get("chatgptAccountIsFedramp"))
         .or_else(|| namespaced_auth.and_then(|auth| auth.get("chatgpt_account_is_fedramp")))
+        .or_else(|| {
+            agent_identity.and_then(|identity| {
+                identity
+                    .get("is_fedramp")
+                    .or_else(|| identity.get("chatgpt_account_is_fedramp"))
+                    .or_else(|| identity.get("chatgptAccountIsFedramp"))
+            })
+        })
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let uses_codex_backend = account_id.is_some()
         || value
             .get("provider_type")
             .and_then(Value::as_str)
-            .is_some_and(|provider_type| provider_type.trim().eq_ignore_ascii_case("codex"));
+            .is_some_and(|provider_type| provider_type.trim().eq_ignore_ascii_case("codex"))
+        || value
+            .get("auth_mode")
+            .or_else(|| value.get("authMode"))
+            .and_then(Value::as_str)
+            .is_some_and(|auth_mode| auth_mode.trim().eq_ignore_ascii_case("agentIdentity"));
 
     CodexAuthIdentity {
         account_id,
@@ -2521,6 +2550,38 @@ mod tests {
             headers
                 .get("x-openai-internal-codex-responses-lite")
                 .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn codex_identity_headers_support_nested_agent_identity_export() {
+        let mut headers = std::collections::BTreeMap::new();
+
+        apply_codex_openai_special_headers(
+            &mut headers,
+            &json!({"model": "gpt-5.6-sol", "input": []}),
+            &http::HeaderMap::new(),
+            "codex",
+            "openai:responses",
+            Some("request-agent-identity"),
+            Some(
+                r#"{
+                    "auth_mode": "agentIdentity",
+                    "agent_identity": {
+                        "accountId": "account-agent",
+                        "chatgptAccountIsFedramp": true
+                    }
+                }"#,
+            ),
+        );
+
+        assert_eq!(
+            headers.get("chatgpt-account-id").map(String::as_str),
+            Some("account-agent")
+        );
+        assert_eq!(
+            headers.get("x-openai-fedramp").map(String::as_str),
             Some("true")
         );
     }

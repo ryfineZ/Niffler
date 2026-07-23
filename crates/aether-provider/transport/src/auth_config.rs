@@ -22,6 +22,7 @@ const UNSAFE_AUTH_CONFIG_QUERY_NAMES: &[&str] = &[
 ];
 const SENSITIVE_AUTH_CONFIG_KEYS: &[&str] = &[
     "access_token",
+    "agent_private_key",
     "api_key",
     "apikey",
     "authorization",
@@ -106,6 +107,18 @@ pub fn apply_local_auth_config_header_overrides(
     let mut overrides = BTreeMap::new();
     collect_auth_config_header_overrides(object, &mut overrides);
     for (key, value) in overrides {
+        // Agent Identity assertions are generated for the current request. A stale
+        // imported Authorization header must never replace one later in planning.
+        if key.eq_ignore_ascii_case("authorization")
+            && headers.get("authorization").is_some_and(|current| {
+                current
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("agentassertion ")
+            })
+        {
+            continue;
+        }
         headers.insert(key, value);
     }
 }
@@ -636,6 +649,35 @@ mod tests {
         assert_eq!(
             headers.get("user-agent"),
             Some(&"xai-grok-workspace/0.2.93".to_string())
+        );
+    }
+
+    #[test]
+    fn preserves_dynamic_agent_assertion_over_static_imported_authorization() {
+        let mut headers = std::collections::BTreeMap::from([(
+            "authorization".to_string(),
+            "AgentAssertion signed-for-this-request".to_string(),
+        )]);
+
+        apply_local_auth_config_header_overrides(
+            &mut headers,
+            Some(
+                r#"{
+                    "headers": {
+                        "authorization": "Bearer stale-imported-session",
+                        "chatgpt-account-id": "acct-1"
+                    }
+                }"#,
+            ),
+        );
+
+        assert_eq!(
+            headers.get("authorization"),
+            Some(&"AgentAssertion signed-for-this-request".to_string())
+        );
+        assert_eq!(
+            headers.get("chatgpt-account-id"),
+            Some(&"acct-1".to_string())
         );
     }
 

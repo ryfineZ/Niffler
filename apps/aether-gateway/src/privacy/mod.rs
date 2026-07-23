@@ -81,8 +81,10 @@ static ACCESS_TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("access token regex should compile")
 });
 static SECRET_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\bsecret[_-]?key\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{20,}"#)
-        .expect("secret key regex should compile")
+    Regex::new(
+        r#"(?i)\b(?:secret|agent[_-]?private)[_-]?key\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{20,}"#,
+    )
+    .expect("secret key regex should compile")
 });
 static HIGH_ENTROPY_TOKEN_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9_-]{32,}\b").expect("api key regex should compile"));
@@ -3528,7 +3530,13 @@ fn detect_candidates_with_probe(
             is_valid_named_token,
         );
     }
-    if input.contains("secret_key") || input.contains("secret-key") || input.contains("SecretKey") {
+    if input.contains("secret_key")
+        || input.contains("secret-key")
+        || input.contains("SecretKey")
+        || input.contains("agent_private_key")
+        || input.contains("agent-private-key")
+        || input.contains("agentPrivateKey")
+    {
         push_regex_candidates(
             input,
             &SECRET_KEY_REGEX,
@@ -4412,6 +4420,22 @@ mod tests {
             collision_session.sentinel_for_original("alice@example.com"),
             Some(colliding_literal.as_str())
         );
+    }
+
+    #[test]
+    fn pii_redaction_hides_agent_identity_private_keys() {
+        let private_key =
+            "agent_private_key=MC4CAQAwBQYDK2VwBCIEIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut session = session_at(601);
+
+        let redacted = session.redact_text(private_key);
+
+        assert!(!redacted.text.contains(private_key));
+        assert!(redacted.text.contains("<AETHER:SECRET_KEY:"));
+        assert!(redacted
+            .matches
+            .iter()
+            .any(|matched| matched.kind == Some(RedactionKind::SecretKey)));
     }
 
     #[test]

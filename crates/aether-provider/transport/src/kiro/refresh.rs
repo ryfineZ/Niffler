@@ -77,6 +77,7 @@ impl KiroOAuthRefreshAdapter {
             auth_header_value: request_auth.value,
             expires_at_unix_secs: auth_config.expires_at,
             metadata: Some(auth_config.to_json_value()),
+            source_fingerprint: None,
         })
     }
 

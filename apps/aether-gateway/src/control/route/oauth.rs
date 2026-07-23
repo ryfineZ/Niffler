@@ -224,6 +224,28 @@ pub(super) fn classify_oauth_route(
         ))
     } else if method == http::Method::POST
         && normalized_path.starts_with("/api/admin/provider-oauth/providers/")
+        && normalized_path.ends_with("/agent-identity-import/tasks")
+    {
+        Some(classified(
+            "admin_proxy",
+            "provider_oauth_manage",
+            "start_agent_identity_import_task",
+            "admin:provider_oauth",
+            false,
+        ))
+    } else if method == http::Method::GET
+        && normalized_path.starts_with("/api/admin/provider-oauth/providers/")
+        && normalized_path.contains("/agent-identity-import/tasks/")
+    {
+        Some(classified(
+            "admin_proxy",
+            "provider_oauth_manage",
+            "get_agent_identity_import_task_status",
+            "admin:provider_oauth",
+            false,
+        ))
+    } else if method == http::Method::POST
+        && normalized_path.starts_with("/api/admin/provider-oauth/providers/")
         && normalized_path.ends_with("/batch-import")
     {
         Some(classified(

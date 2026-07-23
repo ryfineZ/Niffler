@@ -259,6 +259,7 @@ impl LocalOAuthRefreshAdapter for VertexServiceAccountRefreshAdapter {
                 "project_id": auth_config.project_id,
                 "client_email": auth_config.client_email,
             })),
+            source_fingerprint: None,
         }))
     }
 }

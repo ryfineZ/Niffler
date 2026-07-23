@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   canRefreshOAuthCredential,
+  getProviderAuthLabel,
   getProviderMaskedSecretLabel,
   shouldShowOAuthRefreshControl,
 } from '@/utils/providerKeyAuth'
@@ -48,5 +49,17 @@ describe('providerKeyAuth', () => {
     }
 
     expect(getProviderMaskedSecretLabel(input, 'codex')).toBe('[OAuth Header]')
+  })
+
+  it('renders Codex Agent Identity credentials distinctly from OAuth tokens', () => {
+    const input = {
+      auth_type: 'oauth',
+      oauth_managed: true,
+      agent_identity: true,
+      can_refresh_oauth: false,
+    }
+
+    expect(getProviderMaskedSecretLabel(input, 'codex')).toBe('[Agent Identity]')
+    expect(getProviderAuthLabel(input)).toBe('Agent Identity')
   })
 })

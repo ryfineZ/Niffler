@@ -69,11 +69,16 @@ impl<'a> AdminAppState<'a> {
         )
     }
 
-    pub(crate) fn masked_catalog_api_key(
+    pub(crate) fn masked_catalog_api_key_for_provider(
         &self,
         key: &aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey,
+        provider_type: &str,
     ) -> String {
-        crate::handlers::admin::shared::masked_catalog_api_key(self.app, key)
+        crate::handlers::admin::shared::masked_catalog_api_key_for_provider(
+            self.app,
+            key,
+            provider_type,
+        )
     }
 
     pub(crate) async fn build_admin_provider_keys_payload(

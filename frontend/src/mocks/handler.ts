@@ -2646,6 +2646,17 @@ function refreshMockS3BackupModuleStatus() {
   }
 }
 
+function refreshMockModelDirectivesModuleStatus() {
+  const moduleStatus = MOCK_MODULE_STATUSES.model_directives
+  if (!moduleStatus) return
+  const enabled = mockSystemConfigValue('enable_model_directives') === true
+  MOCK_MODULE_STATUSES.model_directives = {
+    ...moduleStatus,
+    enabled,
+    active: moduleStatus.available && enabled && moduleStatus.config_validated,
+  }
+}
+
 // 系统配置详情
 registerDynamicRoute('GET', '/api/admin/system/configs/:configKey', async (_config, params) => {
   await delay()
@@ -2689,6 +2700,9 @@ registerDynamicRoute('PUT', '/api/admin/system/configs/:configKey', async (confi
   if (key.startsWith('backup_s3_')) {
     refreshMockS3BackupModuleStatus()
   }
+  if (key === 'enable_model_directives') {
+    refreshMockModelDirectivesModuleStatus()
+  }
   return createMockResponse(entry)
 })
 
@@ -2727,6 +2741,21 @@ registerDynamicRoute('PUT', '/api/admin/modules/status/:moduleName/enabled', asy
   }
   const body = JSON.parse(config.data || '{}') as { enabled?: boolean }
   const enabled = body.enabled === true
+  if (params.moduleName === 'model_directives') {
+    const index = MOCK_SYSTEM_CONFIGS.findIndex(item => item.key === 'enable_model_directives')
+    const entry = {
+      key: 'enable_model_directives',
+      value: enabled,
+      description: '模型后缀参数模块开关',
+    }
+    if (index === -1) {
+      MOCK_SYSTEM_CONFIGS.push(entry)
+    } else {
+      MOCK_SYSTEM_CONFIGS[index] = { ...MOCK_SYSTEM_CONFIGS[index], ...entry }
+    }
+    refreshMockModelDirectivesModuleStatus()
+    return createMockResponse(MOCK_MODULE_STATUSES.model_directives)
+  }
   if (params.moduleName === 's3_backup') {
     const index = MOCK_SYSTEM_CONFIGS.findIndex(item => item.key === 'backup_s3_enabled')
     const entry = {

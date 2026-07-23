@@ -1,3 +1,4 @@
+mod agent_identity;
 pub mod antigravity;
 pub mod auth;
 mod auth_config;
@@ -28,6 +29,23 @@ mod video;
 pub mod windsurf;
 
 pub use aether_oauth as oauth;
+pub use agent_identity::{
+    codex_agent_identity_auth_config_has_task_id,
+    codex_agent_identity_authorization_matches_transport,
+    codex_agent_identity_cached_entry_from_transport,
+    codex_agent_identity_config_refresh_fingerprint, codex_agent_identity_credential_fingerprint,
+    codex_agent_identity_entry_allows_task_rotation_from, codex_agent_identity_refresh_fingerprint,
+    codex_agent_identity_transport_allows_task_rotation_from,
+    codex_agent_identity_transport_credential_fingerprint,
+    create_codex_agent_identity_from_access_token, create_codex_agent_identity_from_session_token,
+    is_codex_agent_identity_auth_config_value, is_codex_agent_identity_authorization,
+    is_codex_agent_identity_cached_entry, is_codex_agent_identity_invalid_task_response,
+    is_codex_agent_identity_transport, register_codex_agent_identity_from_access_token,
+    validate_codex_agent_identity_auth_config, CodexAgentIdentityEnrollmentError,
+    CodexAgentIdentityRefreshAdapter, CODEX_AGENT_IDENTITY_AGENT_REGISTRATION_REQUEST_ID,
+    CODEX_AGENT_IDENTITY_AUTH_MODE, CODEX_AGENT_IDENTITY_CACHED_ENTRY_PROVIDER_TYPE,
+    CODEX_AGENT_IDENTITY_PROVIDER_TYPE, CODEX_AGENT_IDENTITY_TASK_REGISTRATION_REQUEST_ID,
+};
 pub use auth::{build_passthrough_headers, ensure_upstream_auth_header};
 pub use auth_config::apply_local_auth_config_header_overrides;
 pub use cache::{provider_transport_snapshot_looks_refreshed, ProviderTransportSnapshotCacheKey};
@@ -81,7 +99,8 @@ pub use network::{
 pub use oauth_refresh::{
     supports_local_oauth_request_auth_resolution, CachedOAuthEntry, LocalOAuthHttpExecutor,
     LocalOAuthHttpRequest, LocalOAuthHttpResponse, LocalOAuthRefreshCoordinator,
-    LocalOAuthRefreshError, LocalResolvedOAuthRequestAuth, ReqwestLocalOAuthHttpExecutor,
+    LocalOAuthRefreshError, LocalOAuthResolution, LocalResolvedOAuthRequestAuth,
+    ReqwestLocalOAuthHttpExecutor,
 };
 pub use openai_image::{
     build_openai_image_headers, build_openai_image_upstream_url,

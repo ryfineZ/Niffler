@@ -14,6 +14,26 @@ use super::{
 use crate::lifecycle::migrate::prepare_database_for_startup;
 use crate::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
 
+const LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_VERSION: i64 = 20260517012000;
+const LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_SQL: &str =
+    include_str!("../../../backfills/postgres/20260517012000_sync_legacy_enabled_active_flags.sql");
+
+#[test]
+fn legacy_enabled_backfill_preserves_canonical_active_flags() {
+    for table in ["providers", "provider_endpoints", "models"] {
+        assert!(
+            LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_SQL.contains(&format!(
+                "UPDATE public.{table}\n        SET enabled = is_active"
+            )),
+            "legacy {table}.enabled should be initialized from canonical is_active"
+        );
+    }
+    assert!(
+        !LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_SQL.contains("is_active = enabled"),
+        "the corrected script must not enable canonically disabled records"
+    );
+}
+
 #[test]
 fn pending_backfills_from_applied_returns_all_versions_when_none_applied() {
     let versions = pending_backfills_from_applied(&[])
@@ -52,6 +72,19 @@ fn pending_backfills_from_applied_skips_versions_already_applied() {
             20260716010000
         ]
     );
+}
+
+#[test]
+fn corrected_legacy_backfill_is_not_requeued_after_application() {
+    let pending_versions = pending_backfills_from_applied(&[AppliedBackfill {
+        version: LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_VERSION,
+        checksum: Vec::new(),
+    }])
+    .into_iter()
+    .map(|item| item.version)
+    .collect::<Vec<_>>();
+
+    assert!(!pending_versions.contains(&LEGACY_SYNC_ENABLED_ACTIVE_FLAGS_VERSION));
 }
 
 #[tokio::test]

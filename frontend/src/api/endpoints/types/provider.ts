@@ -237,6 +237,7 @@ export interface EndpointAPIKey {
   credential_kind?: 'raw_secret' | 'oauth_session' | 'service_account' | string | null
   runtime_auth_kind?: 'api_key' | 'bearer' | 'service_account' | 'mixed' | 'unknown' | string | null
   oauth_managed?: boolean
+  agent_identity?: boolean
   oauth_header_auth?: boolean
   can_refresh_oauth?: boolean
   can_export_oauth?: boolean

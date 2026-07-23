@@ -3,6 +3,7 @@ use super::execution::{
     execute_admin_provider_oauth_batch_import_for_provider_type,
 };
 use super::parse::{
+    admin_provider_oauth_batch_contains_agent_identity,
     build_admin_provider_oauth_batch_import_response,
     parse_admin_provider_oauth_batch_import_request, AdminProviderOAuthBatchImportRequest,
 };
@@ -41,6 +42,12 @@ pub(in super::super) async fn handle_admin_provider_oauth_batch_import(
         Ok(payload) => payload,
         Err(response) => return Ok(response),
     };
+    if admin_provider_oauth_batch_contains_agent_identity(&payload.credentials) {
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "Agent Identity JSON 必须使用专属导入接口",
+        ));
+    }
 
     let Some(provider) = state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&provider_id))

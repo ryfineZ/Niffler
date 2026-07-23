@@ -32,11 +32,13 @@ pub(crate) use self::app::{
     FrontdoorRuntimeGuardConfig, REQUEST_BODY_BUFFER_PERMIT_BYTES,
 };
 pub(crate) use self::cache::{
-    CachedProviderTransportSnapshot, AUTH_API_KEY_LAST_USED_MAX_ENTRIES,
+    CachedProviderTransportSnapshot, ProviderTransportSnapshotFlight,
+    ProviderTransportSnapshotFlightResult, AUTH_API_KEY_LAST_USED_MAX_ENTRIES,
     AUTH_API_KEY_LAST_USED_TTL, PROVIDER_TRANSPORT_SNAPSHOT_CACHE_MAX_ENTRIES,
     PROVIDER_TRANSPORT_SNAPSHOT_CACHE_STALE_TTL, PROVIDER_TRANSPORT_SNAPSHOT_CACHE_TTL,
 };
 pub use self::cors::FrontdoorCorsConfig;
+pub(crate) use self::oauth::AgentIdentityAuthConfigFence;
 pub(crate) use self::types::{
     AdminWalletMutationOutcome, GatewayAdminPaymentCallbackView, GatewayUserPreferenceView,
     GatewayUserSessionView, LocalExecutionRuntimeMissDiagnostic, LocalMutationOutcome,

@@ -575,6 +575,7 @@ async function resolveSelectedItems(): Promise<PoolKeySelectionItem[]> {
       credential_kind: key.credential_kind,
       runtime_auth_kind: key.runtime_auth_kind,
       oauth_managed: key.oauth_managed,
+      agent_identity: key.agent_identity,
       oauth_header_auth: key.oauth_header_auth,
       can_refresh_oauth: key.can_refresh_oauth,
       can_export_oauth: key.can_export_oauth,

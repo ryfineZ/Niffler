@@ -43,12 +43,6 @@ pub(super) async fn parse_admin_provider_oauth_refresh_request(
         )));
     };
     let parsed_auth_config = helpers::parse_auth_config_object(&decrypted_auth_config);
-    if !helpers::auth_config_has_refresh_token(&parsed_auth_config) {
-        return Ok(RefreshDispatch::Respond(response::control_error_response(
-            http::StatusCode::BAD_REQUEST,
-            "缺少 refresh_token，需要重新授权",
-        )));
-    }
 
     let provider_id = key.provider_id.clone();
     let Some(provider) = state
@@ -63,6 +57,16 @@ pub(super) async fn parse_admin_provider_oauth_refresh_request(
         )));
     };
     let provider_type = provider.provider_type.trim().to_ascii_lowercase();
+    let is_agent_identity = provider_type == "codex"
+        && crate::provider_transport::is_codex_agent_identity_auth_config_value(
+            &serde_json::Value::Object(parsed_auth_config.clone()),
+        );
+    if !is_agent_identity && !helpers::auth_config_has_refresh_token(&parsed_auth_config) {
+        return Ok(RefreshDispatch::Respond(response::control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "缺少 refresh_token，需要重新授权",
+        )));
+    }
     if !provider_key_is_oauth_managed(&key, provider_type.as_str()) {
         return Ok(RefreshDispatch::Respond(response::control_error_response(
             http::StatusCode::BAD_REQUEST,

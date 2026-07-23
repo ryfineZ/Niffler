@@ -3,6 +3,7 @@ use super::state::{
     build_admin_provider_oauth_supported_types_payload,
 };
 use crate::handlers::admin::provider::shared::paths::{
+    admin_provider_oauth_agent_identity_import_task_provider_id,
     admin_provider_oauth_batch_import_provider_id,
     admin_provider_oauth_batch_import_task_provider_id, admin_provider_oauth_complete_key_id,
     admin_provider_oauth_complete_provider_id, admin_provider_oauth_device_authorize_provider_id,
@@ -83,6 +84,16 @@ pub(crate) async fn maybe_build_local_admin_provider_oauth_response(
         ));
     }
 
+    if route_kind == Some("get_agent_identity_import_task_status") && *method == http::Method::GET {
+        return Ok(Some(
+            tasks::handle_admin_provider_oauth_agent_identity_import_task_status(
+                state,
+                request_context,
+            )
+            .await?,
+        ));
+    }
+
     if route_kind == Some("complete_key_oauth") && *method == http::Method::POST {
         let response = complete::handle_admin_provider_oauth_complete_key(
             state,
@@ -128,6 +139,8 @@ pub(crate) async fn maybe_build_local_admin_provider_oauth_response(
     }
 
     if route_kind == Some("import_refresh_token") && *method == http::Method::POST {
+        let (event_name, action) =
+            helpers::admin_provider_oauth_single_import_audit_taxonomy(request_body);
         let response = import::handle_admin_provider_oauth_import_refresh_token(
             state,
             request_context,
@@ -136,8 +149,8 @@ pub(crate) async fn maybe_build_local_admin_provider_oauth_response(
         .await?;
         return Ok(Some(helpers::attach_admin_provider_oauth_audit_response(
             response,
-            "admin_provider_oauth_refresh_token_imported",
-            "import_provider_oauth_refresh_token",
+            event_name,
+            action,
             "provider",
             admin_provider_oauth_import_provider_id(request_context.path()),
         )));
@@ -169,6 +182,22 @@ pub(crate) async fn maybe_build_local_admin_provider_oauth_response(
             "start_provider_oauth_batch_import",
             "provider",
             admin_provider_oauth_batch_import_task_provider_id(request_context.path()),
+        )));
+    }
+
+    if route_kind == Some("start_agent_identity_import_task") && *method == http::Method::POST {
+        let response = batch::handle_admin_provider_oauth_start_agent_identity_import_task(
+            state,
+            request_context,
+            request_body,
+        )
+        .await?;
+        return Ok(Some(helpers::attach_admin_provider_oauth_audit_response(
+            response,
+            "admin_provider_oauth_agent_identity_import_started",
+            "start_provider_agent_identity_import",
+            "provider",
+            admin_provider_oauth_agent_identity_import_task_provider_id(request_context.path()),
         )));
     }
 

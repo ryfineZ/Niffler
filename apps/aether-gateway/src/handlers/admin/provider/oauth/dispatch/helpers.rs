@@ -6,6 +6,31 @@ use axum::{
 use serde_json::{Map, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(super) fn admin_provider_oauth_single_import_audit_taxonomy(
+    request_body: Option<&axum::body::Bytes>,
+) -> (&'static str, &'static str) {
+    let creates_agent_identity = request_body
+        .and_then(|body| serde_json::from_slice::<Value>(body).ok())
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|payload| {
+            payload
+                .get("create_agent_identity")
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
+    if creates_agent_identity {
+        (
+            "admin_provider_oauth_agent_identity_created",
+            "create_provider_agent_identity",
+        )
+    } else {
+        (
+            "admin_provider_oauth_refresh_token_imported",
+            "import_provider_oauth_refresh_token",
+        )
+    }
+}
+
 pub(super) fn attach_admin_provider_oauth_audit_response(
     response: Response<Body>,
     event_name: &'static str,
@@ -95,5 +120,54 @@ mod tests {
 
         assert!(name.starts_with("codex_"));
         assert!(name.ends_with("_3"));
+    }
+
+    #[test]
+    fn single_import_audit_distinguishes_agent_identity_creation_without_exposing_input() {
+        let body = axum::body::Bytes::from(
+            json!({
+                "create_agent_identity": true,
+                "access_token": "secret-access-token"
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            admin_provider_oauth_single_import_audit_taxonomy(Some(&body)),
+            (
+                "admin_provider_oauth_agent_identity_created",
+                "create_provider_agent_identity",
+            )
+        );
+    }
+
+    #[test]
+    fn single_import_audit_rejects_removed_session_token_creation_alias() {
+        let body = axum::body::Bytes::from(
+            json!({
+                "create_agent_identity_from_session_token": true,
+                "access_token": "secret-access-token"
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            admin_provider_oauth_single_import_audit_taxonomy(Some(&body)),
+            (
+                "admin_provider_oauth_refresh_token_imported",
+                "import_provider_oauth_refresh_token",
+            )
+        );
+    }
+
+    #[test]
+    fn single_import_audit_keeps_standard_import_taxonomy() {
+        let body =
+            axum::body::Bytes::from(json!({ "refresh_token": "secret-refresh-token" }).to_string());
+        assert_eq!(
+            admin_provider_oauth_single_import_audit_taxonomy(Some(&body)),
+            (
+                "admin_provider_oauth_refresh_token_imported",
+                "import_provider_oauth_refresh_token",
+            )
+        );
     }
 }

@@ -85,14 +85,25 @@ impl ProviderKeyAuthSemantics {
 
 pub(crate) fn provider_key_can_refresh_oauth(
     auth_semantics: ProviderKeyAuthSemantics,
+    provider_type: &str,
     auth_config: Option<&Map<String, Value>>,
 ) -> bool {
     auth_semantics.can_refresh_oauth()
-        && auth_config
-            .and_then(|config| config.get("refresh_token"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
+        && (provider_key_auth_config_is_agent_identity(provider_type, auth_config)
+            || auth_config
+                .and_then(|config| config.get("refresh_token"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty()))
+}
+
+pub(crate) fn provider_key_can_export_oauth(
+    auth_semantics: ProviderKeyAuthSemantics,
+    provider_type: &str,
+    auth_config: Option<&Map<String, Value>>,
+) -> bool {
+    auth_semantics.can_export_oauth()
+        && !provider_key_auth_config_is_agent_identity(provider_type, auth_config)
 }
 
 pub(crate) fn provider_key_auth_config_uses_header_authorization(
@@ -109,6 +120,23 @@ pub(crate) fn provider_key_auth_config_uses_header_authorization(
                         .map(str::trim)
                         .is_some_and(|value| !value.is_empty())
             })
+        })
+}
+
+/// Returns whether a Codex key uses the registered Agent Identity credential shape.
+///
+/// The key itself remains `auth_type = oauth` so it can use the existing OAuth
+/// pipeline. Keep this as an explicit server-side classification rather than
+/// making the frontend infer it from refresh capabilities.
+pub(crate) fn provider_key_auth_config_is_agent_identity(
+    provider_type: &str,
+    auth_config: Option<&Map<String, Value>>,
+) -> bool {
+    provider_type.trim().eq_ignore_ascii_case("codex")
+        && auth_config.is_some_and(|config| {
+            aether_provider_transport::is_codex_agent_identity_auth_config_value(&Value::Object(
+                config.clone(),
+            ))
         })
 }
 
@@ -273,8 +301,9 @@ pub(crate) fn provider_key_effective_api_formats(
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_active_api_formats, provider_key_auth_config_uses_header_authorization,
-        provider_key_auth_semantics, provider_key_can_refresh_oauth,
+        provider_active_api_formats, provider_key_auth_config_is_agent_identity,
+        provider_key_auth_config_uses_header_authorization, provider_key_auth_semantics,
+        provider_key_can_export_oauth, provider_key_can_refresh_oauth,
         provider_key_configured_api_formats, provider_key_effective_api_formats,
         provider_key_inherits_provider_api_formats, ProviderKeyCredentialKind,
         ProviderKeyRuntimeAuthKind,
@@ -396,6 +425,7 @@ mod tests {
 
         assert!(!provider_key_can_refresh_oauth(
             semantics,
+            "codex",
             json!({
                 "access_token": "access-token",
                 "access_token_import_temporary": true
@@ -404,11 +434,23 @@ mod tests {
         ));
         assert!(!provider_key_can_refresh_oauth(
             semantics,
+            "codex",
             json!({ "refresh_token": "   " }).as_object()
         ));
         assert!(provider_key_can_refresh_oauth(
             semantics,
+            "codex",
             json!({ "refresh_token": "refresh-token" }).as_object()
+        ));
+        assert!(provider_key_can_refresh_oauth(
+            semantics,
+            "codex",
+            json!({
+                "auth_mode": "agentIdentity",
+                "agent_runtime_id": "runtime-1",
+                "agent_private_key": "private-key-present"
+            })
+            .as_object()
         ));
     }
 
@@ -429,6 +471,51 @@ mod tests {
                 }
             })
             .as_object()
+        ));
+    }
+
+    #[test]
+    fn detects_codex_agent_identity_auth_config() {
+        let config = json!({
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "agent_private_key": "base64-private-key",
+            "task_id": "task-1"
+        });
+
+        assert!(provider_key_auth_config_is_agent_identity(
+            "codex",
+            config.as_object()
+        ));
+        assert!(!provider_key_auth_config_is_agent_identity(
+            "openai",
+            config.as_object()
+        ));
+        assert!(!provider_key_auth_config_is_agent_identity(
+            "codex",
+            json!({ "refresh_token": "refresh-token" }).as_object()
+        ));
+    }
+
+    #[test]
+    fn agent_identity_is_not_exportable_through_generic_oauth_export() {
+        let semantics = provider_key_auth_semantics(&sample_key("oauth"), "codex");
+        let agent_identity = json!({
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "agent_private_key": "base64-private-key",
+            "task_id": "task-1"
+        });
+
+        assert!(!provider_key_can_export_oauth(
+            semantics,
+            "codex",
+            agent_identity.as_object()
+        ));
+        assert!(provider_key_can_export_oauth(
+            semantics,
+            "codex",
+            json!({ "refresh_token": "refresh-token" }).as_object()
         ));
     }
 

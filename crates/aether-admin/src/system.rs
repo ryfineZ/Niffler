@@ -2101,6 +2101,75 @@ fn normalize_optional_bounded_string(
     }
 }
 
+fn validate_model_directives_config_value(value: &Value) -> Result<(), ()> {
+    let root = value.as_object().ok_or(())?;
+    let reasoning = root
+        .get("reasoning_effort")
+        .and_then(Value::as_object)
+        .ok_or(())?;
+    if reasoning
+        .get("enabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(());
+    }
+
+    let Some(api_formats) = reasoning.get("api_formats") else {
+        return Ok(());
+    };
+    let api_formats = api_formats.as_object().ok_or(())?;
+    let mut canonical_api_formats = BTreeSet::new();
+    for (api_format, raw_config) in api_formats {
+        if api_format.trim().is_empty() {
+            return Err(());
+        }
+        let canonical_api_format = aether_ai_formats::normalize_api_format_alias(api_format);
+        if !canonical_api_formats.insert(canonical_api_format) {
+            return Err(());
+        }
+        if raw_config.is_boolean() {
+            continue;
+        }
+        let config = raw_config.as_object().ok_or(())?;
+        if config
+            .get("enabled")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(());
+        }
+        if let Some(suffixes) = config.get("suffixes") {
+            let suffixes = suffixes.as_array().ok_or(())?;
+            let mut canonical_suffixes = BTreeSet::new();
+            for suffix in suffixes {
+                let suffix = suffix.as_str().map(str::trim).ok_or(())?;
+                if suffix.is_empty()
+                    || suffix.starts_with('-')
+                    || suffix.ends_with('-')
+                    || !canonical_suffixes.insert(suffix.to_ascii_lowercase())
+                {
+                    return Err(());
+                }
+            }
+        }
+        if let Some(mappings) = config.get("mappings") {
+            let mappings = mappings.as_object().ok_or(())?;
+            let mut canonical_suffixes = BTreeSet::new();
+            for (suffix, mapping) in mappings {
+                let suffix = suffix.trim();
+                if suffix.is_empty()
+                    || suffix.starts_with('-')
+                    || suffix.ends_with('-')
+                    || !canonical_suffixes.insert(suffix.to_ascii_lowercase())
+                    || !mapping.is_object()
+                {
+                    return Err(());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_admin_system_config_update(
     requested_key: &str,
     request_body: &[u8],
@@ -2155,6 +2224,7 @@ pub fn parse_admin_system_config_update(
 
     match normalized_key.as_str() {
         "cyber_continue_failover"
+        | "enable_model_directives"
         | "module.important_notification.enabled"
         | "module.important_notification.email_enabled"
         | "module.server_chan_push.enabled"
@@ -2245,6 +2315,18 @@ pub fn parse_admin_system_config_update(
                     ));
                 }
             };
+        }
+        "model_directives" => {
+            if value.is_null() {
+                value = aether_ai_formats::default_model_directives_config();
+            } else {
+                validate_model_directives_config_value(&value).map_err(|_| {
+                    (
+                        http::StatusCode::BAD_REQUEST,
+                        json!({ "detail": "模型后缀参数配置格式无效" }),
+                    )
+                })?;
+            }
         }
         "module.chat_pii_redaction.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
@@ -3404,6 +3486,108 @@ mod tests {
 
         assert!(parse_admin_system_config_update(
             "cyber_continue_failover",
+            br#"{"value":"true"}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn model_directives_update_accepts_legacy_and_current_config_shapes() {
+        for body in [
+            r#"{
+                "value": {
+                    "reasoning_effort": {
+                        "enabled": true,
+                        "api_formats": {
+                            "openai:responses": {
+                                "enabled": true,
+                                "mappings": {
+                                    "low": { "reasoning": { "effort": "low" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }"#,
+            r#"{
+                "value": {
+                    "reasoning_effort": {
+                        "api_formats": {
+                            "openai:responses": {
+                                "suffixes": ["low", "VendorFuture"],
+                                "mappings": {
+                                    "VendorFuture": { "reasoning": { "context": "all_turns" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }"#,
+            r#"{
+                "value": {
+                    "reasoning_effort": {
+                        "api_formats": {
+                            "/v1/responses": {
+                                "suffixes": ["low"],
+                                "mappings": {}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        ] {
+            let update = parse_admin_system_config_update("model_directives", body.as_bytes())
+                .expect("valid model directive config should parse");
+            assert!(update.value["reasoning_effort"].is_object());
+        }
+
+        let reset = parse_admin_system_config_update("model_directives", br#"{"value":null}"#)
+            .expect("null should reset model directives to defaults");
+        assert_eq!(
+            reset.value,
+            aether_ai_formats::default_model_directives_config()
+        );
+    }
+
+    #[test]
+    fn model_directives_update_rejects_unsafe_mapping_shapes() {
+        for body in [
+            r#"{"value":[]}"#,
+            r#"{"value":{"reasoning_effort":true}}"#,
+            r#"{"value":{"reasoning_effort":{"enabled":"true"}}}"#,
+            r#"{"value":{"reasoning_effort":{"api_formats":[]}}}"#,
+            r#"{"value":{"reasoning_effort":{"api_formats":{"openai:responses":{"suffixes":["low",42]}}}}}"#,
+            r#"{"value":{"reasoning_effort":{"api_formats":{"openai:responses":{"mappings":{"low":"replace-body"}}}}}}"#,
+        ] {
+            let error = parse_admin_system_config_update("model_directives", body.as_bytes())
+                .expect_err("invalid model directive config should fail");
+            assert_eq!(error.0, http::StatusCode::BAD_REQUEST);
+            assert_eq!(error.1["detail"], "模型后缀参数配置格式无效");
+        }
+    }
+
+    #[test]
+    fn model_directives_update_rejects_ambiguous_aliases_and_suffixes() {
+        for body in [
+            r#"{"value":{"reasoning_effort":{"api_formats":{"openai:responses":true,"/v1/responses":false}}}}"#,
+            r#"{"value":{"reasoning_effort":{"api_formats":{"openai:responses":{"suffixes":["low","LOW"]}}}}}"#,
+            r#"{"value":{"reasoning_effort":{"api_formats":{"openai:responses":{"mappings":{"VendorFuture":{},"vendorfuture":{}}}}}}}"#,
+        ] {
+            let error = parse_admin_system_config_update("model_directives", body.as_bytes())
+                .expect_err("ambiguous model directive config should fail");
+            assert_eq!(error.0, http::StatusCode::BAD_REQUEST);
+            assert_eq!(error.1["detail"], "模型后缀参数配置格式无效");
+        }
+    }
+
+    #[test]
+    fn enable_model_directives_update_requires_a_boolean() {
+        let update =
+            parse_admin_system_config_update("enable_model_directives", br#"{"value":true}"#)
+                .expect("boolean model directives flag should parse");
+        assert_eq!(update.value, json!(true));
+        assert!(parse_admin_system_config_update(
+            "enable_model_directives",
             br#"{"value":"true"}"#,
         )
         .is_err());

@@ -40,6 +40,8 @@ pub struct StoredAdminProviderOAuthState {
     pub provider_id: String,
     pub provider_type: String,
     pub pkce_verifier: Option<String>,
+    #[serde(default)]
+    pub expected_encrypted_auth_config: Option<String>,
 }
 
 pub fn provider_oauth_device_session_storage_key(session_id: &str) -> String {

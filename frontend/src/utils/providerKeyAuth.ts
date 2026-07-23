@@ -4,6 +4,7 @@ export interface ProviderKeyAuthCarrier {
   credential_kind?: string | null
   runtime_auth_kind?: string | null
   oauth_managed?: boolean | null
+  agent_identity?: boolean | null
   oauth_header_auth?: boolean | null
   oauth_temporary?: boolean | null
   can_refresh_oauth?: boolean | null
@@ -111,6 +112,7 @@ export function canEditOAuthCredential(input: ProviderKeyAuthCarrier): boolean {
 }
 
 export function getProviderAuthLabel(input: ProviderKeyAuthCarrier): string {
+  if (input.agent_identity === true) return 'Agent Identity'
   if (isOAuthManagedCredential(input)) return 'OAuth'
   if (isServiceAccountCredential(input)) return '服务账号'
   if (getProviderRuntimeAuthKind(input) === 'mixed') return '混合'
@@ -121,6 +123,7 @@ export function getProviderMaskedSecretLabel(
   input: ProviderKeyAuthCarrier,
   providerType?: string | null,
 ): string {
+  if (input.agent_identity === true) return '[Agent Identity]'
   if (isGrokSessionCredential(input, providerType)) return '[Session Cookie]'
   if (isOAuthManagedCredential(input) && input.oauth_header_auth === true) return '[OAuth Header]'
   if (isOAuthManagedCredential(input)) return '[OAuth Token]'

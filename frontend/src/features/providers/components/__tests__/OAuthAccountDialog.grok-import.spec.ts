@@ -13,6 +13,12 @@ const endpointMocks = vi.hoisted(() => ({
   getAwsRegions: vi.fn(),
 }))
 
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  warning: vi.fn(),
+  error: vi.fn(),
+}))
+
 vi.mock('@/api/endpoints', async () => {
   const actual = await vi.importActual<typeof import('@/api/endpoints/provider_oauth')>(
     '@/api/endpoints/provider_oauth',
@@ -82,10 +88,30 @@ vi.mock('@/components/ui', async () => {
     },
   })
 
+  const Switch = defineComponent({
+    name: 'SwitchStub',
+    props: {
+      modelValue: Boolean,
+      disabled: Boolean,
+    },
+    emits: ['update:modelValue'],
+    setup(props, { attrs, emit }) {
+      return () => h('button', {
+        ...attrs,
+        type: 'button',
+        role: 'switch',
+        'aria-checked': String(props.modelValue),
+        disabled: props.disabled,
+        onClick: () => emit('update:modelValue', !props.modelValue),
+      })
+    },
+  })
+
   return {
     Dialog,
     Button,
     Textarea,
+    Switch,
     Popover: passthrough('PopoverStub'),
     PopoverTrigger: passthrough('PopoverTriggerStub'),
     PopoverContent: passthrough('PopoverContentStub'),
@@ -192,10 +218,7 @@ vi.mock('@/stores/proxy-nodes', () => ({
 }))
 
 vi.mock('@/composables/useToast', () => ({
-  useToast: () => ({
-    success: vi.fn(),
-    error: vi.fn(),
-  }),
+  useToast: () => toastMocks,
 }))
 
 vi.mock('@/composables/useClipboard', () => ({
@@ -282,6 +305,9 @@ describe('OAuthAccountDialog Grok import', () => {
     endpointMocks.startDeviceAuthorize.mockReset()
     endpointMocks.pollDeviceAuthorize.mockReset()
     endpointMocks.getAwsRegions.mockReset()
+    toastMocks.success.mockReset()
+    toastMocks.warning.mockReset()
+    toastMocks.error.mockReset()
 
     endpointMocks.importProviderRefreshToken.mockResolvedValue({
       provider_type: 'grok',
@@ -453,6 +479,202 @@ describe('OAuthAccountDialog Grok import', () => {
       },
       account_id: 'acct-1',
     }))
+  })
+
+  it('sends a single Codex Agent Identity auth JSON through batch import', async () => {
+    const root = mountDialog('codex')
+    await settle()
+
+    getButton(root, '导入授权')?.click()
+    await settle()
+
+    const credentials = JSON.stringify({
+      auth_mode: 'agentIdentity',
+      agent_identity: {
+        agent_runtime_id: 'runtime-1',
+        agent_private_key: 'base64-pkcs8-key',
+      },
+    })
+    const textarea = getImportTextarea(root)
+    textarea.value = credentials
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '导入')?.click()
+    await settle()
+
+    expect(endpointMocks.startBatchImportOAuthTask).toHaveBeenCalledWith(
+      'provider-1',
+      credentials,
+      undefined,
+    )
+    expect(endpointMocks.importProviderRefreshToken).not.toHaveBeenCalled()
+  })
+
+  it('shows a dedicated Codex Agent Identity mode and creates from an access token', async () => {
+    const root = mountDialog('codex')
+    await settle()
+
+    expect(getExactButton(root, '获取授权')).toBeTruthy()
+    expect(getExactButton(root, '导入授权')).toBeTruthy()
+    expect(getExactButton(root, 'Agent Identity')).toBeTruthy()
+
+    getExactButton(root, 'Agent Identity')?.click()
+    await settle()
+
+    const textarea = root.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="粘贴 AT 或 ChatGPT auth/session JSON"]',
+    )
+    expect(textarea).toBeTruthy()
+    if (!textarea) throw new Error('Expected Agent Identity access token textarea to exist')
+    expect(textarea.classList.contains('min-h-[200px]')).toBe(true)
+    expect(root.textContent).not.toContain('ChatGPT Session Token')
+    expect(root.textContent).not.toContain('仅用于一次性注册')
+    expect(root.textContent).not.toContain('创建并导入 Agent Identity')
+    textarea.value = 'access-token-for-test-only'
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '创建')?.click()
+    await settle()
+
+    expect(endpointMocks.importProviderRefreshToken).toHaveBeenCalledWith('provider-1', {
+      access_token: 'access-token-for-test-only',
+      create_agent_identity: true,
+      proxy_node_id: undefined,
+    })
+    expect(endpointMocks.startBatchImportOAuthTask).not.toHaveBeenCalled()
+  })
+
+  it('extracts only accessToken from ChatGPT auth/session JSON for Agent Identity', async () => {
+    const root = mountDialog('codex')
+    await settle()
+
+    getExactButton(root, 'Agent Identity')?.click()
+    await settle()
+
+    const textarea = root.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="粘贴 AT 或 ChatGPT auth/session JSON"]',
+    )
+    if (!textarea) throw new Error('Expected Agent Identity access token textarea to exist')
+    textarea.value = JSON.stringify({
+      WARNING_BANNER: 'sensitive session data',
+      accessToken: 'access-token-from-json',
+      sessionToken: 'session-token-must-not-be-used',
+      user: { email: 'private@example.com' },
+    })
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '创建')?.click()
+    await settle()
+
+    expect(endpointMocks.importProviderRefreshToken).toHaveBeenCalledWith('provider-1', {
+      access_token: 'access-token-from-json',
+      create_agent_identity: true,
+      proxy_node_id: undefined,
+    })
+    expect(endpointMocks.importProviderRefreshToken).not.toHaveBeenCalledWith(
+      'provider-1',
+      expect.objectContaining({ session_token: 'session-token-must-not-be-used' }),
+    )
+  })
+
+  it('does not use sessionToken when ChatGPT auth/session JSON has no accessToken', async () => {
+    const root = mountDialog('codex')
+    await settle()
+
+    getExactButton(root, 'Agent Identity')?.click()
+    await settle()
+
+    const textarea = root.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="粘贴 AT 或 ChatGPT auth/session JSON"]',
+    )
+    if (!textarea) throw new Error('Expected Agent Identity access token textarea to exist')
+    textarea.value = JSON.stringify({ sessionToken: 'session-token-must-not-be-used' })
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '创建')?.click()
+    await settle()
+
+    expect(endpointMocks.importProviderRefreshToken).not.toHaveBeenCalled()
+  })
+
+  it('treats a saved Agent Identity with pending task initialization as accepted', async () => {
+    endpointMocks.importProviderRefreshToken.mockResolvedValueOnce({
+      key_id: 'key-agent',
+      provider_type: 'codex',
+      has_refresh_token: false,
+      task_ready: false,
+      recoverable: true,
+      detail: 'pending task',
+    })
+    const root = mountDialog('codex')
+    await settle()
+
+    getExactButton(root, 'Agent Identity')?.click()
+    await settle()
+    const textarea = root.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="粘贴 AT 或 ChatGPT auth/session JSON"]',
+    )
+    if (!textarea) throw new Error('Expected Agent Identity access token textarea to exist')
+    textarea.value = 'access-token-for-pending-task'
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '创建')?.click()
+    await settle()
+
+    expect(toastMocks.warning).toHaveBeenCalled()
+    expect(toastMocks.error).not.toHaveBeenCalled()
+  })
+
+  it('keeps Agent Identity creation unavailable for non-Codex providers', async () => {
+    const root = mountDialog('openai')
+    await settle()
+
+    expect(getExactButton(root, '获取授权')).toBeTruthy()
+    expect(getExactButton(root, '导入授权')).toBeTruthy()
+    expect(getExactButton(root, 'Agent Identity')).toBeFalsy()
+  })
+
+  it('sends a complete sub2api Agent Identity export through batch import', async () => {
+    const root = mountDialog('codex')
+    await settle()
+
+    getButton(root, '导入授权')?.click()
+    await settle()
+
+    const credentials = JSON.stringify({
+      type: 'sub2api-data',
+      version: 1,
+      accounts: [{
+        name: 'agent@example.com',
+        platform: 'openai',
+        type: 'oauth',
+        credentials: {
+          auth_mode: 'agentIdentity',
+          agent_runtime_id: 'runtime-1',
+          agent_private_key: 'base64-pkcs8-key',
+          task_id: 'task-1',
+        },
+      }],
+    })
+    const textarea = getImportTextarea(root)
+    textarea.value = credentials
+    textarea.dispatchEvent(new Event('input'))
+    await settle()
+
+    getExactButton(root, '导入')?.click()
+    await settle()
+
+    expect(endpointMocks.startBatchImportOAuthTask).toHaveBeenCalledWith(
+      'provider-1',
+      credentials,
+      undefined,
+    )
+    expect(endpointMocks.importProviderRefreshToken).not.toHaveBeenCalled()
   })
 
   it('keeps Grok multiline token import on the batch task path', async () => {

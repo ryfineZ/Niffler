@@ -4,8 +4,9 @@ use crate::handlers::admin::provider::shared::support::{
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::{provider_key_status_snapshot_payload, unix_secs_to_rfc3339};
 use crate::provider_key_auth::{
-    provider_key_auth_config_uses_header_authorization, provider_key_auth_semantics,
-    provider_key_can_refresh_oauth, provider_key_effective_api_formats,
+    provider_key_auth_config_is_agent_identity, provider_key_auth_config_uses_header_authorization,
+    provider_key_auth_semantics, provider_key_can_export_oauth, provider_key_can_refresh_oauth,
+    provider_key_effective_api_formats,
 };
 use aether_admin::provider::pool as admin_provider_pool_pure;
 use aether_admin::provider::quota as admin_provider_quota_pure;
@@ -1203,6 +1204,8 @@ pub(super) fn build_admin_pool_key_payload(
             .unwrap_or(false);
     let oauth_header_auth = auth_semantics.oauth_managed()
         && provider_key_auth_config_uses_header_authorization(auth_config.as_ref());
+    let agent_identity =
+        provider_key_auth_config_is_agent_identity(provider_type, auth_config.as_ref());
     let account_status_code = admin_pool_trimmed_string_from_map(account_snapshot, "code");
     let account_status_label =
         admin_pool_trimmed_string(account_snapshot.and_then(|item| item.get("label")));
@@ -1267,16 +1270,22 @@ pub(super) fn build_admin_pool_key_payload(
         "oauth_managed".to_string(),
         json!(auth_semantics.oauth_managed()),
     );
+    payload.insert("agent_identity".to_string(), json!(agent_identity));
     payload.insert(
         "can_refresh_oauth".to_string(),
         json!(provider_key_can_refresh_oauth(
             auth_semantics,
+            provider_type,
             auth_config.as_ref()
         )),
     );
     payload.insert(
         "can_export_oauth".to_string(),
-        json!(auth_semantics.can_export_oauth()),
+        json!(provider_key_can_export_oauth(
+            auth_semantics,
+            provider_type,
+            auth_config.as_ref()
+        )),
     );
     payload.insert(
         "can_edit_oauth".to_string(),

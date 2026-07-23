@@ -4,9 +4,11 @@ use crate::handlers::admin::provider::shared::support::{
 };
 use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::{
-    decrypt_catalog_secret_with_fallbacks, json_string_list, take_secret_prefix, take_secret_suffix,
+    decrypt_catalog_secret_with_fallbacks, json_string_list, parse_catalog_auth_config_json,
+    take_secret_prefix, take_secret_suffix,
 };
 use crate::handlers::public::matches_model_mapping_for_models;
+use crate::provider_key_auth::provider_key_auth_config_is_agent_identity;
 use crate::{GatewayError, LocalProviderDeleteTaskState};
 use aether_data_contracts::repository::global_models::{
     AdminGlobalModelListQuery, AdminProviderModelListQuery, PublicGlobalModelQuery,
@@ -169,7 +171,12 @@ pub(crate) fn global_model_mapping_patterns_from_config(
 pub(crate) fn mapping_preview_masked_catalog_api_key(
     state: &AdminAppState<'_>,
     key: &StoredProviderCatalogKey,
+    provider_type: &str,
 ) -> String {
+    let auth_config = parse_catalog_auth_config_json(state.as_ref(), key);
+    if provider_key_auth_config_is_agent_identity(provider_type, auth_config.as_ref()) {
+        return "[Agent Identity]".to_string();
+    }
     let ciphertext = key.encrypted_api_key.as_deref().unwrap_or("").trim();
     if ciphertext.is_empty() {
         return "***".to_string();
@@ -345,7 +352,11 @@ pub(crate) async fn build_admin_provider_mapping_preview_payload(
         key_payloads.push(json!({
             "key_id": key.id,
             "key_name": key.name,
-            "masked_key": mapping_preview_masked_catalog_api_key(state, &key),
+            "masked_key": mapping_preview_masked_catalog_api_key(
+                state,
+                &key,
+                &provider.provider_type,
+            ),
             "is_active": key.is_active,
             "allowed_models": allowed_models,
             "matching_global_models": matching_global_models,
@@ -362,4 +373,53 @@ pub(crate) async fn build_admin_provider_mapping_preview_payload(
         "truncated_keys": truncated_keys,
         "truncated_models": truncated_models,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mapping_preview_masked_catalog_api_key;
+    use crate::handlers::admin::request::AdminAppState;
+    use crate::AppState;
+    use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+    use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
+
+    #[test]
+    fn delete_preview_never_masks_internal_agent_identity_placeholder() {
+        let app = AppState::new().expect("gateway should build");
+        let state = AdminAppState::new(&app);
+        let encrypted_placeholder =
+            encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "__placeholder__")
+                .expect("placeholder should encrypt");
+        let encrypted_auth_config = encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            r#"{"auth_mode":"agentIdentity","agent_runtime_id":"runtime-1","agent_private_key":"base64-private-key","task_id":"task-1"}"#,
+        )
+        .expect("auth config should encrypt");
+        let key = StoredProviderCatalogKey::new(
+            "key-agent".to_string(),
+            "provider-codex".to_string(),
+            "agent".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            None,
+            encrypted_placeholder,
+            Some(encrypted_auth_config),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("transport should build");
+
+        assert_eq!(
+            mapping_preview_masked_catalog_api_key(&state, &key, "codex"),
+            "[Agent Identity]"
+        );
+    }
 }

@@ -78,6 +78,36 @@ pub(super) fn parse_admin_provider_oauth_batch_import_request(
     }
 }
 
+fn json_value_contains_agent_identity(value: &serde_json::Value) -> bool {
+    if value.as_object().is_some_and(|_| {
+        aether_provider_transport::is_codex_agent_identity_auth_config_value(value)
+    }) {
+        return true;
+    }
+    match value {
+        serde_json::Value::Array(items) => items.iter().any(json_value_contains_agent_identity),
+        serde_json::Value::Object(object) => {
+            object.values().any(json_value_contains_agent_identity)
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn admin_provider_oauth_batch_contains_agent_identity(raw_credentials: &str) -> bool {
+    let raw = raw_credentials.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+        return json_value_contains_agent_identity(&value);
+    }
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .any(|value| json_value_contains_agent_identity(&value))
+}
+
 fn coerce_admin_provider_oauth_import_str(value: Option<&serde_json::Value>) -> Option<String> {
     value
         .and_then(serde_json::Value::as_str)
@@ -215,6 +245,34 @@ fn extract_admin_provider_oauth_batch_import_entry(
         serde_json::Value::Object(object) => {
             let is_grok = provider_type.trim().eq_ignore_ascii_case("grok");
             let is_windsurf = provider_type.trim().eq_ignore_ascii_case("windsurf");
+            let is_codex_agent_identity = provider_type.trim().eq_ignore_ascii_case("codex")
+                && aether_provider_transport::is_codex_agent_identity_auth_config_value(item);
+            if is_codex_agent_identity {
+                return Some(AdminProviderOAuthBatchImportEntry {
+                    parse_error: None,
+                    refresh_token: None,
+                    access_token: None,
+                    export_access_token: None,
+                    raw_credentials: Some(item.clone()),
+                    expires_at: None,
+                    account_id: None,
+                    account_user_id: None,
+                    plan_type: None,
+                    pool_tier: None,
+                    user_id: None,
+                    email: None,
+                    account_name: None,
+                    project_id: None,
+                    client_version: None,
+                    session_id: None,
+                    sso_rw_token: None,
+                    cf_cookies: None,
+                    cf_clearance: None,
+                    request_headers: None,
+                    user_agent: None,
+                    browser_profile: None,
+                });
+            }
             let refresh_token = coerce_admin_provider_oauth_import_str(
                 object
                     .get("refresh_token")
@@ -434,6 +492,99 @@ fn extract_admin_provider_oauth_batch_import_entry(
     }
 }
 
+fn parse_sub2api_export_accounts(
+    provider_type: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<AdminProviderOAuthBatchImportEntry>> {
+    if !provider_type.trim().eq_ignore_ascii_case("codex") {
+        return None;
+    }
+    let is_sub2api_export = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("sub2api-data"));
+    if !is_sub2api_export {
+        return None;
+    }
+
+    let Some(accounts) = object.get("accounts").and_then(serde_json::Value::as_array) else {
+        return Some(vec![parse_error_entry(
+            "sub2api 导出缺少 accounts 数组".to_string(),
+        )]);
+    };
+
+    let mut entries = Vec::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let Some(account) = account.as_object() else {
+            entries.push(parse_error_entry(format!(
+                "sub2api 第 {} 个账号必须是 JSON 对象",
+                index + 1
+            )));
+            continue;
+        };
+        if account
+            .get("platform")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|platform| !platform.trim().eq_ignore_ascii_case("openai"))
+        {
+            continue;
+        }
+
+        let Some(mut credentials) = account
+            .get("credentials")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+        else {
+            entries.push(parse_error_entry(format!(
+                "sub2api 第 {} 个账号缺少 credentials 对象",
+                index + 1
+            )));
+            continue;
+        };
+        if let Some(name) = account
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            credentials
+                .entry("account_name".to_string())
+                .or_insert_with(|| json!(name));
+        }
+        if let Some(extra) = account.get("extra").and_then(serde_json::Value::as_object) {
+            for key in [
+                "account_id",
+                "chatgpt_account_id",
+                "chatgpt_user_id",
+                "chatgpt_account_is_fedramp",
+                "email",
+                "plan_type",
+                "workspace_id",
+            ] {
+                if let Some(value) = extra.get(key).cloned() {
+                    credentials.entry(key.to_string()).or_insert(value);
+                }
+            }
+        }
+
+        let credentials = serde_json::Value::Object(credentials);
+        match extract_admin_provider_oauth_batch_import_entry(provider_type, &credentials) {
+            Some(entry) => entries.push(entry),
+            None => entries.push(parse_error_entry(format!(
+                "sub2api 第 {} 个账号没有可导入的凭据",
+                index + 1
+            ))),
+        }
+    }
+
+    if entries.is_empty() {
+        entries.push(parse_error_entry(
+            "sub2api 导出中没有可导入的 OpenAI 账号".to_string(),
+        ));
+    }
+    Some(entries)
+}
+
 pub(super) fn parse_admin_provider_oauth_batch_import_entries(
     provider_type: &str,
     raw_credentials: &str,
@@ -459,12 +610,15 @@ pub(super) fn parse_admin_provider_oauth_batch_import_entries(
     }
 
     if raw.starts_with('{') {
-        if let Ok(value @ serde_json::Value::Object(_)) =
-            serde_json::from_str::<serde_json::Value>(raw)
-        {
-            return extract_admin_provider_oauth_batch_import_entry(provider_type, &value)
-                .into_iter()
-                .collect();
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(object) = value.as_object() {
+                if let Some(entries) = parse_sub2api_export_accounts(provider_type, object) {
+                    return entries;
+                }
+                return extract_admin_provider_oauth_batch_import_entry(provider_type, &value)
+                    .into_iter()
+                    .collect();
+            }
         }
     }
 
@@ -497,6 +651,47 @@ pub(super) fn parse_admin_provider_oauth_batch_import_entries(
             )
         })
         .collect()
+}
+
+pub(super) fn parse_admin_provider_oauth_agent_identity_import_entries(
+    raw_credentials: &str,
+) -> Result<Vec<AdminProviderOAuthBatchImportEntry>, String> {
+    let raw = raw_credentials.trim();
+    if raw.is_empty() {
+        return Err("Agent Identity 凭据不能为空".to_string());
+    }
+    let value = serde_json::from_str::<serde_json::Value>(raw)
+        .map_err(|error| format!("Agent Identity JSON 解析失败: {error}"))?;
+    let entries = match &value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                extract_admin_provider_oauth_batch_import_entry("codex", item).unwrap_or_else(
+                    || {
+                        parse_error_entry(format!(
+                            "第 {} 个条目没有可导入的 Agent Identity 凭据",
+                            index + 1
+                        ))
+                    },
+                )
+            })
+            .collect(),
+        serde_json::Value::Object(object) => parse_sub2api_export_accounts("codex", object)
+            .unwrap_or_else(|| {
+                vec![
+                    extract_admin_provider_oauth_batch_import_entry("codex", &value)
+                        .unwrap_or_else(|| {
+                            parse_error_entry("没有可导入的 Agent Identity 凭据".to_string())
+                        }),
+                ]
+            }),
+        _ => return Err("Agent Identity 凭据必须是 JSON 对象、数组或 sub2api 导出".to_string()),
+    };
+    if entries.is_empty() {
+        return Err("Agent Identity 凭据不能为空".to_string());
+    }
+    Ok(entries)
 }
 
 fn parse_error_entry(error: String) -> AdminProviderOAuthBatchImportEntry {
@@ -687,6 +882,7 @@ pub(super) fn build_admin_provider_oauth_batch_task_state(
     task_id: &str,
     provider_id: &str,
     provider_type: &str,
+    import_kind: &str,
     status: &str,
     total: usize,
     processed: usize,
@@ -715,6 +911,7 @@ pub(super) fn build_admin_provider_oauth_batch_task_state(
         "task_id": task_id,
         "provider_id": provider_id,
         "provider_type": provider_type,
+        "import_kind": import_kind,
         "status": status,
         "total": total,
         "processed": processed,
@@ -736,6 +933,7 @@ pub(super) fn build_admin_provider_oauth_batch_task_state(
 #[cfg(test)]
 mod tests {
     use super::{
+        admin_provider_oauth_batch_contains_agent_identity,
         apply_admin_provider_oauth_batch_import_hints,
         parse_admin_provider_oauth_batch_import_entries,
     };
@@ -748,6 +946,37 @@ mod tests {
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).expect("jwt json should serialize"))
         };
         format!("{}.{}.signature", encode(header), encode(payload))
+    }
+
+    #[test]
+    fn ordinary_batch_guard_detects_agent_identity_in_all_json_shapes() {
+        let single = json!({
+            "auth_mode": "agentIdentity",
+            "agent_runtime_id": "runtime-1",
+            "agent_private_key": "private-key"
+        });
+        assert!(admin_provider_oauth_batch_contains_agent_identity(
+            &single.to_string()
+        ));
+        assert!(admin_provider_oauth_batch_contains_agent_identity(
+            &json!([{"refresh_token":"ordinary"}, single.clone()]).to_string()
+        ));
+        assert!(admin_provider_oauth_batch_contains_agent_identity(
+            &format!("ordinary-token\n{}", single)
+        ));
+        assert!(admin_provider_oauth_batch_contains_agent_identity(
+            &json!({
+                "type": "sub2api-data",
+                "accounts": [{"credentials": single.clone()}]
+            })
+            .to_string()
+        ));
+        assert!(!admin_provider_oauth_batch_contains_agent_identity(
+            &json!([{"refresh_token":"ordinary"}]).to_string()
+        ));
+        assert!(!admin_provider_oauth_batch_contains_agent_identity(
+            "ordinary-token"
+        ));
     }
 
     #[test]
@@ -764,6 +993,76 @@ mod tests {
         assert_eq!(entries[0].expires_at, Some(2_100_000_000));
         assert_eq!(entries[0].account_id.as_deref(), Some("acc-1"));
         assert_eq!(entries[0].email.as_deref(), Some("u@example.com"));
+    }
+
+    #[test]
+    fn preserves_codex_agent_identity_entry_without_access_token() {
+        let entries = parse_admin_provider_oauth_batch_import_entries(
+            "codex",
+            r#"{"auth_mode":"agentIdentity","agent_identity":{"agent_runtime_id":"runtime-1","agent_private_key":"not-validated-until-import"}}"#,
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].refresh_token.is_none());
+        assert!(entries[0].access_token.is_none());
+        assert_eq!(
+            entries[0]
+                .raw_credentials
+                .as_ref()
+                .and_then(|value| value.get("auth_mode")),
+            Some(&json!("agentIdentity"))
+        );
+    }
+
+    #[test]
+    fn unwraps_sub2api_agent_identity_export_accounts() {
+        let entries = parse_admin_provider_oauth_batch_import_entries(
+            "codex",
+            r#"{
+                "type":"sub2api-data",
+                "version":1,
+                "accounts":[
+                    {
+                        "name":"agent@example.com",
+                        "platform":"openai",
+                        "type":"oauth",
+                        "credentials":{
+                            "auth_mode":"agentIdentity",
+                            "agent_runtime_id":"runtime-1",
+                            "agent_private_key":"test-key",
+                            "task_id":"task-1",
+                            "chatgpt_account_id":"account-1"
+                        },
+                        "extra":{
+                            "email":"agent@example.com",
+                            "chatgpt_user_id":"user-1"
+                        }
+                    },
+                    {
+                        "name":"unrelated@example.com",
+                        "platform":"anthropic",
+                        "credentials":{"access_token":"ignored-token"}
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].parse_error.is_none());
+        assert!(entries[0].refresh_token.is_none());
+        assert!(entries[0].access_token.is_none());
+        let credentials = entries[0]
+            .raw_credentials
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .expect("Agent Identity credentials should be preserved");
+        assert_eq!(credentials.get("auth_mode"), Some(&json!("agentIdentity")));
+        assert_eq!(
+            credentials.get("account_name"),
+            Some(&json!("agent@example.com"))
+        );
+        assert_eq!(credentials.get("email"), Some(&json!("agent@example.com")));
+        assert_eq!(credentials.get("chatgpt_user_id"), Some(&json!("user-1")));
     }
 
     #[test]

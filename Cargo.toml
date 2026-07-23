@@ -110,6 +110,8 @@ bytes = "1"
 cbc = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
+crypto_box = { version = "0.9", features = ["seal"] }
+ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
 flate2 = "1"
 futures-util = "0.3"
 hmac = "0.12"

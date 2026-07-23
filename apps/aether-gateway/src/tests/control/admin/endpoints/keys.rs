@@ -678,6 +678,103 @@ async fn gateway_creates_admin_provider_key_locally_with_trusted_admin_principal
 }
 
 #[tokio::test]
+async fn generic_key_routes_reject_agent_identity_credential_writes() {
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![sample_provider("provider-codex", "codex", 10)],
+        vec![],
+        vec![sample_key(
+            "key-codex-existing",
+            "provider-codex",
+            "openai:responses",
+            "existing-secret",
+        )],
+    ));
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_repository_for_tests(
+                    provider_catalog_repository.clone(),
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let agent_identity = json!({
+        "provider_type": "codex",
+        "auth_mode": "agentIdentity",
+        "agent_runtime_id": "runtime-bypass",
+        "agent_private_key": "private-key-must-use-dedicated-import"
+    });
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!(
+            "{gateway_url}/api/admin/endpoints/providers/provider-codex/keys"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "api_formats": ["openai:responses"],
+            "auth_type": "oauth",
+            "auth_config": agent_identity,
+            "name": "bypass create"
+        }))
+        .send()
+        .await
+        .expect("create request should complete");
+    assert_eq!(create_response.status(), StatusCode::BAD_REQUEST);
+    let create_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("create error should be JSON");
+    assert!(create_payload["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("专属创建或导入接口")));
+
+    let update_response = client
+        .put(format!(
+            "{gateway_url}/api/admin/endpoints/keys/key-codex-existing"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "auth_type": "oauth",
+            "auth_config": {
+                "provider_type": "codex",
+                "auth_mode": "agentIdentity",
+                "agent_runtime_id": "runtime-bypass-update",
+                "agent_private_key": "private-key-must-use-dedicated-import"
+            }
+        }))
+        .send()
+        .await
+        .expect("update request should complete");
+    assert_eq!(update_response.status(), StatusCode::BAD_REQUEST);
+    let update_payload: serde_json::Value = update_response
+        .json()
+        .await
+        .expect("update error should be JSON");
+    assert!(update_payload["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("专属创建或导入接口")));
+
+    let keys = provider_catalog_repository
+        .list_keys_by_provider_ids(&["provider-codex".to_string()])
+        .await
+        .expect("keys should read");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].id, "key-codex-existing");
+    assert_eq!(keys[0].auth_type, "api_key");
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn provider_key_concurrent_limit_create_and_list_responses() {
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider("provider-openai", "openai", 10)],
@@ -1378,6 +1475,121 @@ async fn gateway_export_preserves_distinct_imported_access_token_with_authorizat
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_generic_export_rejects_agent_identity_without_exposing_private_key() {
+    let private_key = "agent-private-key-must-not-leak";
+    let mut provider = sample_provider("provider-codex", "codex", 10);
+    provider.provider_type = "codex".to_string();
+    let mut key = sample_key(
+        "key-codex-agent",
+        "provider-codex",
+        "openai:responses",
+        "__placeholder__",
+    );
+    key.auth_type = "oauth".to_string();
+    key.encrypted_auth_config = Some(
+        encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            &json!({
+                "provider_type": "codex",
+                "auth_mode": "agentIdentity",
+                "agent_runtime_id": "runtime-must-not-leak",
+                "agent_private_key": private_key,
+                "task_id": "task-must-not-leak"
+            })
+            .to_string(),
+        )
+        .expect("Agent Identity auth config should encrypt"),
+    );
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![],
+        vec![key],
+    ));
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_catalog_reader_for_tests(
+                    provider_catalog_repository,
+                )
+                .with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+
+    let reveal_response = client
+        .get(format!(
+            "{gateway_url}/api/admin/endpoints/keys/key-codex-agent/reveal"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("reveal request should complete");
+
+    assert_eq!(reveal_response.status(), StatusCode::BAD_REQUEST);
+    let reveal_body = reveal_response
+        .text()
+        .await
+        .expect("reveal error body should read");
+    assert!(reveal_body.contains("专属 provider-oauth 管理面"));
+    assert!(!reveal_body.contains(private_key));
+    assert!(!reveal_body.contains("runtime-must-not-leak"));
+    assert!(!reveal_body.contains("task-must-not-leak"));
+
+    let export_response = client
+        .get(format!(
+            "{gateway_url}/api/admin/endpoints/keys/key-codex-agent/export"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("export request should complete");
+
+    assert_eq!(export_response.status(), StatusCode::BAD_REQUEST);
+    let export_body = export_response
+        .text()
+        .await
+        .expect("export error body should read");
+    assert!(export_body.contains("专属 provider-oauth 管理面"));
+    assert!(!export_body.contains(private_key));
+    assert!(!export_body.contains("runtime-must-not-leak"));
+    assert!(!export_body.contains("task-must-not-leak"));
+
+    let list_response = client
+        .get(format!(
+            "{gateway_url}/api/admin/endpoints/providers/provider-codex/keys"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("list request should complete");
+
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_payload: serde_json::Value = list_response
+        .json()
+        .await
+        .expect("list body should be JSON");
+    let agent = list_payload
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == "key-codex-agent"))
+        .expect("Agent Identity key should be listed");
+    assert_eq!(agent["agent_identity"], true);
+    assert_eq!(agent["can_export_oauth"], false);
+
+    gateway_handle.abort();
 }
 
 #[tokio::test]
@@ -2601,11 +2813,27 @@ async fn gateway_handles_admin_keys_grouped_by_format_locally_with_trusted_admin
     key_b.created_at_unix_ms = Some(1_711_100_000);
     key_b.updated_at_unix_secs = Some(1_711_100_100);
 
+    let mut key_agent = sample_key(
+        "key-codex-agent",
+        "provider-codex",
+        "openai:responses",
+        "__placeholder__",
+    );
+    key_agent.auth_type = "oauth".to_string();
+    key_agent.encrypted_auth_config = Some(
+        encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            r#"{"provider_type":"codex","auth_mode":"agentIdentity","agent_runtime_id":"runtime-1","agent_private_key":"base64-private-key","task_id":"task-1"}"#,
+        )
+        .expect("Agent Identity auth config should encrypt"),
+    );
+
     let provider_catalog_repository = Arc::new(SummaryNullingProviderCatalogReadRepository::seed(
         vec![
             sample_provider("provider-openai", "openai", 10),
             sample_provider("provider-claude", "claude", 20)
                 .with_transport_fields(false, false, true, None, None, None, None, None, None),
+            sample_provider("provider-codex", "codex", 30),
         ],
         vec![
             sample_endpoint(
@@ -2620,8 +2848,14 @@ async fn gateway_handles_admin_keys_grouped_by_format_locally_with_trusted_admin
                 "claude:messages",
                 "https://api.claude.example",
             ),
+            sample_endpoint(
+                "endpoint-codex-responses",
+                "provider-codex",
+                "openai:responses",
+                "https://api.codex.example",
+            ),
         ],
-        vec![key_a, key_b],
+        vec![key_a, key_b, key_agent],
     ));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
@@ -2665,6 +2899,11 @@ async fn gateway_handles_admin_keys_grouped_by_format_locally_with_trusted_admin
     );
     assert_eq!(payload["openai:chat"][0]["internal_priority"], 10);
     assert_eq!(payload["claude:messages"][0]["provider_active"], false);
+    let agent_item = payload["openai:responses"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == "key-codex-agent"))
+        .expect("Agent Identity key should be grouped");
+    assert_eq!(agent_item["api_key_masked"], "[Agent Identity]");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

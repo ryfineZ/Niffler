@@ -140,4 +140,18 @@ describe('ProviderKeyIdentityBlock', () => {
 
     unmount()
   })
+
+  it('does not offer generic copy or export actions for Agent Identity', () => {
+    const { root, unmount } = mount({
+      apiKey: createProviderKey({ agent_identity: true }),
+      maskedSecretLabel: '[Agent Identity]',
+      canExportCredential: false,
+    })
+
+    expect(root.textContent).toContain('[Agent Identity]')
+    expect(root.querySelector('button[title="下载 OAuth 授权文件"]')).toBeNull()
+    expect(root.querySelector('button[title="复制密钥"]')).toBeNull()
+
+    unmount()
+  })
 })

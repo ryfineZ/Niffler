@@ -7,6 +7,9 @@ import {
   REASONING_EFFORTS,
   createDefaultModelDirectivesConfig,
   defaultModelDirectiveSuffixesForApiFormat,
+  modelDirectiveBuiltInMappingPreview,
+  modelDirectiveEffectiveMappingPreview,
+  modelDirectiveMappingOverrideFromEffective,
   normalizeModelDirectivesConfig,
   updateModelDirectiveMappingOverride,
   updateModelDirectiveSuffixEnabled,
@@ -29,10 +32,49 @@ describe('modelDirectivesConfig', () => {
       'fast',
     ])
     expect(defaultModelDirectiveSuffixesForApiFormat('openai:responses')).toContain('ultra')
-    expect(defaultModelDirectiveSuffixesForApiFormat('openai:search')).toEqual(MODEL_DIRECTIVE_SUFFIXES)
+    expect(defaultModelDirectiveSuffixesForApiFormat('openai:search')).toContain('ultra')
+    expect(defaultModelDirectiveSuffixesForApiFormat('openai:search')).not.toContain('fast')
     expect(defaultModelDirectiveSuffixesForApiFormat('claude:messages')).not.toContain('ultra')
     expect(defaultModelDirectiveSuffixesForApiFormat('gemini:generate_content')).not.toContain('ultra')
     expect(MODEL_DIRECTIVE_SUFFIX_METADATA.fast.description).toBe('Fast 服务层级')
+  })
+
+  it('previews built-in mappings and merges configured overrides', () => {
+    expect(modelDirectiveBuiltInMappingPreview('openai:chat', 'low')).toEqual({
+      reasoning_effort: 'low',
+    })
+    expect(modelDirectiveBuiltInMappingPreview('openai:responses', 'fast')).toEqual({
+      service_tier: 'priority',
+    })
+    expect(modelDirectiveBuiltInMappingPreview('openai:search', 'fast')).toBeUndefined()
+    expect(modelDirectiveBuiltInMappingPreview('claude:messages', 'medium')).toEqual({
+      output_config: { effort: 'medium' },
+      thinking: { type: 'enabled', budget_tokens: 2048 },
+    })
+    expect(modelDirectiveBuiltInMappingPreview('gemini:generate_content', 'high')).toEqual({
+      generationConfig: {
+        thinkingConfig: { includeThoughts: true, thinkingBudget: 4096 },
+      },
+    })
+
+    expect(modelDirectiveEffectiveMappingPreview('openai:responses', 'low', {
+      reasoning: { effort: 'medium', summary: 'auto' },
+      trace: true,
+    })).toEqual({
+      reasoning: { effort: 'medium', summary: 'auto' },
+      trace: true,
+    })
+
+    expect(modelDirectiveMappingOverrideFromEffective('openai:responses', 'low', {
+      reasoning: { effort: 'low', summary: 'auto' },
+      trace: true,
+    })).toEqual({
+      reasoning: { summary: 'auto' },
+      trace: true,
+    })
+    expect(modelDirectiveMappingOverrideFromEffective('openai:responses', 'low', {
+      reasoning: { effort: 'low' },
+    })).toBeUndefined()
   })
 
   it('creates a config whose mappings contain overrides only', () => {
@@ -68,6 +110,45 @@ describe('modelDirectivesConfig', () => {
       'max',
       'ultra',
     ])
+  })
+
+  it('drops the previously persisted no-op fast suffix from OpenAI Search', () => {
+    const config = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          'openai:search': {
+            suffixes: ['low', 'fast'],
+            mappings: { fast: { service_tier: 'priority' } },
+          },
+        },
+      },
+    })
+
+    expect(config.reasoning_effort.api_formats['openai:search'].suffixes).toEqual(['low'])
+    expect(config.reasoning_effort.api_formats['openai:search'].mappings).toEqual({})
+  })
+
+  it('drops known built-in suffixes that the selected API format cannot execute', () => {
+    const config = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          'claude:messages': {
+            suffixes: ['none', 'low', 'ultra', 'VendorFuture'],
+            mappings: {
+              none: { thinking: { type: 'disabled' } },
+              ultra: { thinking: { type: 'adaptive' } },
+              VendorFuture: { thinking: { type: 'adaptive' } },
+            },
+          },
+        },
+      },
+    })
+
+    expect(config.reasoning_effort.api_formats['claude:messages'].suffixes)
+      .toEqual(['low', 'VendorFuture'])
+    expect(config.reasoning_effort.api_formats['claude:messages'].mappings).toEqual({
+      VendorFuture: { thinking: { type: 'adaptive' } },
+    })
   })
 
   it('preserves every explicit mapping as an authoritative override', () => {
@@ -162,6 +243,67 @@ describe('modelDirectivesConfig', () => {
         custom: { vendor_option: 'keep-vendor' },
       },
     })
+  })
+
+  it('canonicalizes API format aliases without keeping duplicate keys', () => {
+    const aliasOnly = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          'OPENAI:RESPONSES': {
+            enabled: false,
+            mappings: { low: { reasoning: { effort: 'medium' } } },
+          },
+        },
+      },
+    })
+    expect(aliasOnly.reasoning_effort.api_formats['openai:responses']).toMatchObject({
+      enabled: false,
+      suffixes: ['low'],
+      mappings: { low: { reasoning: { effort: 'medium' } } },
+    })
+    expect(aliasOnly.reasoning_effort.api_formats).not.toHaveProperty('OPENAI:RESPONSES')
+
+    const canonicalWins = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          'OPENAI:RESPONSES': { enabled: false, suffixes: ['low'] },
+          'openai:responses': { enabled: true, suffixes: ['high'] },
+        },
+      },
+    })
+    expect(canonicalWins.reasoning_effort.api_formats['openai:responses']).toMatchObject({
+      enabled: true,
+      suffixes: ['high'],
+    })
+
+    const pathAlias = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          '/v1/responses': {
+            enabled: false,
+            suffixes: ['medium'],
+            mappings: { medium: { reasoning: { effort: 'high' } } },
+          },
+        },
+      },
+    })
+    expect(pathAlias.reasoning_effort.api_formats['openai:responses']).toMatchObject({
+      enabled: false,
+      suffixes: ['medium'],
+      mappings: { medium: { reasoning: { effort: 'high' } } },
+    })
+    expect(pathAlias.reasoning_effort.api_formats).not.toHaveProperty('/v1/responses')
+
+    const legacyPath = normalizeModelDirectivesConfig({
+      reasoning_effort: {
+        api_formats: {
+          'openai:cli': { suffixes: ['high'], mappings: {} },
+        },
+      },
+    })
+    expect(legacyPath.reasoning_effort.api_formats['openai:responses'].suffixes)
+      .toEqual(['high'])
+    expect(legacyPath.reasoning_effort.api_formats).not.toHaveProperty('openai:cli')
   })
 
   it('removes empty overrides without mutating unrelated custom mappings', () => {

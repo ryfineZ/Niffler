@@ -1,5 +1,11 @@
+use super::super::super::duplicates::{
+    acquire_codex_oauth_account_locks, find_duplicate_provider_oauth_key,
+    release_codex_oauth_account_locks,
+};
 use super::super::super::errors::build_internal_control_error_response;
-use super::super::super::provisioning::provider_oauth_token_payload_expires_at_unix_secs;
+use super::super::super::provisioning::{
+    provider_oauth_token_payload_expires_at_unix_secs, seed_provider_oauth_pool_score,
+};
 use super::super::super::runtime::{
     resolve_provider_oauth_runtime_endpoints,
     spawn_provider_oauth_account_state_refresh_after_update,
@@ -13,8 +19,10 @@ use super::shared::{
 };
 use crate::handlers::admin::provider::shared::paths::admin_provider_oauth_complete_key_id;
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
+use crate::handlers::shared::sync_provider_key_oauth_status_snapshot;
 use crate::provider_key_auth::provider_key_is_oauth_managed;
 use crate::GatewayError;
+use aether_data_contracts::repository::provider_catalog::ProviderCatalogKeyOAuthRuntimeStateCasUpdate;
 use axum::{
     body::{Body, Bytes},
     http,
@@ -84,6 +92,12 @@ pub(super) async fn handle_admin_provider_oauth_complete_key(
         return Ok(build_internal_control_error_response(
             http::StatusCode::BAD_REQUEST,
             "state 无效或已过期",
+        ));
+    }
+    if state_data.expected_encrypted_auth_config != key.encrypted_auth_config {
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::CONFLICT,
+            "授权期间 Key 认证信息已变更，请重新获取授权",
         ));
     }
 
@@ -206,20 +220,164 @@ pub(super) async fn handle_admin_provider_oauth_complete_key(
             "provider oauth encryption unavailable",
         ));
     };
-    let updated = state
-        .update_provider_catalog_key_oauth_credentials(
-            &key_id,
-            &encrypted_api_key,
-            Some(&encrypted_auth_config),
-            expires_at,
+    let codex_oauth_account_leases = if provider_type == "codex" {
+        match acquire_codex_oauth_account_locks(state, &provider_id, &auth_config, "key-complete")
+            .await
+        {
+            Ok(leases) => leases,
+            Err(error) => {
+                return Ok(build_internal_control_error_response(
+                    error.status_code(),
+                    error.detail(),
+                ));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    if provider_type == "codex" {
+        let duplicate = match state
+            .find_duplicate_provider_oauth_key(&provider_id, &auth_config, Some(&key_id))
+            .await
+        {
+            Ok(duplicate) => duplicate,
+            Err(detail) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+                return Ok(build_internal_control_error_response(
+                    http::StatusCode::CONFLICT,
+                    detail,
+                ));
+            }
+        };
+        if let Some(duplicate) = duplicate {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            return Ok(build_internal_control_error_response(
+                http::StatusCode::CONFLICT,
+                format!(
+                    "该 ChatGPT 账号已存在于其他 Key（名称: {}）",
+                    duplicate.name
+                ),
+            ));
+        }
+    }
+    let mut recovered_key = key.clone();
+    recovered_key.encrypted_api_key = Some(encrypted_api_key.clone());
+    recovered_key.encrypted_auth_config = Some(encrypted_auth_config.clone());
+    recovered_key.expires_at_unix_secs = expires_at;
+    recovered_key.oauth_invalid_at_unix_secs = None;
+    recovered_key.oauth_invalid_reason = None;
+    recovered_key.updated_at_unix_secs = Some(now_unix_secs);
+    recovered_key.status_snapshot = sync_provider_key_oauth_status_snapshot(
+        recovered_key.status_snapshot.as_ref(),
+        &recovered_key,
+    );
+    let oauth_status = recovered_key
+        .status_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.get("oauth"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let persisted_encrypted_auth_config = recovered_key
+        .encrypted_auth_config
+        .clone()
+        .expect("recovered auth config should be present");
+    let updated_result = state
+        .app()
+        .compare_and_update_provider_catalog_key_oauth_runtime_state(
+            &ProviderCatalogKeyOAuthRuntimeStateCasUpdate {
+                key_id: key_id.clone(),
+                expected_encrypted_auth_config: state_data.expected_encrypted_auth_config,
+                encrypted_auth_config: persisted_encrypted_auth_config.clone(),
+                encrypted_api_key_update: Some(encrypted_api_key),
+                expires_at_unix_secs_update: Some(expires_at),
+                oauth_invalid_at_unix_secs: None,
+                oauth_invalid_reason: None,
+                reset_error_count: true,
+                upstream_metadata_patch: None,
+                status_snapshot_patch: json!({ "oauth": oauth_status }),
+                updated_at_unix_secs: Some(now_unix_secs),
+            },
         )
-        .await?;
+        .await;
+    let _ = state
+        .app()
+        .invalidate_local_oauth_refresh_entry(&key_id)
+        .await;
+    let updated = match updated_result {
+        Ok(updated) => updated,
+        Err(error) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            return Err(error);
+        }
+    };
     if !updated {
+        release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::CONFLICT,
+            "授权期间 Key 认证信息已变更，请重新获取授权",
+        ));
+    }
+    let current_after_cas = match state
+        .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id))
+        .await
+    {
+        Ok(keys) => keys.into_iter().next(),
+        Err(error) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            return Err(error);
+        }
+    };
+    let Some(current_after_cas) = current_after_cas else {
+        release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
         return Ok(build_internal_control_error_response(
             http::StatusCode::NOT_FOUND,
             "Key 不存在",
         ));
+    };
+    if current_after_cas.encrypted_auth_config.as_deref()
+        != Some(persisted_encrypted_auth_config.as_str())
+    {
+        release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::CONFLICT,
+            "授权期间 Key 认证信息已变更，请重新获取授权",
+        ));
     }
+    let recovered_key = match state
+        .reset_provider_catalog_key_recovery_state_fenced(&key_id, &persisted_encrypted_auth_config)
+        .await
+    {
+        Ok(recovered_key) => recovered_key,
+        Err(error) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            return Err(error);
+        }
+    };
+    let Some(recovered_key) = recovered_key else {
+        let key_exists = match state
+            .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id))
+            .await
+        {
+            Ok(keys) => !keys.is_empty(),
+            Err(error) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+                return Err(error);
+            }
+        };
+        release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+        if !key_exists {
+            return Ok(build_internal_control_error_response(
+                http::StatusCode::NOT_FOUND,
+                "Key 不存在",
+            ));
+        }
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::CONFLICT,
+            "授权期间 Key 认证信息已变更，请重新获取授权",
+        ));
+    };
+    seed_provider_oauth_pool_score(state, &provider.id, &recovered_key, now_unix_secs).await;
+    release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
 
     spawn_provider_oauth_account_state_refresh_after_update(
         state.cloned_app(),

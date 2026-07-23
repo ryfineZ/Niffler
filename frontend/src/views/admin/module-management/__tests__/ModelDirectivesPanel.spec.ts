@@ -84,6 +84,28 @@ vi.mock('@/components/ui/textarea.vue', async () => {
   }
 })
 
+vi.mock('@/components/ui/input.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      inheritAttrs: false,
+      props: { modelValue: String, disabled: Boolean },
+      emits: ['update:modelValue'],
+      setup(props, { attrs, emit }) {
+        return () => h('input', {
+          ...attrs,
+          value: props.modelValue,
+          disabled: props.disabled,
+          onInput: (event: Event) => emit(
+            'update:modelValue',
+            (event.target as HTMLInputElement).value,
+          ),
+        })
+      },
+    }),
+  }
+})
+
 const mountedApps: Array<{ app: App, root: HTMLElement }> = []
 
 function mountPanel(onSave?: (value: ReturnType<typeof createDefaultModelDirectivesConfig>) => void) {
@@ -120,7 +142,16 @@ describe('ModelDirectivesPanel', () => {
   it('shows Codex ultra and authoritative custom suffixes in the OpenAI selector', async () => {
     const { config, root } = mountPanel()
     const suffixSelect = root.querySelectorAll('select').item(1) as HTMLSelectElement
+    expect(suffixSelect.value).toBe('low')
     expect([...suffixSelect.options].map(option => option.value)).toContain('ultra')
+    const searchSuffixSelect = root.querySelectorAll('select').item(3) as HTMLSelectElement
+    expect([...searchSuffixSelect.options].map(option => option.value)).not.toContain('fast')
+
+    const builtInMapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses low 映射参数"]',
+    ) as HTMLTextAreaElement
+    expect(JSON.parse(builtInMapping.value)).toEqual({ reasoning: { effort: 'low' } })
+    expect(root.textContent).toContain('内置映射预览（运行时按目标模型调整）')
 
     const current = config.value.reasoning_effort.api_formats['openai:responses']
     config.value = {
@@ -149,18 +180,18 @@ describe('ModelDirectivesPanel', () => {
     ]))
     selectSuffix(suffixSelect, 'ultra')
     await nextTick()
-    expect(root.textContent).toContain('Codex Ultra 预设，请求推理强度为 max')
+    expect(root.textContent).toContain('Codex Ultra 推理预设，仅支持兼容的 Codex 模型')
   })
 
   it('retains per-suffix drafts and validation state while switching suffixes', async () => {
     const { root } = mountPanel()
     const suffixSelect = root.querySelectorAll('select').item(1) as HTMLSelectElement
-    const noneMapping = root.querySelector(
-      'textarea[aria-label="OpenAI Responses none 映射参数"]',
+    const lowMapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses low 映射参数"]',
     ) as HTMLTextAreaElement
 
-    noneMapping.value = '{'
-    noneMapping.dispatchEvent(new Event('input', { bubbles: true }))
+    lowMapping.value = '{'
+    lowMapping.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     const saveButton = root.querySelector(
       'button[aria-label="保存 OpenAI Responses 映射参数"]',
@@ -171,11 +202,11 @@ describe('ModelDirectivesPanel', () => {
 
     selectSuffix(suffixSelect, 'medium')
     await nextTick()
-    selectSuffix(suffixSelect, 'none')
+    selectSuffix(suffixSelect, 'low')
     await nextTick()
 
     const restoredDraft = root.querySelector(
-      'textarea[aria-label="OpenAI Responses none 映射参数"]',
+      'textarea[aria-label="OpenAI Responses low 映射参数"]',
     ) as HTMLTextAreaElement
     expect(restoredDraft.value).toBe('{')
     expect(restoredDraft.getAttribute('aria-invalid')).toBe('true')
@@ -188,7 +219,7 @@ describe('ModelDirectivesPanel', () => {
 
     selectSuffix(suffixSelect, 'medium')
     await nextTick()
-    selectSuffix(suffixSelect, 'none')
+    selectSuffix(suffixSelect, 'low')
     await nextTick()
 
     const current = config.value.reasoning_effort.api_formats['openai:responses']
@@ -222,7 +253,7 @@ describe('ModelDirectivesPanel', () => {
     const savedConfigs: Array<ReturnType<typeof createDefaultModelDirectivesConfig>> = []
     const { root } = mountPanel(value => savedConfigs.push(value))
     const mapping = root.querySelector(
-      'textarea[aria-label="OpenAI Responses none 映射参数"]',
+      'textarea[aria-label="OpenAI Responses low 映射参数"]',
     ) as HTMLTextAreaElement
     mapping.value = '{"reasoning":{"effort":"medium"}}'
     mapping.dispatchEvent(new Event('input', { bubbles: true }))
@@ -234,12 +265,191 @@ describe('ModelDirectivesPanel', () => {
     saveButton.click()
     await nextTick()
     expect(savedConfigs).toHaveLength(1)
-    expect(savedConfigs[0].reasoning_effort.api_formats['openai:responses'].mappings.none)
+    expect(savedConfigs[0].reasoning_effort.api_formats['openai:responses'].mappings.low)
       .toEqual({ reasoning: { effort: 'medium' } })
     expect(saveButton.disabled).toBe(false)
 
     saveButton.click()
     await nextTick()
     expect(savedConfigs).toHaveLength(2)
+  })
+
+  it('selects the first enabled suffix when the loaded config disables low', async () => {
+    const { config, root } = mountPanel()
+    const current = config.value.reasoning_effort.api_formats['openai:responses']
+    config.value = {
+      ...config.value,
+      reasoning_effort: {
+        ...config.value.reasoning_effort,
+        api_formats: {
+          ...config.value.reasoning_effort.api_formats,
+          'openai:responses': {
+            ...current,
+            suffixes: ['high'],
+            mappings: {},
+          },
+        },
+      },
+    }
+    await nextTick()
+
+    const suffixSelect = root.querySelectorAll('select').item(1) as HTMLSelectElement
+    expect(suffixSelect.value).toBe('high')
+    const mapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses high 映射参数"]',
+    ) as HTMLTextAreaElement
+    expect(JSON.parse(mapping.value)).toEqual({ reasoning: { effort: 'high' } })
+  })
+
+  it('enables a custom suffix atomically with its first mapping', async () => {
+    const savedConfigs: Array<ReturnType<typeof createDefaultModelDirectivesConfig>> = []
+    const { config, root } = mountPanel(value => savedConfigs.push(value))
+
+    const addButton = root.querySelector(
+      'button[aria-label="新增 OpenAI Responses 自定义后缀"]',
+    ) as HTMLButtonElement
+    addButton.click()
+    await nextTick()
+    const input = root.querySelector(
+      'input[aria-label="OpenAI Responses 自定义后缀名称"]',
+    ) as HTMLInputElement
+    input.value = 'vendor-depth'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const confirmButton = root.querySelector(
+      'button[aria-label="添加 OpenAI Responses 自定义后缀"]',
+    ) as HTMLButtonElement
+    confirmButton.click()
+    await nextTick()
+
+    const suffixSelect = root.querySelectorAll('select').item(1) as HTMLSelectElement
+    expect(suffixSelect.value).toBe('vendor-depth')
+    expect([...suffixSelect.options].map(option => option.value)).toContain('vendor-depth')
+    expect(savedConfigs).toHaveLength(0)
+    expect(root.textContent).toContain('保存非空映射后启用此后缀')
+
+    const mapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses vendor-depth 映射参数"]',
+    ) as HTMLTextAreaElement
+    mapping.value = '{"vendor_option":"deep"}'
+    mapping.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const saveButton = root.querySelector(
+      'button[aria-label="保存 OpenAI Responses 映射参数"]',
+    ) as HTMLButtonElement
+    saveButton.click()
+    await nextTick()
+
+    expect(savedConfigs).toHaveLength(1)
+    const saved = savedConfigs[0].reasoning_effort.api_formats['openai:responses']
+    expect(saved.suffixes).toContain('vendor-depth')
+    expect(saved.mappings['vendor-depth']).toEqual({ vendor_option: 'deep' })
+
+    config.value = savedConfigs[0]
+    await nextTick()
+    expect(suffixSelect.value).toBe('vendor-depth')
+  })
+
+  it('removes one custom override without disabling its suffix', async () => {
+    const savedConfigs: Array<ReturnType<typeof createDefaultModelDirectivesConfig>> = []
+    const { config, root } = mountPanel(value => savedConfigs.push(value))
+    const current = config.value.reasoning_effort.api_formats['openai:responses']
+    config.value = {
+      ...config.value,
+      reasoning_effort: {
+        ...config.value.reasoning_effort,
+        api_formats: {
+          ...config.value.reasoning_effort.api_formats,
+          'openai:responses': {
+            ...current,
+            mappings: {
+              low: { reasoning: { effort: 'medium', summary: 'auto' } },
+            },
+          },
+        },
+      },
+    }
+    await nextTick()
+
+    const resetButton = root.querySelector(
+      'button[aria-label="恢复 OpenAI Responses 内置映射"]',
+    ) as HTMLButtonElement
+    resetButton.click()
+    await nextTick()
+
+    expect(savedConfigs).toHaveLength(1)
+    const saved = savedConfigs[0].reasoning_effort.api_formats['openai:responses']
+    expect(saved.mappings).not.toHaveProperty('low')
+    expect(saved.suffixes).toContain('low')
+  })
+
+  it('disables a persisted custom suffix when its mapping is cleared', async () => {
+    const savedConfigs: Array<ReturnType<typeof createDefaultModelDirectivesConfig>> = []
+    const { config, root } = mountPanel(value => savedConfigs.push(value))
+    const current = config.value.reasoning_effort.api_formats['openai:responses']
+    config.value = {
+      ...config.value,
+      reasoning_effort: {
+        ...config.value.reasoning_effort,
+        api_formats: {
+          ...config.value.reasoning_effort.api_formats,
+          'openai:responses': {
+            ...current,
+            suffixes: [...current.suffixes, 'vendor-depth'],
+            mappings: { 'vendor-depth': { vendor_option: 'deep' } },
+          },
+        },
+      },
+    }
+    await nextTick()
+
+    const suffixSelect = root.querySelectorAll('select').item(1) as HTMLSelectElement
+    selectSuffix(suffixSelect, 'vendor-depth')
+    await nextTick()
+    const mapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses vendor-depth 映射参数"]',
+    ) as HTMLTextAreaElement
+    mapping.value = '{}'
+    mapping.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const saveButton = root.querySelector(
+      'button[aria-label="保存 OpenAI Responses 映射参数"]',
+    ) as HTMLButtonElement
+    saveButton.click()
+    await nextTick()
+
+    expect(savedConfigs).toHaveLength(1)
+    const saved = savedConfigs[0].reasoning_effort.api_formats['openai:responses']
+    expect(saved.suffixes).not.toContain('vendor-depth')
+    expect(saved.mappings).not.toHaveProperty('vendor-depth')
+  })
+
+  it('stores only the custom difference from the visible built-in mapping', async () => {
+    const savedConfigs: Array<ReturnType<typeof createDefaultModelDirectivesConfig>> = []
+    const { root } = mountPanel(value => savedConfigs.push(value))
+    const mapping = root.querySelector(
+      'textarea[aria-label="OpenAI Responses low 映射参数"]',
+    ) as HTMLTextAreaElement
+    mapping.value = JSON.stringify({
+      reasoning: { effort: 'low', summary: 'auto' },
+      trace: true,
+    })
+    mapping.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const saveButton = root.querySelector(
+      'button[aria-label="保存 OpenAI Responses 映射参数"]',
+    ) as HTMLButtonElement
+    saveButton.click()
+    await nextTick()
+
+    expect(savedConfigs).toHaveLength(1)
+    expect(savedConfigs[0].reasoning_effort.api_formats['openai:responses'].mappings.low)
+      .toEqual({ reasoning: { summary: 'auto' }, trace: true })
+    expect(JSON.parse(mapping.value)).toEqual({
+      reasoning: { effort: 'low', summary: 'auto' },
+      trace: true,
+    })
   })
 })

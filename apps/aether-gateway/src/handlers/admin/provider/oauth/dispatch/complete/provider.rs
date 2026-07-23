@@ -1,4 +1,7 @@
-use super::super::super::duplicates::find_duplicate_provider_oauth_key;
+use super::super::super::duplicates::{
+    acquire_codex_oauth_account_locks, find_duplicate_provider_oauth_key,
+    release_codex_oauth_account_locks,
+};
 use super::super::super::errors::build_internal_control_error_response;
 use super::super::super::provisioning::{
     build_provider_oauth_auth_config_from_token_payload, create_provider_oauth_catalog_key,
@@ -158,14 +161,39 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
     };
 
     let api_formats = provider_oauth_active_api_formats(&endpoints);
+    let codex_oauth_account_leases = if provider_type == "codex" {
+        match acquire_codex_oauth_account_locks(
+            state,
+            &provider_id,
+            &auth_config,
+            "provider-complete",
+        )
+        .await
+        {
+            Ok(leases) => leases,
+            Err(error) => {
+                return Ok(build_internal_control_error_response(
+                    error.status_code(),
+                    error.detail(),
+                ));
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let duplicate = match state
         .find_duplicate_provider_oauth_key(&provider_id, &auth_config, None)
         .await
     {
         Ok(duplicate) => duplicate,
         Err(detail) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
             return Ok(build_internal_control_error_response(
-                http::StatusCode::BAD_REQUEST,
+                if provider_type == "codex" {
+                    http::StatusCode::CONFLICT
+                } else {
+                    http::StatusCode::BAD_REQUEST
+                },
                 detail,
             ));
         }
@@ -173,7 +201,7 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
 
     let replaced = duplicate.is_some();
     let persisted_key = if let Some(existing_key) = duplicate {
-        match state
+        let update_result = state
             .update_existing_provider_oauth_catalog_key(
                 &existing_key,
                 &provider_type,
@@ -183,10 +211,15 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
                 key_proxy.clone(),
                 expires_at,
             )
-            .await?
-        {
-            Some(key) => key,
-            None => {
+            .await;
+        match update_result {
+            Err(error) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+                return Err(error);
+            }
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
                 return Ok(build_internal_control_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
                     "provider oauth write unavailable",
@@ -214,7 +247,7 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
                         .unwrap_or(0)
                 )
             });
-        match state
+        let create_result = state
             .create_provider_oauth_catalog_key(
                 &provider_id,
                 &provider_type,
@@ -225,10 +258,15 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
                 key_proxy.clone(),
                 expires_at,
             )
-            .await?
-        {
-            Some(key) => key,
-            None => {
+            .await;
+        match create_result {
+            Err(error) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+                return Err(error);
+            }
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
                 return Ok(build_internal_control_error_response(
                     http::StatusCode::SERVICE_UNAVAILABLE,
                     "provider oauth write unavailable",
@@ -236,6 +274,7 @@ pub(super) async fn handle_admin_provider_oauth_complete_provider(
             }
         }
     };
+    release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
 
     spawn_provider_oauth_account_state_refresh_after_update(
         state.cloned_app(),

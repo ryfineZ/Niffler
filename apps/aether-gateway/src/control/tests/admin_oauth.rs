@@ -111,6 +111,20 @@ fn classifies_admin_provider_oauth_maintenance_routes_as_admin_proxy_route() {
         ),
         (
             http::Method::POST,
+            "/api/admin/provider-oauth/providers/provider-123/agent-identity-import/tasks",
+            "start_agent_identity_import_task",
+            "admin:provider_oauth",
+            "admin:provider_oauth:write",
+        ),
+        (
+            http::Method::GET,
+            "/api/admin/provider-oauth/providers/provider-123/agent-identity-import/tasks/agent-identity-task-123",
+            "get_agent_identity_import_task_status",
+            "admin:provider_oauth",
+            "admin:provider_oauth:read",
+        ),
+        (
+            http::Method::POST,
             "/api/admin/provider-oauth/providers/provider-123/batch-import",
             "batch_import_oauth",
             "admin:pool",

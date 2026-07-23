@@ -58,7 +58,7 @@
         <Download class="w-2.5 h-2.5" />
       </Button>
       <Button
-        v-else
+        v-else-if="apiKey.agent_identity !== true"
         variant="ghost"
         size="icon"
         class="h-4 w-4 shrink-0"

@@ -5,6 +5,7 @@ use crate::{
     provider_transport::{
         provider_types::provider_type_retains_oauth_forbidden, LocalOAuthRefreshError,
     },
+    state::AgentIdentityAuthConfigFence,
     AppState,
 };
 
@@ -18,8 +19,11 @@ pub(crate) async fn refresh_oauth_plan_auth_for_retry(
     if !status_may_be_oauth_invalid(status_code, response_text) {
         return false;
     }
-    let access_token_invalid_proven =
-        status_proves_access_token_invalid(status_code, response_text);
+    let request_authorization = execution_plan_authorization(plan);
+    let request_uses_agent_identity = request_authorization
+        .is_some_and(aether_provider_transport::is_codex_agent_identity_authorization);
+    let access_token_invalid_proven = !request_uses_agent_identity
+        && status_proves_access_token_invalid(status_code, response_text);
 
     let transport = match state
         .read_provider_transport_snapshot(&plan.provider_id, &plan.endpoint_id, &plan.key_id)
@@ -41,6 +45,48 @@ pub(crate) async fn refresh_oauth_plan_auth_for_retry(
             return false;
         }
     };
+
+    let current_uses_agent_identity =
+        aether_provider_transport::is_codex_agent_identity_transport(&transport);
+    if request_uses_agent_identity {
+        if !current_uses_agent_identity
+            || !aether_provider_transport::is_codex_agent_identity_invalid_task_response(
+                status_code,
+                response_text,
+            )
+            || !request_authorization.is_some_and(|authorization| {
+                aether_provider_transport::codex_agent_identity_authorization_matches_transport(
+                    &transport,
+                    authorization,
+                )
+            })
+        {
+            return false;
+        }
+        if !matches!(
+            state
+                .capture_agent_identity_auth_config_fence(&transport)
+                .await,
+            Ok(AgentIdentityAuthConfigFence::Current(_))
+        ) {
+            return false;
+        }
+    } else if current_uses_agent_identity {
+        // A bearer-token response cannot authorize refreshing an Agent Identity
+        // installed under the same key id while the request was in flight.
+        return false;
+    } else if transport
+        .provider
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("codex")
+        && transport.key.auth_type.trim().eq_ignore_ascii_case("oauth")
+        && !request_authorization.is_some_and(|authorization| {
+            bearer_authorization_matches_transport(authorization, &transport)
+        })
+    {
+        return false;
+    }
 
     if transport.key.decrypted_auth_config.is_none()
         && !transport.key.auth_type.trim().eq_ignore_ascii_case("oauth")
@@ -135,6 +181,26 @@ pub(crate) async fn refresh_oauth_plan_auth_for_retry(
 
 fn oauth_retry_failure_must_be_retained(provider_type: &str, refresh_status_code: u16) -> bool {
     provider_type_retains_oauth_forbidden(provider_type) && refresh_status_code == 403
+}
+
+fn execution_plan_authorization(plan: &ExecutionPlan) -> Option<&str> {
+    plan.headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.as_str())
+}
+
+fn bearer_authorization_matches_transport(
+    authorization: &str,
+    transport: &aether_provider_transport::GatewayProviderTransportSnapshot,
+) -> bool {
+    let current_token = transport.key.decrypted_api_key.trim();
+    !current_token.is_empty()
+        && authorization
+            .trim()
+            .strip_prefix("Bearer ")
+            .map(str::trim)
+            .is_some_and(|token| token == current_token)
 }
 
 fn status_may_be_oauth_invalid(status_code: u16, response_text: Option<&str>) -> bool {

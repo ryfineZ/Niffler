@@ -149,8 +149,15 @@ pub(super) async fn build_admin_monitoring_cache_affinities_response(
             .map(|item| item.base_url.clone())
             .filter(|value| !value.trim().is_empty());
         let key_name = key.map(|item| item.name.clone());
-        let key_prefix =
-            key.and_then(|item| admin_monitoring_masked_provider_key_prefix(state, item));
+        let key_prefix = key.and_then(|item| {
+            admin_monitoring_masked_provider_key_prefix(
+                state,
+                item,
+                provider
+                    .map(|provider| provider.provider_type.as_str())
+                    .unwrap_or(""),
+            )
+        });
         let user_id_text = user_id.clone();
         let username = user.map(|item| item.username.clone());
         let email = user.and_then(|item| item.email.clone());

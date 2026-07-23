@@ -7,8 +7,8 @@ use super::{
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
 use crate::provider_key_auth::{
-    provider_key_auth_config_uses_header_authorization, provider_key_auth_semantics,
-    provider_key_can_refresh_oauth,
+    provider_key_auth_config_is_agent_identity, provider_key_auth_config_uses_header_authorization,
+    provider_key_auth_semantics, provider_key_can_export_oauth, provider_key_can_refresh_oauth,
 };
 use crate::GatewayError;
 use aether_admin::provider::pool as admin_provider_pool_pure;
@@ -152,8 +152,20 @@ pub(super) async fn build_admin_pool_resolve_selection_response(
                 "credential_kind": auth_semantics.credential_kind().as_str(),
                 "runtime_auth_kind": auth_semantics.runtime_auth_kind().as_str(),
                 "oauth_managed": auth_semantics.oauth_managed(),
-                "can_refresh_oauth": provider_key_can_refresh_oauth(auth_semantics, auth_config.as_ref()),
-                "can_export_oauth": auth_semantics.can_export_oauth(),
+                "agent_identity": provider_key_auth_config_is_agent_identity(
+                    &provider_type,
+                    auth_config.as_ref(),
+                ),
+                "can_refresh_oauth": provider_key_can_refresh_oauth(
+                    auth_semantics,
+                    &provider_type,
+                    auth_config.as_ref(),
+                ),
+                "can_export_oauth": provider_key_can_export_oauth(
+                    auth_semantics,
+                    &provider_type,
+                    auth_config.as_ref(),
+                ),
                 "can_edit_oauth": auth_semantics.can_edit_oauth(),
                 "oauth_header_auth": auth_semantics.oauth_managed()
                     && provider_key_auth_config_uses_header_authorization(auth_config.as_ref()),

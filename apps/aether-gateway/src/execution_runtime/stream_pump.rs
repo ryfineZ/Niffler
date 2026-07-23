@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::io::Error as IoError;
 use std::time::{Duration, Instant};
@@ -38,6 +38,7 @@ pub(crate) fn build_direct_execution_frame_stream(
             headers,
             provider_api_format,
             stream_summary_report_context,
+            prefetched_body,
             response,
             started_at,
             stream_first_byte_timeout,
@@ -70,7 +71,14 @@ pub(crate) fn build_direct_execution_frame_stream(
 
         if should_buffer_non_stream_response(&headers, &observer_context) {
             let original_headers = headers.clone();
-            match buffer_non_sse_upstream_body(response, started_at, stream_first_byte_timeout).await {
+            match buffer_non_sse_upstream_body(
+                prefetched_body,
+                response,
+                started_at,
+                stream_first_byte_timeout,
+            )
+            .await
+            {
                 Ok(buffered) => {
                     let mut response_headers = original_headers;
                     let mut response_body = Bytes::from(buffered.body_bytes);
@@ -192,6 +200,61 @@ pub(crate) fn build_direct_execution_frame_stream(
         let mut upstream_bytes = 0u64;
         let mut ttfb_ms = None;
         let mut first_chunk_telemetry_emitted = false;
+        let mut prefetched_body_failed = false;
+        for item in prefetched_body {
+            match item {
+                Ok(chunk) => {
+                    if ttfb_ms.is_none() {
+                        ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+                    }
+                    if !first_chunk_telemetry_emitted {
+                        match encode_telemetry_frame(ttfb_ms, ttfb_ms, upstream_bytes) {
+                            Ok(frame) => yield Ok(frame),
+                            Err(err) => {
+                                yield Err(err);
+                                return;
+                            }
+                        }
+                        first_chunk_telemetry_emitted = true;
+                    }
+                    upstream_bytes += chunk.len() as u64;
+                    observe_stream_chunk(
+                        &mut stream_terminal_observer,
+                        &normalized_observer_context,
+                        private_stream_normalizer.as_mut(),
+                        &mut observer_buffered,
+                        chunk.as_ref(),
+                    );
+                    match encode_data_frame(&chunk) {
+                        Ok(frame) => yield Ok(frame),
+                        Err(err) => {
+                            yield Err(err);
+                            return;
+                        }
+                    }
+                }
+                Err(message) => {
+                    warn!(
+                        event_name = "stream_pump_body_read_error",
+                        log_type = "ops",
+                        status_code,
+                        upstream_bytes,
+                        error = %message,
+                        "upstream body stream read error"
+                    );
+                    match encode_error_frame(status_code, message) {
+                        Ok(frame) => yield Ok(frame),
+                        Err(encode_err) => {
+                            yield Err(encode_err);
+                            return;
+                        }
+                    }
+                    prefetched_body_failed = true;
+                    break;
+                }
+            }
+        }
+        if !prefetched_body_failed {
         match response {
             DirectUpstreamResponse::Reqwest(response) => {
                 let mut bytes_stream = response.bytes_stream();
@@ -516,6 +579,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                 }
             }
         }
+        }
         let summary = finalize_stream_terminal_summary(
             &mut stream_terminal_observer,
             &normalized_observer_context,
@@ -691,6 +755,7 @@ fn should_buffer_non_stream_response(
 }
 
 async fn buffer_non_sse_upstream_body(
+    mut prefetched_body: VecDeque<Result<Bytes, String>>,
     response: DirectUpstreamResponse,
     started_at: Instant,
     stream_first_byte_timeout: Option<Duration>,
@@ -698,6 +763,26 @@ async fn buffer_non_sse_upstream_body(
     let mut body_bytes = Vec::new();
     let mut upstream_bytes = 0u64;
     let mut ttfb_ms = None;
+
+    while let Some(item) = prefetched_body.pop_front() {
+        match item {
+            Ok(chunk) => {
+                if ttfb_ms.is_none() {
+                    ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+                }
+                upstream_bytes += chunk.len() as u64;
+                body_bytes.extend_from_slice(&chunk);
+            }
+            Err(message) => {
+                return Err(BufferedUpstreamBodyError {
+                    message,
+                    ttfb_ms,
+                    upstream_bytes,
+                    first_byte_timeout: None,
+                });
+            }
+        }
+    }
 
     match response {
         DirectUpstreamResponse::Reqwest(response) => {

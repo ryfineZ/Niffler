@@ -20,6 +20,8 @@ pub(crate) use self::endpoint_keys::{
     admin_reset_cycle_stats_key_id, admin_reveal_key_id, admin_update_key_id,
 };
 pub(crate) use self::oauth::{
+    admin_provider_oauth_agent_identity_import_task_path,
+    admin_provider_oauth_agent_identity_import_task_provider_id,
     admin_provider_oauth_batch_import_provider_id, admin_provider_oauth_batch_import_task_path,
     admin_provider_oauth_batch_import_task_provider_id, admin_provider_oauth_complete_key_id,
     admin_provider_oauth_complete_provider_id, admin_provider_oauth_device_authorize_provider_id,

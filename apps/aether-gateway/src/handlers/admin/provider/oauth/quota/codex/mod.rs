@@ -19,10 +19,9 @@ use self::plan::{
 };
 use super::shared::{
     build_quota_snapshot_payload, extract_execution_error_message,
-    oauth_refresh_auto_removed_result, persist_provider_quota_refresh_state,
-    provider_auto_remove_banned_keys, provider_auto_remove_quota_exhausted_keys,
-    quota_key_auto_removed, quota_refresh_success_invalid_state,
-    should_auto_remove_structured_reason, ProviderQuotaExecutionOutcome,
+    oauth_refresh_auto_removed_result, persist_fenced_provider_quota_refresh_state,
+    persist_provider_quota_refresh_state, quota_key_auto_removed,
+    quota_refresh_success_invalid_state, ProviderQuotaExecutionOutcome,
 };
 use crate::handlers::admin::request::AdminAppState;
 use crate::provider_key_auth::provider_key_is_oauth_managed;
@@ -399,9 +398,6 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
     keys: Vec<StoredProviderCatalogKey>,
     proxy_override: Option<ProxySnapshot>,
 ) -> Result<Option<serde_json::Value>, GatewayError> {
-    let auto_remove_abnormal_keys = provider_auto_remove_banned_keys(provider.config.as_ref());
-    let auto_remove_quota_exhausted_keys =
-        provider_auto_remove_quota_exhausted_keys(provider.config.as_ref());
     let mut results = Vec::new();
     let mut success_count = 0usize;
     let mut failed_count = 0usize;
@@ -429,8 +425,29 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
                 continue;
             }
         };
-
         let is_oauth_managed = provider_key_is_oauth_managed(&key, provider.provider_type.as_str());
+        let quota_auth_config_fence = if is_oauth_managed {
+            match state
+                .app()
+                .capture_provider_transport_auth_config_fence(&transport)
+                .await?
+            {
+                Some(ciphertext) => Some(ciphertext),
+                None => {
+                    failed_count += 1;
+                    results.push(json!({
+                        "key_id": key.id,
+                        "key_name": key.name,
+                        "status": "error",
+                        "message": "OAuth credential changed before quota refresh",
+                    }));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
         let resolved_oauth_auth = if is_oauth_managed {
             state.resolve_local_oauth_header_auth(&transport).await?
         } else {
@@ -647,17 +664,27 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
             }
         }
 
-        let auto_remove_candidate = auto_remove_abnormal_keys
-            && should_auto_remove_structured_reason(oauth_invalid_reason.as_deref());
-        let persisted = persist_provider_quota_refresh_state(
-            state,
-            &key.id,
-            metadata_update.as_ref(),
-            oauth_invalid_at_unix_secs,
-            oauth_invalid_reason.clone(),
-            None,
-        )
-        .await?;
+        let persisted = if let Some(expected_auth_config) = quota_auth_config_fence.as_deref() {
+            persist_fenced_provider_quota_refresh_state(
+                state,
+                &key.id,
+                expected_auth_config,
+                metadata_update.as_ref(),
+                oauth_invalid_at_unix_secs,
+                oauth_invalid_reason.clone(),
+            )
+            .await?
+        } else {
+            persist_provider_quota_refresh_state(
+                state,
+                &key.id,
+                metadata_update.as_ref(),
+                oauth_invalid_at_unix_secs,
+                oauth_invalid_reason.clone(),
+                None,
+            )
+            .await?
+        };
         if !persisted {
             failed_count += 1;
             results.push(json!({
@@ -668,32 +695,15 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
             }));
             continue;
         }
-        let auto_removed_hard_banned = if auto_remove_candidate {
-            state
-                .cleanup_provider_catalog_key_if_current(provider, &key.id, |latest_key| {
-                    should_auto_remove_structured_reason(latest_key.oauth_invalid_reason.as_deref())
-                })
-                .await?
-        } else {
-            false
-        };
+        // Codex quota responses never auto-delete keys. Without a repository
+        // conditional delete, any read-then-delete sequence could remove a
+        // replacement Agent Identity installed while the response was in flight.
+        let auto_removed_hard_banned = false;
         if auto_removed_hard_banned {
             auto_removed_count += 1;
             auto_removed_hard_banned_count += 1;
         }
-        let auto_removed_quota_exhausted =
-            if !auto_removed_hard_banned && auto_remove_quota_exhausted_keys {
-                state
-                    .cleanup_provider_catalog_key_if_current(provider, &key.id, |latest_key| {
-                        aether_admin::provider::pool::admin_pool_key_account_quota_exhausted(
-                            latest_key,
-                            provider.provider_type.as_str(),
-                        )
-                    })
-                    .await?
-            } else {
-                false
-            };
+        let auto_removed_quota_exhausted = false;
         if auto_removed_quota_exhausted {
             auto_removed_count += 1;
             status = "quota_exhausted".to_string();

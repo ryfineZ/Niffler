@@ -1,5 +1,7 @@
 use crate::handlers::admin::request::AdminAppState;
-use crate::provider_key_auth::provider_key_auth_config_uses_header_authorization;
+use crate::provider_key_auth::{
+    provider_key_auth_config_is_agent_identity, provider_key_auth_config_uses_header_authorization,
+};
 use aether_crypto::decrypt_python_fernet_ciphertext;
 #[cfg(test)]
 use aether_crypto::DEVELOPMENT_ENCRYPTION_KEY;
@@ -26,13 +28,15 @@ pub(super) fn admin_monitoring_masked_user_api_key_prefix(
 pub(super) fn admin_monitoring_masked_provider_key_prefix(
     state: &AdminAppState<'_>,
     key: &StoredProviderCatalogKey,
+    provider_type: &str,
 ) -> Option<String> {
     match key.auth_type.trim() {
         "service_account" | "vertex_ai" => Some("[Service Account]".to_string()),
         "oauth" => {
-            if provider_key_auth_config_uses_header_authorization(
-                state.parse_catalog_auth_config_json(key).as_ref(),
-            ) {
+            let auth_config = state.parse_catalog_auth_config_json(key);
+            if provider_key_auth_config_is_agent_identity(provider_type, auth_config.as_ref()) {
+                Some("[Agent Identity]".to_string())
+            } else if provider_key_auth_config_uses_header_authorization(auth_config.as_ref()) {
                 Some("[OAuth Header]".to_string())
             } else {
                 Some("[OAuth Token]".to_string())
@@ -114,4 +118,53 @@ pub(super) fn admin_monitoring_cache_affinity_sort_value(value: Option<&serde_js
         }
     }
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_monitoring_masked_provider_key_prefix;
+    use crate::handlers::admin::request::AdminAppState;
+    use crate::AppState;
+    use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
+    use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
+
+    #[test]
+    fn monitoring_labels_agent_identity_instead_of_oauth_token() {
+        let app = AppState::new().expect("gateway should build");
+        let state = AdminAppState::new(&app);
+        let encrypted_placeholder =
+            encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, "__placeholder__")
+                .expect("placeholder should encrypt");
+        let encrypted_auth_config = encrypt_python_fernet_plaintext(
+            DEVELOPMENT_ENCRYPTION_KEY,
+            r#"{"auth_mode":"agentIdentity","agent_runtime_id":"runtime-1","agent_private_key":"base64-private-key","task_id":"task-1"}"#,
+        )
+        .expect("auth config should encrypt");
+        let key = StoredProviderCatalogKey::new(
+            "key-agent".to_string(),
+            "provider-codex".to_string(),
+            "agent".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+        .with_transport_fields(
+            None,
+            encrypted_placeholder,
+            Some(encrypted_auth_config),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("transport should build");
+
+        assert_eq!(
+            admin_monitoring_masked_provider_key_prefix(&state, &key, "codex").as_deref(),
+            Some("[Agent Identity]")
+        );
+    }
 }

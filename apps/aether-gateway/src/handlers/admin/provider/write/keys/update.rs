@@ -78,6 +78,16 @@ pub(crate) fn build_admin_update_provider_key_record_with_existing_keys(
         .and_then(serde_json::Value::as_object)
         .cloned();
 
+    if auth_config
+        .as_ref()
+        .is_some_and(aether_provider_transport::is_codex_agent_identity_auth_config_value)
+    {
+        return Err(
+            "Agent Identity 凭据必须通过专属创建或导入接口管理，不能通过通用 Key 接口写入"
+                .to_string(),
+        );
+    }
+
     match target_auth_type.as_str() {
         "api_key" | "bearer" => {
             if let Some(api_key) = api_key_value

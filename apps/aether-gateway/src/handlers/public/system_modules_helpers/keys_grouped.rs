@@ -1,7 +1,8 @@
 use super::enabled_key_capability_short_names;
 use crate::handlers::shared::{parse_catalog_auth_config_json, unix_secs_to_rfc3339};
 use crate::provider_key_auth::{
-    provider_key_auth_config_uses_header_authorization, provider_key_effective_api_formats,
+    provider_key_auth_config_is_agent_identity, provider_key_auth_config_uses_header_authorization,
+    provider_key_effective_api_formats,
 };
 use crate::AppState;
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
@@ -10,13 +11,18 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn grouped_key_masked_label(state: &AppState, key: &StoredProviderCatalogKey) -> &'static str {
+fn grouped_key_masked_label(
+    state: &AppState,
+    key: &StoredProviderCatalogKey,
+    provider_type: &str,
+) -> &'static str {
     match key.auth_type.trim() {
         "service_account" | "vertex_ai" => "[Service Account]",
         "oauth" => {
-            if provider_key_auth_config_uses_header_authorization(
-                parse_catalog_auth_config_json(state, key).as_ref(),
-            ) {
+            let auth_config = parse_catalog_auth_config_json(state, key);
+            if provider_key_auth_config_is_agent_identity(provider_type, auth_config.as_ref()) {
+                "[Agent Identity]"
+            } else if provider_key_auth_config_uses_header_authorization(auth_config.as_ref()) {
                 "[OAuth Header]"
             } else {
                 "[OAuth Token]"
@@ -161,7 +167,7 @@ pub(crate) async fn build_admin_keys_grouped_by_format_payload(
                 "provider_id": key.provider_id,
                 "name": key.name,
                 "auth_type": key.auth_type,
-                "api_key_masked": grouped_key_masked_label(state, &key),
+                "api_key_masked": grouped_key_masked_label(state, &key, provider_type),
                 "internal_priority": key.internal_priority,
                 "global_priority_by_format": key.global_priority_by_format,
                 "rate_multipliers": key.rate_multipliers,

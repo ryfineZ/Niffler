@@ -261,7 +261,7 @@
                           <Download class="w-2.5 h-2.5" />
                         </Button>
                         <Button
-                          v-else
+                          v-else-if="key.agent_identity !== true"
                           variant="ghost"
                           size="icon"
                           class="h-4 w-4 shrink-0"
@@ -729,7 +729,7 @@
                     <Download class="w-3.5 h-3.5" />
                   </Button>
                   <Button
-                    v-else-if="actionId === 'copy_or_download'"
+                    v-else-if="actionId === 'copy_or_download' && key.agent_identity !== true"
                     variant="ghost"
                     size="icon"
                     class="h-7 w-7 shrink-0"
@@ -2337,6 +2337,7 @@ function toEndpointApiKey(key: PoolKeyDetail): EndpointAPIKey {
     credential_kind: key.credential_kind ?? null,
     runtime_auth_kind: key.runtime_auth_kind ?? null,
     oauth_managed: key.oauth_managed ?? undefined,
+    agent_identity: key.agent_identity ?? undefined,
     oauth_header_auth: key.oauth_header_auth ?? undefined,
     can_refresh_oauth: key.can_refresh_oauth ?? undefined,
     can_export_oauth: key.can_export_oauth ?? undefined,

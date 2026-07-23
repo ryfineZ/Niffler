@@ -167,6 +167,57 @@ mod tests {
     }
 
     #[test]
+    fn codex_agent_identity_quota_request_prefers_dynamic_assertion() {
+        let spec = build_codex_pool_quota_request(
+            "key-1",
+            Some((
+                "authorization".to_string(),
+                "AgentAssertion signed-at-request-time".to_string(),
+            )),
+            None,
+            Some(&json!({
+                "auth_mode": "agentIdentity",
+                "headers": {
+                    "authorization": "Bearer stale-imported-session"
+                }
+            })),
+        )
+        .expect("spec should build");
+
+        assert_eq!(
+            spec.headers.get("authorization").map(String::as_str),
+            Some("AgentAssertion signed-at-request-time")
+        );
+    }
+
+    #[test]
+    fn codex_nested_agent_identity_quota_request_prefers_dynamic_assertion() {
+        let spec = build_codex_pool_quota_request(
+            "key-1",
+            Some((
+                "authorization".to_string(),
+                "AgentAssertion signed-at-request-time".to_string(),
+            )),
+            None,
+            Some(&json!({
+                "agent_identity": {
+                    "agent_runtime_id": "runtime-1",
+                    "agent_private_key": "private-key"
+                },
+                "headers": {
+                    "authorization": "Bearer stale-imported-session"
+                }
+            })),
+        )
+        .expect("spec should build");
+
+        assert_eq!(
+            spec.headers.get("authorization").map(String::as_str),
+            Some("AgentAssertion signed-at-request-time")
+        );
+    }
+
+    #[test]
     fn gemini_cli_quota_request_uses_v1internal_retrieve_user_quota() {
         let spec = build_gemini_cli_pool_quota_request(
             "key-1",

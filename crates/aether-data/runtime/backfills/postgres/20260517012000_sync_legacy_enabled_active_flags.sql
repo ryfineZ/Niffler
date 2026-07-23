@@ -8,11 +8,9 @@ BEGIN
           AND column_name = 'enabled'
     ) THEN
         UPDATE public.providers
-        SET
-            is_active = enabled,
-            updated_at = NOW()
-        WHERE enabled IS NOT NULL
-          AND is_active IS DISTINCT FROM enabled;
+        SET enabled = is_active
+        WHERE is_active IS NOT NULL
+          AND enabled IS DISTINCT FROM is_active;
     END IF;
 
     IF EXISTS (
@@ -23,11 +21,9 @@ BEGIN
           AND column_name = 'enabled'
     ) THEN
         UPDATE public.provider_endpoints
-        SET
-            is_active = enabled,
-            updated_at = NOW()
-        WHERE enabled IS NOT NULL
-          AND is_active IS DISTINCT FROM enabled;
+        SET enabled = is_active
+        WHERE is_active IS NOT NULL
+          AND enabled IS DISTINCT FROM is_active;
     END IF;
 
     IF EXISTS (
@@ -38,10 +34,8 @@ BEGIN
           AND column_name = 'enabled'
     ) THEN
         UPDATE public.models
-        SET
-            is_active = enabled,
-            updated_at = NOW()
-        WHERE enabled IS NOT NULL
-          AND is_active IS DISTINCT FROM enabled;
+        SET enabled = is_active
+        WHERE is_active IS NOT NULL
+          AND enabled IS DISTINCT FROM is_active;
     END IF;
 END $$;

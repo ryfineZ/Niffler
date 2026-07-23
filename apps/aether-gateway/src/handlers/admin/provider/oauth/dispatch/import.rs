@@ -1,4 +1,7 @@
-use super::super::duplicates::find_duplicate_provider_oauth_key;
+use super::super::duplicates::{
+    acquire_codex_oauth_account_locks, find_duplicate_provider_oauth_key,
+    release_codex_oauth_account_locks,
+};
 use super::super::errors::build_internal_control_error_response;
 use super::super::provisioning::{
     build_provider_oauth_auth_config_from_token_payload, create_provider_oauth_catalog_key,
@@ -11,8 +14,8 @@ use super::super::runtime::{
 };
 use super::super::state::{
     admin_provider_oauth_template, build_admin_provider_oauth_backend_unavailable_response,
-    exchange_admin_provider_oauth_refresh_token, is_fixed_provider_type_for_provider_oauth,
-    json_u64_value,
+    enrich_admin_provider_oauth_auth_config, exchange_admin_provider_oauth_refresh_token,
+    is_fixed_provider_type_for_provider_oauth, json_u64_value,
 };
 use super::helpers::admin_provider_oauth_key_name_from_auth_config;
 use super::token_import::{
@@ -27,10 +30,12 @@ use crate::handlers::admin::request::{
 };
 use crate::GatewayError;
 use aether_contracts::ProxySnapshot;
-use aether_oauth::core::OAuthError;
+use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
 use aether_oauth::provider::{
     ProviderOAuthImportInput, ProviderOAuthService, ProviderOAuthTransportContext,
 };
+use aether_oauth::{core::OAuthError, network::OAuthNetworkContext};
+use aether_runtime_state::RuntimeLockLease;
 use axum::{
     body::Body,
     http,
@@ -38,11 +43,33 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
+use uuid::Uuid;
+
+const CODEX_AGENT_IDENTITY_ENROLLMENT_LOCK_TTL: Duration = Duration::from_secs(180);
+const CODEX_AGENT_IDENTITY_ENROLLMENT_LOCK_RENEW_INTERVAL: Duration = Duration::from_secs(60);
 
 struct AdminProviderOAuthSingleImportTokens {
     access_token: String,
     auth_config: serde_json::Map<String, serde_json::Value>,
     expires_at: Option<u64>,
+}
+
+struct CodexAgentIdentityEnrollment {
+    leases: Vec<RuntimeLockLease>,
+    duplicate: Option<StoredProviderCatalogKey>,
+    lease_lost: Arc<AtomicBool>,
+    heartbeat: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for CodexAgentIdentityEnrollment {
+    fn drop(&mut self) {
+        self.heartbeat.abort();
+    }
 }
 
 fn sanitize_windsurf_import_error(error: &OAuthError) -> String {
@@ -106,6 +133,245 @@ fn import_payload_string_any(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn import_payload_bool(payload: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn codex_agent_identity_access_token_input(
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    import_payload_string_any(payload, &["access_token", "accessToken"])
+}
+
+fn import_payload_requests_agent_identity(
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    import_payload_bool(payload, "create_agent_identity")
+}
+
+fn import_payload_requests_legacy_agent_identity(
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    import_payload_bool(payload, "create_agent_identity_from_session_token")
+}
+
+fn codex_access_token_identity_hints(
+    access_token: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, &'static str> {
+    let mut hints = serde_json::Map::new();
+    enrich_admin_provider_oauth_auth_config(
+        "codex",
+        &mut hints,
+        &json!({ "access_token": access_token }),
+    );
+    let account_id = hints
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let user_id = hints
+        .get("user_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if account_id.is_none() || user_id.is_none() {
+        return Err("ChatGPT Access Token 缺少账号身份字段");
+    }
+    Ok(hints)
+}
+
+async fn prepare_codex_agent_identity_enrollment(
+    state: &AdminAppState<'_>,
+    provider_id: &str,
+    identity_hints: &serde_json::Map<String, serde_json::Value>,
+) -> Result<CodexAgentIdentityEnrollment, Response<Body>> {
+    let lock_keys =
+        crate::handlers::admin::provider::oauth::duplicates::codex_agent_identity_account_lock_keys(
+            provider_id,
+            identity_hints,
+        );
+    if lock_keys.is_empty() {
+        return Err(build_internal_control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "ChatGPT Access Token 缺少账号身份字段",
+        ));
+    }
+    let owner = format!(
+        "aether-gateway-agent-identity-enrollment-{}",
+        Uuid::new_v4()
+    );
+    let mut leases = Vec::with_capacity(lock_keys.len());
+    for lock_key in lock_keys {
+        match state
+            .runtime_state()
+            .lock_try_acquire(
+                lock_key.as_str(),
+                owner.as_str(),
+                CODEX_AGENT_IDENTITY_ENROLLMENT_LOCK_TTL,
+            )
+            .await
+        {
+            Ok(Some(lease)) => leases.push(lease),
+            Ok(None) => {
+                release_codex_agent_identity_leases(state, leases).await;
+                return Err(build_internal_control_error_response(
+                    http::StatusCode::CONFLICT,
+                    "该 ChatGPT 账号正在创建 Agent Identity，请稍后重试",
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    error = ?error,
+                    "gateway Agent Identity enrollment lock unavailable"
+                );
+                release_codex_agent_identity_leases(state, leases).await;
+                return Err(build_internal_control_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    "Agent Identity 创建锁暂不可用，请稍后重试",
+                ));
+            }
+        }
+    }
+
+    let lease_lost = Arc::new(AtomicBool::new(false));
+    let heartbeat = spawn_codex_agent_identity_enrollment_heartbeat(
+        state.cloned_app(),
+        leases.clone(),
+        Arc::clone(&lease_lost),
+    );
+
+    let duplicate = match state
+        .find_duplicate_provider_oauth_key(provider_id, identity_hints, None)
+        .await
+    {
+        Ok(duplicate) => duplicate,
+        Err(detail) => {
+            heartbeat.abort();
+            release_codex_agent_identity_leases(state, leases).await;
+            return Err(build_internal_control_error_response(
+                http::StatusCode::BAD_REQUEST,
+                detail,
+            ));
+        }
+    };
+    Ok(CodexAgentIdentityEnrollment {
+        leases,
+        duplicate,
+        lease_lost,
+        heartbeat,
+    })
+}
+
+fn spawn_codex_agent_identity_enrollment_heartbeat(
+    app: crate::AppState,
+    leases: Vec<RuntimeLockLease>,
+    lease_lost: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut renew_timer =
+            tokio::time::interval(CODEX_AGENT_IDENTITY_ENROLLMENT_LOCK_RENEW_INTERVAL);
+        renew_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        renew_timer.tick().await;
+        loop {
+            renew_timer.tick().await;
+            for lease in &leases {
+                match app
+                    .runtime_state()
+                    .lock_renew(lease, CODEX_AGENT_IDENTITY_ENROLLMENT_LOCK_TTL)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        lease_lost.store(true, Ordering::Release);
+                        tracing::error!(
+                            lock_key = %lease.key,
+                            "gateway Agent Identity enrollment lock was lost"
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        lease_lost.store(true, Ordering::Release);
+                        tracing::error!(
+                            lock_key = %lease.key,
+                            error = ?error,
+                            "gateway Agent Identity enrollment lock renewal failed"
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn release_codex_agent_identity_leases(
+    state: &AdminAppState<'_>,
+    leases: Vec<RuntimeLockLease>,
+) {
+    for lease in leases {
+        if let Err(error) = state.runtime_state().lock_release(&lease).await {
+            tracing::warn!(
+                lock_key = %lease.key,
+                error = ?error,
+                "gateway Agent Identity enrollment lock release failed"
+            );
+        }
+    }
+}
+
+async fn release_codex_agent_identity_enrollment(
+    state: &AdminAppState<'_>,
+    enrollment: Option<CodexAgentIdentityEnrollment>,
+) {
+    let Some(mut enrollment) = enrollment else {
+        return;
+    };
+    enrollment.heartbeat.abort();
+    release_codex_agent_identity_leases(state, std::mem::take(&mut enrollment.leases)).await;
+}
+
+async fn resolve_admin_provider_oauth_codex_access_token_agent_identity_import(
+    state: &AdminAppState<'_>,
+    access_token: &str,
+    identity_hints: serde_json::Map<String, serde_json::Value>,
+    request_proxy: Option<ProxySnapshot>,
+) -> Result<AdminProviderOAuthSingleImportTokens, Response<Body>> {
+    let executor = crate::oauth::GatewayOAuthHttpExecutor::new(*state);
+    let mut auth_config =
+        aether_provider_transport::register_codex_agent_identity_from_access_token(
+            &executor,
+            access_token,
+            OAuthNetworkContext::provider_operation(request_proxy),
+        )
+        .await
+        .map_err(|error| {
+            build_internal_control_error_response(http::StatusCode::BAD_REQUEST, error.to_string())
+        })?;
+    for key in [
+        "access_token",
+        "accessToken",
+        "refresh_token",
+        "refreshToken",
+        "id_token",
+        "idToken",
+    ] {
+        auth_config.remove(key);
+    }
+    for (key, value) in identity_hints {
+        auth_config.entry(key).or_insert(value);
+    }
+    Ok(AdminProviderOAuthSingleImportTokens {
+        // Agent Identity signs every request and never uses the encrypted OAuth token column.
+        access_token: "__placeholder__".to_string(),
+        auth_config,
+        expires_at: None,
+    })
 }
 
 fn import_payload_project_id_any(
@@ -514,6 +780,18 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
             ));
         }
     };
+    if import_payload_requests_legacy_agent_identity(&raw_payload) {
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "旧版 Agent Identity 创建参数已停用，请使用 create_agent_identity 和 access_token",
+        ));
+    }
+    let create_agent_identity = import_payload_requests_agent_identity(&raw_payload);
+    let agent_identity_access_token_input = if create_agent_identity {
+        codex_agent_identity_access_token_input(&raw_payload)
+    } else {
+        None
+    };
     let refresh_token_input = import_payload_string(&raw_payload, "refresh_token", "refreshToken");
     let access_token_input = import_payload_string_any(
         &raw_payload,
@@ -559,7 +837,7 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         refresh_token_input.as_deref(),
         access_token_input.as_deref(),
     );
-    if refresh_token_input.is_none() && access_token_input.is_none() {
+    if !create_agent_identity && refresh_token_input.is_none() && access_token_input.is_none() {
         return Ok(build_internal_control_error_response(
             http::StatusCode::BAD_REQUEST,
             "Refresh Token、Access Token 或 sso_token 不能为空",
@@ -575,6 +853,18 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         return Ok(build_internal_control_error_response(
             http::StatusCode::BAD_REQUEST,
             "Kiro 不支持单条 Refresh Token 导入，请使用批量导入或设备授权。",
+        ));
+    }
+    if create_agent_identity && provider_type != "codex" {
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "仅 Codex Provider 支持使用 Access Token 创建 Agent Identity",
+        ));
+    }
+    if create_agent_identity && refresh_token_input.is_some() {
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "使用 Access Token 创建 Agent Identity 时不能同时提交 Refresh Token",
         ));
     }
     let template = admin_provider_oauth_template(&provider_type);
@@ -597,8 +887,50 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         )
         .await;
     let key_proxy = provider_oauth_key_proxy_value(proxy_node_id.as_deref());
+    let mut agent_identity_enrollment = None;
 
-    let resolved_import = if provider_type == "windsurf" {
+    let resolved_import = if create_agent_identity {
+        let Some(access_token) = agent_identity_access_token_input.as_deref() else {
+            return Ok(build_internal_control_error_response(
+                http::StatusCode::BAD_REQUEST,
+                "ChatGPT Access Token（JWT）不能为空",
+            ));
+        };
+        let mut identity_hints = match codex_access_token_identity_hints(access_token) {
+            Ok(hints) => hints,
+            Err(detail) => {
+                return Ok(build_internal_control_error_response(
+                    http::StatusCode::BAD_REQUEST,
+                    detail,
+                ));
+            }
+        };
+        identity_hints.insert("provider_type".to_string(), json!("codex"));
+        let enrollment =
+            match prepare_codex_agent_identity_enrollment(state, &provider_id, &identity_hints)
+                .await
+            {
+                Ok(enrollment) => enrollment,
+                Err(response) => return Ok(response),
+            };
+        match resolve_admin_provider_oauth_codex_access_token_agent_identity_import(
+            state,
+            access_token,
+            identity_hints,
+            request_proxy.clone(),
+        )
+        .await
+        {
+            Ok(value) => {
+                agent_identity_enrollment = Some(enrollment);
+                value
+            }
+            Err(response) => {
+                release_codex_agent_identity_enrollment(state, Some(enrollment)).await;
+                return Ok(response);
+            }
+        }
+    } else if provider_type == "windsurf" {
         if !import_payload_has_windsurf_credentials(&raw_payload) {
             return Ok(build_internal_control_error_response(
                 http::StatusCode::BAD_REQUEST,
@@ -645,18 +977,20 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         mut auth_config,
         mut expires_at,
     } = resolved_import;
-    apply_single_import_hints(&provider_type, &raw_payload, &mut auth_config);
-    if let Some(header_access_token) =
-        provider_oauth_import_authorization_bearer_token_from_object(&raw_payload)
-    {
-        if let Some(header_expires_at) =
-            decode_access_token_expires_at(&header_access_token).or(imported_expires_at)
+    if !create_agent_identity {
+        apply_single_import_hints(&provider_type, &raw_payload, &mut auth_config);
+        if let Some(header_access_token) =
+            provider_oauth_import_authorization_bearer_token_from_object(&raw_payload)
         {
-            auth_config.insert("expires_at".to_string(), json!(header_expires_at));
-            expires_at = Some(header_expires_at);
-        } else {
-            auth_config.remove("expires_at");
-            expires_at = None;
+            if let Some(header_expires_at) =
+                decode_access_token_expires_at(&header_access_token).or(imported_expires_at)
+            {
+                auth_config.insert("expires_at".to_string(), json!(header_expires_at));
+                expires_at = Some(header_expires_at);
+            } else {
+                auth_config.remove("expires_at");
+                expires_at = None;
+            }
         }
     }
     let has_refresh_token = auth_config
@@ -665,23 +999,85 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         .map(str::trim)
         .is_some_and(|value| !value.is_empty());
 
+    let codex_oauth_account_leases = if !create_agent_identity && provider_type == "codex" {
+        match acquire_codex_oauth_account_locks(state, &provider_id, &auth_config, "single-import")
+            .await
+        {
+            Ok(leases) => leases,
+            Err(error) => {
+                return Ok(build_internal_control_error_response(
+                    error.status_code(),
+                    error.detail(),
+                ));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let api_formats = provider_oauth_active_api_formats(&endpoints);
-    let duplicate = match state
-        .find_duplicate_provider_oauth_key(&provider_id, &auth_config, None)
-        .await
-    {
-        Ok(duplicate) => duplicate,
-        Err(detail) => {
-            return Ok(build_internal_control_error_response(
-                http::StatusCode::BAD_REQUEST,
-                detail,
-            ));
+    let duplicate = if create_agent_identity {
+        let initial_duplicate_id = agent_identity_enrollment
+            .as_ref()
+            .and_then(|enrollment| enrollment.duplicate.as_ref())
+            .map(|key| key.id.clone());
+        match state
+            .find_duplicate_provider_oauth_key(&provider_id, &auth_config, None)
+            .await
+        {
+            Ok(duplicate) => {
+                let current_duplicate_id = duplicate.as_ref().map(|key| key.id.as_str());
+                if initial_duplicate_id.as_deref() != current_duplicate_id {
+                    tracing::info!(
+                        provider_id = %provider_id,
+                        initial_duplicate_id = ?initial_duplicate_id,
+                        current_duplicate_id,
+                        "gateway Agent Identity duplicate changed during enrollment"
+                    );
+                }
+                duplicate
+            }
+            Err(detail) => {
+                release_codex_agent_identity_enrollment(state, agent_identity_enrollment).await;
+                return Ok(build_internal_control_error_response(
+                    http::StatusCode::CONFLICT,
+                    detail,
+                ));
+            }
+        }
+    } else {
+        match state
+            .find_duplicate_provider_oauth_key(&provider_id, &auth_config, None)
+            .await
+        {
+            Ok(duplicate) => duplicate,
+            Err(detail) => {
+                release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+                return Ok(build_internal_control_error_response(
+                    if provider_type == "codex" {
+                        http::StatusCode::CONFLICT
+                    } else {
+                        http::StatusCode::BAD_REQUEST
+                    },
+                    detail,
+                ));
+            }
         }
     };
 
     let replaced = duplicate.is_some();
-    let persisted_key = if let Some(existing_key) = duplicate {
-        match state
+    if agent_identity_enrollment
+        .as_ref()
+        .is_some_and(|enrollment| enrollment.lease_lost.load(Ordering::Acquire))
+    {
+        release_codex_agent_identity_enrollment(state, agent_identity_enrollment).await;
+        return Ok(build_internal_control_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Agent Identity 创建锁已失效，请稍后重试",
+        ));
+    }
+    let persisted_key_result = if let Some(existing_key) = duplicate {
+        state
             .update_existing_provider_oauth_catalog_key(
                 &existing_key,
                 &provider_type,
@@ -691,21 +1087,12 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
                 key_proxy.clone(),
                 expires_at,
             )
-            .await?
-        {
-            Some(key) => key,
-            None => {
-                return Ok(build_internal_control_error_response(
-                    http::StatusCode::SERVICE_UNAVAILABLE,
-                    "provider oauth write unavailable",
-                ));
-            }
-        }
+            .await
     } else {
         let name = name.unwrap_or_else(|| {
             admin_provider_oauth_key_name_from_auth_config(&provider_type, &auth_config, None)
         });
-        match state
+        state
             .create_provider_oauth_catalog_key(
                 &provider_id,
                 &provider_type,
@@ -716,17 +1103,68 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
                 key_proxy.clone(),
                 expires_at,
             )
-            .await?
-        {
-            Some(key) => key,
-            None => {
-                return Ok(build_internal_control_error_response(
-                    http::StatusCode::SERVICE_UNAVAILABLE,
-                    "provider oauth write unavailable",
-                ));
-            }
+            .await
+    };
+    let persisted_key = match persisted_key_result {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            release_codex_agent_identity_enrollment(state, agent_identity_enrollment).await;
+            return Ok(build_internal_control_error_response(
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                "provider oauth write unavailable",
+            ));
+        }
+        Err(error) => {
+            release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+            release_codex_agent_identity_enrollment(state, agent_identity_enrollment).await;
+            return Err(error);
         }
     };
+    release_codex_oauth_account_locks(state, codex_oauth_account_leases).await;
+
+    let agent_identity_task_ready = if create_agent_identity {
+        match runtime_endpoint.as_ref() {
+            Some(endpoint) => match state
+                .read_provider_transport_snapshot_uncached(
+                    &provider_id,
+                    &endpoint.id,
+                    &persisted_key.id,
+                )
+                .await
+            {
+                Ok(Some(transport)) => {
+                    match state.resolve_local_oauth_request_auth(&transport).await {
+                        Ok(Some(_)) => true,
+                        Ok(None) => false,
+                        Err(error) => {
+                            tracing::warn!(
+                                provider_id = %provider_id,
+                                key_id = %persisted_key.id,
+                                error = ?error,
+                                "gateway Agent Identity initial task registration failed"
+                            );
+                            false
+                        }
+                    }
+                }
+                Ok(None) => false,
+                Err(error) => {
+                    tracing::warn!(
+                        provider_id = %provider_id,
+                        key_id = %persisted_key.id,
+                        error = ?error,
+                        "gateway Agent Identity pending transport reload failed"
+                    );
+                    false
+                }
+            },
+            None => false,
+        }
+    } else {
+        true
+    };
+    release_codex_agent_identity_enrollment(state, agent_identity_enrollment).await;
 
     spawn_provider_oauth_account_state_refresh_after_update(
         state.cloned_app(),
@@ -734,6 +1172,28 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         persisted_key.id.clone(),
         request_proxy.clone(),
     );
+
+    if !agent_identity_task_ready {
+        return Ok((
+            http::StatusCode::ACCEPTED,
+            Json(json!({
+                "detail": "Agent Identity 已安全保存，但 task 初始化暂未完成，系统将自动重试",
+                "key_id": persisted_key.id,
+                "provider_type": provider_type,
+                "expires_at": serde_json::Value::Null,
+                "has_refresh_token": false,
+                "temporary": false,
+                "email": auth_config
+                    .get("email")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "replaced": replaced,
+                "task_ready": false,
+                "recoverable": true,
+            })),
+        )
+            .into_response());
+    }
 
     Ok(Json(json!({
         "key_id": persisted_key.id,
@@ -753,11 +1213,21 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_single_import_hints, import_payload_string_any, import_payload_u64_any,
-        sanitize_windsurf_import_error,
+        apply_single_import_hints, codex_access_token_identity_hints,
+        codex_agent_identity_access_token_input, import_payload_requests_agent_identity,
+        import_payload_requests_legacy_agent_identity, import_payload_string_any,
+        import_payload_u64_any, sanitize_windsurf_import_error,
     };
+    use crate::handlers::admin::provider::oauth::duplicates::codex_agent_identity_account_lock_keys;
     use aether_oauth::core::OAuthError;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
+
+    fn unsigned_jwt(payload: serde_json::Value) -> String {
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
+        format!("{header}.{payload}.signature")
+    }
 
     #[test]
     fn single_import_accepts_session_token_alias() {
@@ -772,6 +1242,137 @@ mod tests {
             import_payload_string_any(&payload, &["access_token", "session_token"]).as_deref(),
             Some("session-1")
         );
+    }
+
+    #[test]
+    fn agent_identity_reads_access_token_and_ignores_session_token_alias() {
+        let payload = json!({
+            "accessToken": "access-token",
+            "sessionToken": "session-token-must-not-win",
+        })
+        .as_object()
+        .cloned()
+        .expect("payload should be an object");
+
+        assert_eq!(
+            codex_agent_identity_access_token_input(&payload).as_deref(),
+            Some("access-token")
+        );
+    }
+
+    #[test]
+    fn new_agent_identity_flag_does_not_treat_session_token_as_access_token() {
+        let payload = json!({
+            "sessionToken": "session-token-must-not-be-used",
+        })
+        .as_object()
+        .cloned()
+        .expect("payload should be an object");
+
+        assert_eq!(codex_agent_identity_access_token_input(&payload), None);
+    }
+
+    #[test]
+    fn access_token_agent_identity_hints_require_and_extract_chatgpt_identity() {
+        let access_token = unsigned_jwt(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-1",
+                "chatgpt_user_id": "user-1",
+                "chatgpt_plan_type": "plus"
+            },
+            "https://api.openai.com/profile": {
+                "email": "agent@example.com"
+            }
+        }));
+
+        let hints = codex_access_token_identity_hints(&access_token)
+            .expect("access token identity hints should parse");
+
+        assert_eq!(hints.get("account_id"), Some(&json!("account-1")));
+        assert_eq!(hints.get("user_id"), Some(&json!("user-1")));
+        assert_eq!(hints.get("plan_type"), Some(&json!("plus")));
+        assert_eq!(hints.get("email"), Some(&json!("agent@example.com")));
+        assert!(!hints.contains_key("access_token"));
+        assert!(!hints.contains_key("id_token"));
+    }
+
+    #[test]
+    fn access_token_agent_identity_hints_reject_missing_identity() {
+        let access_token = unsigned_jwt(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-1"
+            }
+        }));
+
+        assert_eq!(
+            codex_access_token_identity_hints(&access_token),
+            Err("ChatGPT Access Token 缺少账号身份字段")
+        );
+    }
+
+    #[test]
+    fn agent_identity_enrollment_lock_is_stable_and_account_scoped() {
+        let first = json!({
+            "account_id": "account-1",
+            "user_id": "user-1",
+        })
+        .as_object()
+        .cloned()
+        .expect("identity hints should be an object");
+        let second = json!({
+            "account_id": "account-2",
+            "user_id": "user-1",
+        })
+        .as_object()
+        .cloned()
+        .expect("identity hints should be an object");
+
+        let first_keys = codex_agent_identity_account_lock_keys("provider-1", &first);
+        assert_eq!(
+            first_keys,
+            codex_agent_identity_account_lock_keys("provider-1", &first)
+        );
+        assert_ne!(
+            first_keys,
+            codex_agent_identity_account_lock_keys("provider-1", &second)
+        );
+        assert_ne!(
+            first_keys,
+            codex_agent_identity_account_lock_keys("provider-2", &first)
+        );
+        assert!(first_keys
+            .iter()
+            .all(|key| !key.contains("account-1") && !key.contains("user-1")));
+    }
+
+    #[test]
+    fn agent_identity_flag_is_explicit_boolean_and_rejects_legacy_alias() {
+        let payload = json!({
+            "create_agent_identity": true,
+        })
+        .as_object()
+        .cloned()
+        .expect("payload should be an object");
+        assert!(import_payload_requests_agent_identity(&payload));
+
+        let string_payload = json!({
+            "create_agent_identity": "true",
+        })
+        .as_object()
+        .cloned()
+        .expect("payload should be an object");
+        assert!(!import_payload_requests_agent_identity(&string_payload));
+
+        let legacy_payload = json!({
+            "create_agent_identity_from_session_token": true,
+        })
+        .as_object()
+        .cloned()
+        .expect("payload should be an object");
+        assert!(!import_payload_requests_agent_identity(&legacy_payload));
+        assert!(import_payload_requests_legacy_agent_identity(
+            &legacy_payload
+        ));
     }
 
     #[test]

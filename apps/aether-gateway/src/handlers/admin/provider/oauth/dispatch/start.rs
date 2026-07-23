@@ -86,6 +86,7 @@ pub(super) async fn handle_admin_provider_oauth_start_key(
             &provider_id,
             &provider_type,
             pkce_verifier.as_deref(),
+            key.encrypted_auth_config.as_deref(),
         )
         .await
     {
@@ -158,7 +159,13 @@ pub(super) async fn handle_admin_provider_oauth_start_provider(
         .then(generate_provider_oauth_pkce_verifier);
     let code_challenge = pkce_verifier.as_deref().map(provider_oauth_pkce_s256);
     let nonce = match state
-        .save_provider_oauth_state("", &provider_id, &provider_type, pkce_verifier.as_deref())
+        .save_provider_oauth_state(
+            "",
+            &provider_id,
+            &provider_type,
+            pkce_verifier.as_deref(),
+            None,
+        )
         .await
     {
         Ok(nonce) => nonce,
