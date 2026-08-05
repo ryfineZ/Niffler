@@ -1280,6 +1280,7 @@ async fn gateway_plans_chatgpt_web_image_sync_with_internal_web_executor_url() {
         prompt: String,
         size: String,
         ratio: String,
+        reports_images_passthrough: bool,
     }
 
     fn hash_api_key(value: &str) -> String {
@@ -1391,7 +1392,9 @@ async fn gateway_plans_chatgpt_web_image_sync_with_internal_web_executor_url() {
             None,
             Some(2),
             None,
-            None,
+            Some(serde_json::json!({
+                "openai_image_transport_mode": "images_passthrough"
+            })),
             None,
             None,
         )
@@ -1495,6 +1498,10 @@ async fn gateway_plans_chatgpt_web_image_sync_with_internal_web_executor_url() {
                         .and_then(|value| value.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                    reports_images_passthrough: payload
+                        .get("report_context")
+                        .and_then(|value| value.get("openai_image_transport_mode"))
+                        .is_some(),
                 });
                 Json(json!({
                     "request_id": "trace-chatgpt-web-image-plan-123",
@@ -1593,6 +1600,7 @@ async fn gateway_plans_chatgpt_web_image_sync_with_internal_web_executor_url() {
     assert_eq!(seen_execution_runtime_request.prompt, "生成一张测试图");
     assert_eq!(seen_execution_runtime_request.size, "1024x1024");
     assert_eq!(seen_execution_runtime_request.ratio, "1:1");
+    assert!(!seen_execution_runtime_request.reports_images_passthrough);
 
     gateway_handle.abort();
     execution_runtime_handle.abort();

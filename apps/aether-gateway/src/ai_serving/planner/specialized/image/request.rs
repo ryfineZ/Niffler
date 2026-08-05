@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use aether_contracts::ResolvedTransportProfile;
+use base64::Engine;
 use serde_json::Value;
 
 use crate::ai_serving::planner::candidate_preparation::{
@@ -85,6 +86,17 @@ fn resolve_openai_image_transport_mode(
 pub(crate) fn openai_image_uses_images_passthrough(
     transport: &GatewayProviderTransportSnapshot,
 ) -> bool {
+    if matches!(
+        transport
+            .provider
+            .provider_type
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "chatgpt_web" | "grok"
+    ) {
+        return false;
+    }
     resolve_openai_image_transport_mode(transport) == OpenAiImageTransportMode::ImagesPassthrough
 }
 
@@ -102,9 +114,24 @@ pub(crate) fn build_openai_image_upstream_url_for_request(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let path = custom_path.unwrap_or(request_path);
+    let normalized_path = if transport
+        .endpoint
+        .base_url
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .ends_with("/v1")
+        && (path == "/v1" || path.starts_with("/v1/"))
+    {
+        path.strip_prefix("/v1").unwrap_or(path)
+    } else {
+        path
+    };
     crate::ai_serving::transport::url::build_passthrough_path_url(
         &transport.endpoint.base_url,
-        custom_path.unwrap_or(request_path),
+        normalized_path,
         request_query,
         &[],
     )
@@ -160,6 +187,7 @@ pub(crate) fn build_openai_image_passthrough_json_body(
 enum OpenAiImagePassthroughBodyError {
     BodyRulesUnsupportedForBinary,
     BodyRulesApplyFailed,
+    MultipartModelRewriteFailed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,9 +207,12 @@ fn build_openai_image_passthrough_body_parts(
         if body_rules_have_enabled_rules(body_rules) {
             return Err(OpenAiImagePassthroughBodyError::BodyRulesUnsupportedForBinary);
         }
+        let encoded_body =
+            rewrite_openai_image_multipart_model(encoded_body, mapped_model, request_headers)
+                .ok_or(OpenAiImagePassthroughBodyError::MultipartModelRewriteFailed)?;
         return Ok(OpenAiImagePassthroughBodyParts {
             provider_request_body: None,
-            provider_request_body_base64: Some(encoded_body.to_string()),
+            provider_request_body_base64: Some(encoded_body),
         });
     }
 
@@ -201,6 +232,118 @@ fn build_openai_image_passthrough_body_parts(
         provider_request_body: Some(passthrough_body),
         provider_request_body_base64: None,
     })
+}
+
+fn rewrite_openai_image_multipart_model(
+    encoded_body: &str,
+    mapped_model: &str,
+    request_headers: &http::HeaderMap,
+) -> Option<String> {
+    let mapped_model = mapped_model.trim();
+    if mapped_model.is_empty() {
+        return Some(encoded_body.to_string());
+    }
+
+    let mut body = base64::engine::general_purpose::STANDARD
+        .decode(encoded_body)
+        .ok()?;
+    let boundary = request_headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(multipart_boundary_from_content_type)
+        .or_else(|| infer_multipart_boundary(&body))?;
+    let delimiter = format!("--{boundary}").into_bytes();
+    let next_delimiter = {
+        let mut value = b"\r\n".to_vec();
+        value.extend_from_slice(&delimiter);
+        value
+    };
+    let mut cursor = 0;
+    let mut closing_delimiter = None;
+
+    while let Some(relative) = find_bytes(&body[cursor..], &delimiter) {
+        let delimiter_start = cursor + relative;
+        let after_delimiter = delimiter_start + delimiter.len();
+        if body.get(after_delimiter..after_delimiter + 2) == Some(b"--") {
+            closing_delimiter = Some(delimiter_start);
+            break;
+        }
+        if body.get(after_delimiter..after_delimiter + 2) != Some(b"\r\n") {
+            return None;
+        }
+        let header_start = after_delimiter + 2;
+        let header_end = header_start + find_bytes(&body[header_start..], b"\r\n\r\n")?;
+        let content_start = header_end + 4;
+        let content_end = content_start + find_bytes(&body[content_start..], &next_delimiter)?;
+        if multipart_headers_name_field(&body[header_start..header_end], "model") {
+            body.splice(
+                content_start..content_end,
+                mapped_model.as_bytes().iter().copied(),
+            );
+            return Some(base64::engine::general_purpose::STANDARD.encode(body));
+        }
+        cursor = content_end + 2;
+    }
+
+    let closing_delimiter = closing_delimiter?;
+    let model_part = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{mapped_model}\r\n"
+    );
+    body.splice(
+        closing_delimiter..closing_delimiter,
+        model_part.as_bytes().iter().copied(),
+    );
+    Some(base64::engine::general_purpose::STANDARD.encode(body))
+}
+
+fn multipart_boundary_from_content_type(content_type: &str) -> Option<String> {
+    content_type.split(';').skip(1).find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        if !key.trim().eq_ignore_ascii_case("boundary") {
+            return None;
+        }
+        let boundary = value.trim().trim_matches('"').trim();
+        (!boundary.is_empty()).then(|| boundary.to_string())
+    })
+}
+
+fn infer_multipart_boundary(body: &[u8]) -> Option<String> {
+    let first_line_end = find_bytes(body, b"\r\n")?;
+    let boundary = body.get(..first_line_end)?.strip_prefix(b"--")?;
+    if boundary.is_empty() || boundary.ends_with(b"--") {
+        return None;
+    }
+    String::from_utf8(boundary.to_vec()).ok()
+}
+
+fn multipart_headers_name_field(headers: &[u8], expected_name: &str) -> bool {
+    String::from_utf8_lossy(headers).lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        if !name.trim().eq_ignore_ascii_case("content-disposition") {
+            return false;
+        }
+        value.split(';').skip(1).any(|part| {
+            let Some((key, value)) = part.split_once('=') else {
+                return false;
+            };
+            key.trim().eq_ignore_ascii_case("name")
+                && value
+                    .trim()
+                    .trim_matches('"')
+                    .eq_ignore_ascii_case(expected_name)
+        })
+    })
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 pub(crate) fn apply_openai_image_tool_model(provider_request_body: &mut Value, mapped_model: &str) {
@@ -453,6 +596,24 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
                         spec_metadata.api_format,
                         spec_metadata.api_format,
                         "openai_image_passthrough_body_rules",
+                    ),
+                )
+                .await;
+                return None;
+            }
+            Err(OpenAiImagePassthroughBodyError::MultipartModelRewriteFailed) => {
+                mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    attempt.candidate_index,
+                    &attempt.candidate_id,
+                    "openai_image_multipart_model_rewrite_failed",
+                    CandidateFailureDiagnostic::provider_request_body_missing(
+                        spec_metadata.api_format,
+                        spec_metadata.api_format,
+                        "openai_image_multipart_model_rewrite",
                     ),
                 )
                 .await;
@@ -768,7 +929,7 @@ mod tests {
 
     use super::{
         build_openai_image_passthrough_body_parts, build_openai_image_passthrough_headers,
-        build_openai_image_upstream_url_for_request,
+        build_openai_image_upstream_url_for_request, openai_image_uses_images_passthrough,
     };
     use crate::ai_serving::transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
@@ -863,6 +1024,38 @@ mod tests {
     }
 
     #[test]
+    fn images_passthrough_does_not_duplicate_v1_from_base_url() {
+        let mut transport = sample_transport();
+        transport.endpoint.base_url = "https://niffler.org/v1".to_string();
+        transport.endpoint.config = Some(json!({
+            "openai_image_transport_mode": "images_passthrough"
+        }));
+
+        assert_eq!(
+            build_openai_image_upstream_url_for_request(
+                &transport,
+                "/v1/images/edits",
+                Some("stream=true"),
+            )
+            .as_deref(),
+            Some("https://niffler.org/v1/images/edits?stream=true")
+        );
+    }
+
+    #[test]
+    fn chatgpt_web_and_grok_ignore_images_passthrough_config() {
+        for provider_type in ["chatgpt_web", "grok"] {
+            let mut transport = sample_transport();
+            transport.provider.provider_type = provider_type.to_string();
+            transport.endpoint.config = Some(json!({
+                "openai_image_transport_mode": "images_passthrough"
+            }));
+
+            assert!(!openai_image_uses_images_passthrough(&transport));
+        }
+    }
+
+    #[test]
     fn images_passthrough_json_keeps_images_shape_and_applies_mapped_model() {
         let body = json!({
             "model": "public-image-model",
@@ -891,9 +1084,16 @@ mod tests {
     }
 
     #[test]
-    fn images_passthrough_multipart_uses_original_base64_body() {
+    fn images_passthrough_multipart_replaces_client_model_with_mapped_model() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            "multipart/form-data; boundary=image-boundary"
+                .parse()
+                .expect("valid content type"),
+        );
         let encoded = base64::engine::general_purpose::STANDARD.encode(
-            b"--image-boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-image-2\r\n--image-boundary--\r\n",
+            b"--image-boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\npublic-image-model\r\n--image-boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"source.png\"\r\nContent-Type: image/png\r\n\r\nPNG-BYTES\r\n--image-boundary--\r\n",
         );
 
         let resolved = build_openai_image_passthrough_body_parts(
@@ -901,15 +1101,23 @@ mod tests {
             Some(encoded.as_str()),
             "gpt-image-2",
             None,
-            &HeaderMap::new(),
+            &headers,
         )
         .expect("multipart passthrough body should build");
 
         assert!(resolved.provider_request_body.is_none());
-        assert_eq!(
-            resolved.provider_request_body_base64.as_deref(),
-            Some(encoded.as_str())
-        );
+        let rewritten = base64::engine::general_purpose::STANDARD
+            .decode(
+                resolved
+                    .provider_request_body_base64
+                    .as_deref()
+                    .expect("rewritten multipart body should exist"),
+            )
+            .expect("rewritten body should decode");
+        let rewritten = String::from_utf8(rewritten).expect("fixture should remain UTF-8");
+        assert!(rewritten.contains("name=\"model\"\r\n\r\ngpt-image-2\r\n"));
+        assert!(!rewritten.contains("public-image-model"));
+        assert!(rewritten.contains("PNG-BYTES"));
     }
 
     #[test]
