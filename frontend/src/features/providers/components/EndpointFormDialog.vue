@@ -186,6 +186,41 @@
                 </div>
               </div>
 
+              <div
+                v-if="isOpenAiImageEndpoint(endpoint)"
+                class="rounded-md border bg-muted/20 p-3 space-y-2"
+              >
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0">
+                    <div class="text-xs font-medium">
+                      {{ t('endpointForm.imageTransportMode', '图片请求传输方式') }}
+                    </div>
+                    <p class="text-[11px] text-muted-foreground mt-0.5">
+                      {{ getOpenAiImageTransportMode(endpoint) === 'images_passthrough'
+                        ? t('endpointForm.imageTransportPassthroughHint', '直接调用上游 Images API；自定义路径优先，未填写时沿用 /v1/images/generations 或 /v1/images/edits。')
+                        : t('endpointForm.imageTransportBridgeHint', '将 Images 请求转换为 Responses 图片工具调用，保持现有兼容行为。') }}
+                    </p>
+                  </div>
+                  <Select
+                    :model-value="getOpenAiImageTransportMode(endpoint)"
+                    :disabled="savingEndpointId === endpoint.id"
+                    @update:model-value="(value) => handleOpenAiImageTransportModeChange(endpoint, String(value))"
+                  >
+                    <SelectTrigger class="w-[190px] h-8 text-xs shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="responses_bridge">
+                        {{ t('endpointForm.imageTransportResponsesBridge', 'Responses 图片桥接') }}
+                      </SelectItem>
+                      <SelectItem value="images_passthrough">
+                        {{ t('endpointForm.imageTransportImagesPassthrough', 'Images API 原样透传') }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
               <EndpointStreamFailoverSettings
                 v-if="isOpenAiResponsesEndpoint(endpoint)"
                 :model-value="getStreamFailoverState(endpoint)"
@@ -2060,6 +2095,45 @@ function initEndpointEditState(endpoint: ProviderEndpoint): EndpointEditState {
 
 function isOpenAiResponsesEndpoint(endpoint: ProviderEndpoint): boolean {
   return isOpenAiResponsesStreamFailoverEndpoint(endpoint.api_format)
+}
+
+const OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY = 'openai_image_transport_mode'
+
+function isOpenAiImageEndpoint(endpoint: ProviderEndpoint): boolean {
+  return normalizeEndpointApiFormat(endpoint.api_format) === 'openai:image'
+}
+
+function getOpenAiImageTransportMode(endpoint: ProviderEndpoint): 'responses_bridge' | 'images_passthrough' {
+  const value = endpoint.config?.[OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY]
+  return typeof value === 'string' && value.trim().toLowerCase() === 'images_passthrough'
+    ? 'images_passthrough'
+    : 'responses_bridge'
+}
+
+async function handleOpenAiImageTransportModeChange(endpoint: ProviderEndpoint, value: string) {
+  const nextMode = value === 'images_passthrough' ? 'images_passthrough' : 'responses_bridge'
+  if (nextMode === getOpenAiImageTransportMode(endpoint)) return
+
+  savingEndpointId.value = endpoint.id
+  try {
+    const config: Record<string, unknown> = { ...(endpoint.config || {}) }
+    delete config[OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY]
+    if (nextMode === 'images_passthrough') {
+      config[OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY] = nextMode
+    }
+    const updated = await updateEndpoint(endpoint.id, {
+      config: Object.keys(config).length > 0 ? config : null,
+    })
+    replaceLocalEndpoint(updated)
+    success(nextMode === 'images_passthrough'
+      ? t('endpointForm.imageTransportPassthroughEnabled', '已切换为 Images API 原样透传')
+      : t('endpointForm.imageTransportBridgeEnabled', '已切换为 Responses 图片桥接'))
+    emit('endpointUpdated')
+  } catch (error: unknown) {
+    showError(parseApiError(error, t('endpointForm.operationFailed')), t('endpointForm.error'))
+  } finally {
+    savingEndpointId.value = null
+  }
 }
 
 function getStreamFailoverState(endpoint: ProviderEndpoint): EndpointStreamFailoverState {

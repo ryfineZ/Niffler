@@ -523,7 +523,10 @@ function getDefaultApiFormats(): string[] {
 const visibleApiFormats = computed(() => getSelectableApiFormats())
 
 const authTypeOptions = computed(() => getAuthTypeOptions(props.providerType))
-const showAuthTypeSelector = computed(() => props.providerType === 'vertex_ai' || props.providerType === 'claude_code_api')
+const showAuthTypeSelector = computed(() => {
+  const providerType = (props.providerType || '').toLowerCase()
+  return providerType === 'custom' || providerType === 'vertex_ai' || providerType === 'claude_code_api'
+})
 
 const apiFormatHelpOpen = ref(false)
 const apiFormatHelpHovered = ref(false)

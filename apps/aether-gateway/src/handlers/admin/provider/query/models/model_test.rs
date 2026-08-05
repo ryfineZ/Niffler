@@ -1963,21 +1963,35 @@ async fn provider_query_execute_openai_image_test_candidate(
         .provider_type
         .trim()
         .eq_ignore_ascii_case("grok");
+    let images_passthrough = crate::ai_serving::openai_image_uses_images_passthrough(&transport);
     let mut provider_request_body = if is_chatgpt_web {
         match crate::ai_serving::build_chatgpt_web_image_request_body(&parts, &request_body, None) {
             Ok(body) => body,
             Err(err) => err.to_error_json(),
         }
+    } else if images_passthrough {
+        let Some(body) = crate::ai_serving::build_openai_image_passthrough_json_body(
+            &request_body,
+            &candidate.effective_model,
+            transport.endpoint.body_rules.as_ref(),
+            &parts.headers,
+        ) else {
+            return Ok(provider_query_skipped_execution_outcome(
+                request_body.clone(),
+                "Provider request body rules rejected openai:image passthrough",
+            ));
+        };
+        body
     } else {
         crate::ai_serving::build_openai_image_provider_request_body(&normalized_request)
     };
-    if !is_chatgpt_web && !is_grok {
+    if !is_chatgpt_web && !is_grok && !images_passthrough {
         crate::ai_serving::apply_openai_image_tool_model(
             &mut provider_request_body,
             &candidate.effective_model,
         );
     }
-    if !is_chatgpt_web {
+    if !is_chatgpt_web && !images_passthrough {
         crate::ai_serving::apply_codex_openai_responses_special_body_edits_with_bridge_model(
             &mut provider_request_body,
             transport.provider.provider_type.as_str(),
@@ -2014,6 +2028,16 @@ async fn provider_query_execute_openai_image_test_candidate(
                 original_request_body: &request_body,
             },
         )
+    } else if images_passthrough {
+        crate::ai_serving::build_openai_image_passthrough_headers(
+            &parts.headers,
+            &auth_header,
+            &auth_value,
+            transport.endpoint.header_rules.as_ref(),
+            &provider_request_body,
+            &request_body,
+            Some("application/json"),
+        )
     } else {
         crate::provider_transport::build_openai_image_headers(
             crate::provider_transport::ProviderOpenAiImageHeadersInput {
@@ -2041,7 +2065,7 @@ async fn provider_query_execute_openai_image_test_candidate(
     };
     if is_chatgpt_web {
         request_headers.insert("x-aether-chatgpt-web-image".to_string(), "1".to_string());
-    } else if is_grok {
+    } else if is_grok || images_passthrough {
     } else {
         crate::ai_serving::apply_codex_openai_responses_special_headers(
             &mut request_headers,
@@ -2074,7 +2098,18 @@ async fn provider_query_execute_openai_image_test_candidate(
     } else {
         normalized_request.summary_json.clone()
     };
-    let request_url = provider_query_openai_image_test_upstream_url(&transport, parts.uri.query());
+    let request_url = if images_passthrough {
+        crate::ai_serving::build_openai_image_upstream_url_for_request(
+            &transport,
+            parts.uri.path(),
+            parts.uri.query(),
+        )
+        .unwrap_or_else(|| {
+            provider_query_openai_image_test_upstream_url(&transport, parts.uri.query())
+        })
+    } else {
+        provider_query_openai_image_test_upstream_url(&transport, parts.uri.query())
+    };
     let upstream_is_stream = provider_request_body
         .get("stream")
         .and_then(Value::as_bool)
@@ -3296,7 +3331,7 @@ async fn build_admin_provider_query_kiro_failover_response(
         .await;
     }
 
-    let success = success_body.is_some();
+    let success = winning_candidate_index.is_some();
     let error = if success {
         Value::Null
     } else {

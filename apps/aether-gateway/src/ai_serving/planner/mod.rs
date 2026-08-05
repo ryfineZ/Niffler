@@ -59,8 +59,9 @@ pub(crate) use self::specialized::{
     build_local_image_sync_attempt_source_for_kind,
     build_local_image_sync_plan_and_reports_for_kind,
     build_local_video_sync_attempt_source_for_kind,
-    build_local_video_sync_plan_and_reports_for_kind,
-    set_local_openai_image_execution_exhausted_diagnostic,
+    build_local_video_sync_plan_and_reports_for_kind, build_openai_image_passthrough_headers,
+    build_openai_image_passthrough_json_body, build_openai_image_upstream_url_for_request,
+    openai_image_uses_images_passthrough, set_local_openai_image_execution_exhausted_diagnostic,
 };
 pub(crate) use self::standard::{
     build_local_openai_chat_stream_attempt_source_for_kind,
