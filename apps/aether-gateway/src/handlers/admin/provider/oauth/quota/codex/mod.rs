@@ -1,6 +1,9 @@
 mod invalid;
 mod parse;
 mod plan;
+mod reset;
+
+pub(crate) use self::reset::{consume_codex_quota_reset_credit, CodexQuotaResetAttempt};
 
 use self::invalid::{
     codex_build_invalid_state, codex_looks_like_token_invalidated,

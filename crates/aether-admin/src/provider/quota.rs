@@ -841,6 +841,18 @@ pub fn parse_codex_wham_usage_response(
         }
     }
 
+    if let Some(available_count) = root
+        .get("rate_limit_reset_credits")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|credits| credits.get("available_count"))
+        .and_then(coerce_json_u64)
+    {
+        result.insert(
+            "rate_limit_reset_credits".to_string(),
+            json!({ "available_count": available_count }),
+        );
+    }
+
     if !windows.is_empty() {
         result.insert("windows".to_string(), json!(windows));
     }
@@ -1974,6 +1986,25 @@ mod tests {
         assert_eq!(
             parsed.get("spark_secondary_window_minutes"),
             Some(&json!(10_080u64))
+        );
+    }
+
+    #[test]
+    fn parses_codex_rate_limit_reset_credit_count() {
+        let parsed = parse_codex_wham_usage_response(
+            &json!({
+                "plan_type": "pro",
+                "rate_limit_reset_credits": {
+                    "available_count": 2
+                }
+            }),
+            1_777_000_000,
+        )
+        .expect("codex reset credit summary should parse");
+
+        assert_eq!(
+            parsed.get("rate_limit_reset_credits"),
+            Some(&json!({ "available_count": 2u64 }))
         );
     }
 

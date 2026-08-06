@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogEndpoint;
 use aether_pool_core::PoolSchedulingPreset;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::capability::ProviderPoolCapabilities;
 use crate::provider::{
@@ -17,6 +17,8 @@ use crate::quota::{
 use crate::quota_refresh::ProviderPoolQuotaRequestSpec;
 
 pub const CODEX_WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+pub const CODEX_WHAM_RESET_CREDITS_CONSUME_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 const PLACEHOLDER_API_KEY: &str = "__placeholder__";
 
 #[derive(Debug, Clone, Default)]
@@ -74,6 +76,58 @@ pub fn build_codex_pool_quota_request(
     decrypted_api_key: Option<&str>,
     auth_config: Option<&Value>,
 ) -> Result<ProviderPoolQuotaRequestSpec, String> {
+    let headers = build_codex_quota_headers(resolved_oauth_auth, decrypted_api_key, auth_config)?;
+
+    Ok(ProviderPoolQuotaRequestSpec {
+        request_id: format!("codex-quota:{key_id}"),
+        provider_name: "codex".to_string(),
+        quota_kind: "codex".to_string(),
+        method: "GET".to_string(),
+        url: CODEX_WHAM_USAGE_URL.to_string(),
+        headers,
+        content_type: None,
+        json_body: None,
+        client_api_format: "openai:responses".to_string(),
+        provider_api_format: "openai:responses".to_string(),
+        model_name: Some("codex-wham-usage".to_string()),
+        accept_invalid_certs: false,
+    })
+}
+
+pub fn build_codex_pool_quota_reset_request(
+    key_id: &str,
+    redeem_request_id: &str,
+    resolved_oauth_auth: Option<(String, String)>,
+    decrypted_api_key: Option<&str>,
+    auth_config: Option<&Value>,
+) -> Result<ProviderPoolQuotaRequestSpec, String> {
+    let redeem_request_id = redeem_request_id.trim();
+    if redeem_request_id.is_empty() {
+        return Err("缺少额度重置幂等键".to_string());
+    }
+    let headers = build_codex_quota_headers(resolved_oauth_auth, decrypted_api_key, auth_config)?;
+
+    Ok(ProviderPoolQuotaRequestSpec {
+        request_id: format!("codex-quota-reset:{key_id}:{redeem_request_id}"),
+        provider_name: "codex".to_string(),
+        quota_kind: "codex_reset_credit".to_string(),
+        method: "POST".to_string(),
+        url: CODEX_WHAM_RESET_CREDITS_CONSUME_URL.to_string(),
+        headers,
+        content_type: Some("application/json".to_string()),
+        json_body: Some(json!({ "redeem_request_id": redeem_request_id })),
+        client_api_format: "openai:responses".to_string(),
+        provider_api_format: "openai:responses".to_string(),
+        model_name: Some("codex-wham-quota-reset".to_string()),
+        accept_invalid_certs: false,
+    })
+}
+
+fn build_codex_quota_headers(
+    resolved_oauth_auth: Option<(String, String)>,
+    decrypted_api_key: Option<&str>,
+    auth_config: Option<&Value>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut headers = BTreeMap::new();
     headers.insert("accept".to_string(), "application/json".to_string());
 
@@ -106,20 +160,7 @@ pub fn build_codex_pool_quota_request(
         );
     }
 
-    Ok(ProviderPoolQuotaRequestSpec {
-        request_id: format!("codex-quota:{key_id}"),
-        provider_name: "codex".to_string(),
-        quota_kind: "codex".to_string(),
-        method: "GET".to_string(),
-        url: CODEX_WHAM_USAGE_URL.to_string(),
-        headers,
-        content_type: None,
-        json_body: None,
-        client_api_format: "openai:responses".to_string(),
-        provider_api_format: "openai:responses".to_string(),
-        model_name: Some("codex-wham-usage".to_string()),
-        accept_invalid_certs: false,
-    })
+    Ok(headers)
 }
 
 fn codex_window_reset_elapsed(bucket: &Map<String, Value>, prefix: &str) -> bool {
@@ -212,4 +253,45 @@ pub(crate) fn quota_exhausted_from_bucket(bucket: &Map<String, Value>) -> bool {
     }
     codex_window_used_percent_exhausted(bucket, "primary")
         || codex_window_used_percent_exhausted(bucket, "secondary")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_codex_pool_quota_reset_request, CODEX_WHAM_RESET_CREDITS_CONSUME_URL};
+    use serde_json::json;
+
+    #[test]
+    fn codex_quota_reset_request_reuses_auth_and_account_headers() {
+        let request = build_codex_pool_quota_reset_request(
+            "key-codex",
+            "f0b53e98-94be-4983-ab4c-d7f24a06d5fa",
+            Some(("Authorization".to_string(), "Bearer refreshed".to_string())),
+            None,
+            Some(&json!({
+                "plan_type": "pro",
+                "account_id": "account-123"
+            })),
+        )
+        .expect("reset request should build");
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.url, CODEX_WHAM_RESET_CREDITS_CONSUME_URL);
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer refreshed")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("chatgpt-account-id")
+                .map(String::as_str),
+            Some("account-123")
+        );
+        assert_eq!(
+            request.json_body,
+            Some(json!({
+                "redeem_request_id": "f0b53e98-94be-4983-ab4c-d7f24a06d5fa"
+            }))
+        );
+    }
 }

@@ -400,6 +400,39 @@ fn admin_refresh_provider_quota_buffers_request_body_for_key_selection() {
 }
 
 #[test]
+fn classifies_admin_reset_codex_quota_as_admin_proxy_route() {
+    let headers = http::HeaderMap::new();
+    let uri: Uri = "/api/admin/endpoints/keys/key-codex/reset-codex-quota"
+        .parse()
+        .expect("uri should parse");
+    let decision = classify_control_route(&http::Method::POST, &uri, &headers)
+        .expect("decision should resolve");
+    assert_eq!(decision.route_class.as_deref(), Some("admin_proxy"));
+    assert_eq!(decision.route_family.as_deref(), Some("endpoints_manage"));
+    assert_eq!(decision.route_kind.as_deref(), Some("reset_codex_quota"));
+    assert!(!decision.is_execution_runtime_candidate());
+}
+
+#[test]
+fn admin_reset_codex_quota_buffers_idempotency_key_body() {
+    let headers = headers(&[]);
+    let uri: Uri = "/api/admin/endpoints/keys/key-codex/reset-codex-quota"
+        .parse()
+        .expect("uri should parse");
+    let decision = classify_control_route(&http::Method::POST, &uri, &headers)
+        .expect("decision should resolve");
+    let context = GatewayPublicRequestContext::from_request_parts(
+        "trace-reset-codex-quota",
+        &http::Method::POST,
+        &uri,
+        &headers,
+        Some(decision),
+    );
+
+    assert!(local_proxy_route_requires_buffered_body(&context));
+}
+
+#[test]
 fn classifies_admin_default_body_rules_as_admin_proxy_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/admin/endpoints/defaults/openai:responses/body-rules?provider_type=codex"
