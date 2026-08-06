@@ -1,0 +1,40 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: niffler-caddy
+    depends_on:
+      frontdoor:
+        condition: service_healthy
+    network_mode: host
+    environment:
+      INFINITE_CANVAS_ORIGIN: ${INFINITE_CANVAS_ORIGIN:?INFINITE_CANVAS_ORIGIN must be set}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/tls:/etc/caddy/tls:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    restart: unless-stopped
+
+  frontdoor:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    container_name: niffler-frontdoor
+    env_file:
+      - .env
+    environment:
+      AETHER_MAX_REQUEST_BODY_MB: "256"
+      APP_PORT: ${APP_PORT:-18084}
+      AETHER_GATEWAY_NODE_ROLE: frontdoor
+      AETHER_GATEWAY_STATIC_DIR: /srv/frontend
+      AETHER_GATEWAY_AUTO_PREPARE_DATABASE: "false"
+      AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS: "10"
+    ports:
+      - "127.0.0.1:${APP_PORT:-18084}:${APP_PORT:-18084}"
+    volumes:
+      - ./logs/frontdoor:/app/logs
+    healthcheck:
+      test: ["CMD", "aether-gateway", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped

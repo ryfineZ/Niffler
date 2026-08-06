@@ -16,17 +16,18 @@ pub use presets::{
 pub use provider::{ProviderPoolAdapter, ProviderPoolMemberInput};
 pub use providers::{
     build_antigravity_pool_quota_request, build_chatgpt_web_pool_quota_request,
-    build_codex_pool_quota_request, build_grok_oauth_pool_billing_request,
-    build_kiro_pool_quota_request, enrich_chatgpt_web_quota_metadata, grok_mode_id_for_model,
-    grok_pool_tier_from_quota_bucket, grok_quota_window_key_for_model,
-    grok_supported_quota_windows_for_tier, normalize_chatgpt_web_image_quota_limit,
-    AntigravityProviderPoolAdapter, ChatGptWebProviderPoolAdapter, CodexProviderPoolAdapter,
-    DefaultProviderPoolAdapter, GrokOAuthProviderPoolAdapter, GrokProviderPoolAdapter,
-    KiroPoolQuotaAuthInput, KiroProviderPoolAdapter, UnsupportedQuotaProviderPoolAdapter,
+    build_codex_pool_quota_request, build_codex_pool_quota_reset_request,
+    build_grok_oauth_pool_billing_request, build_kiro_pool_quota_request,
+    enrich_chatgpt_web_quota_metadata, grok_mode_id_for_model, grok_pool_tier_from_quota_bucket,
+    grok_quota_window_key_for_model, grok_supported_quota_windows_for_tier,
+    normalize_chatgpt_web_image_quota_limit, AntigravityProviderPoolAdapter,
+    ChatGptWebProviderPoolAdapter, CodexProviderPoolAdapter, DefaultProviderPoolAdapter,
+    GrokOAuthProviderPoolAdapter, GrokProviderPoolAdapter, KiroPoolQuotaAuthInput,
+    KiroProviderPoolAdapter, UnsupportedQuotaProviderPoolAdapter,
     ANTIGRAVITY_FETCH_AVAILABLE_MODELS_PATH, CHATGPT_WEB_CONVERSATION_INIT_PATH,
-    CHATGPT_WEB_DEFAULT_BASE_URL, CODEX_WHAM_USAGE_URL, GROK_OAUTH_BILLING_MONTHLY_PATH,
-    GROK_OAUTH_BILLING_WEEKLY_PATH, GROK_OAUTH_DEFAULT_BASE_URL, KIRO_USAGE_LIMITS_PATH,
-    KIRO_USAGE_SDK_VERSION,
+    CHATGPT_WEB_DEFAULT_BASE_URL, CODEX_WHAM_RESET_CREDITS_CONSUME_URL, CODEX_WHAM_USAGE_URL,
+    GROK_OAUTH_BILLING_MONTHLY_PATH, GROK_OAUTH_BILLING_WEEKLY_PATH, GROK_OAUTH_DEFAULT_BASE_URL,
+    KIRO_USAGE_LIMITS_PATH, KIRO_USAGE_SDK_VERSION,
 };
 pub use quota::{
     provider_pool_key_account_quota_exhausted, provider_pool_key_scheduling_label,

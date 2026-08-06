@@ -167,6 +167,17 @@ pub(super) fn classify_admin_endpoints_family_route(
             false,
         ))
     } else if method == http::Method::POST
+        && normalized_path.starts_with("/api/admin/endpoints/keys/")
+        && normalized_path.ends_with("/reset-codex-quota")
+    {
+        Some(classified(
+            "admin_proxy",
+            "endpoints_manage",
+            "reset_codex_quota",
+            "admin:endpoints_manage",
+            false,
+        ))
+    } else if method == http::Method::POST
         && normalized_path.starts_with("/api/admin/endpoints/providers/")
         && normalized_path.ends_with("/refresh-quota")
     {

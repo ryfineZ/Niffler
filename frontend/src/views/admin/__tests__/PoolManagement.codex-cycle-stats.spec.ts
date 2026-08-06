@@ -20,8 +20,13 @@ const endpointMocks = vi.hoisted(() => ({
   deleteEndpointKey: vi.fn(),
   updateProviderKey: vi.fn(),
   refreshProviderQuota: vi.fn(),
+  resetCodexQuota: vi.fn(),
   resetProviderKeyCycleStats: vi.fn(),
   refreshProviderOAuth: vi.fn(),
+}))
+
+const accountTestDialogMocks = vi.hoisted(() => ({
+  openAccountTest: vi.fn(),
 }))
 
 const routeMocks = vi.hoisted(() => ({
@@ -57,6 +62,7 @@ vi.mock('@/api/endpoints/keys', () => ({
   deleteEndpointKey: endpointMocks.deleteEndpointKey,
   updateProviderKey: endpointMocks.updateProviderKey,
   refreshProviderQuota: endpointMocks.refreshProviderQuota,
+  resetCodexQuota: endpointMocks.resetCodexQuota,
   resetProviderKeyCycleStats: endpointMocks.resetProviderKeyCycleStats,
 }))
 
@@ -149,6 +155,8 @@ vi.mock('lucide-vue-next', async () => {
     CircleHelp: Icon,
     Edit: Icon,
     Plug: Icon,
+    Loader2: Icon,
+    Play: Icon,
   }
 })
 
@@ -360,6 +368,18 @@ vi.mock('@/features/pool/components/PoolAccountBatchDialog.vue', async () => {
     default: defineComponent({
       name: 'PoolAccountBatchDialogStub',
       setup() {
+        return () => null
+      },
+    }),
+  }
+})
+vi.mock('@/features/pool/components/PoolAccountTestDialog.vue', async () => {
+  const { defineComponent } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'PoolAccountTestDialogStub',
+      setup(_, { expose }) {
+        expose({ openAccountTest: accountTestDialogMocks.openAccountTest })
         return () => null
       },
     }),
@@ -588,8 +608,10 @@ beforeEach(() => {
   endpointMocks.deleteEndpointKey.mockReset()
   endpointMocks.updateProviderKey.mockReset()
   endpointMocks.refreshProviderQuota.mockReset()
+  endpointMocks.resetCodexQuota.mockReset()
   endpointMocks.resetProviderKeyCycleStats.mockReset()
   endpointMocks.refreshProviderOAuth.mockReset()
+  accountTestDialogMocks.openAccountTest.mockReset()
 
   endpointMocks.getPoolSchedulingPresets.mockResolvedValue([])
   endpointMocks.clearPoolCooldown.mockResolvedValue({ message: 'ok' })
@@ -597,7 +619,17 @@ beforeEach(() => {
   endpointMocks.getPoolBatchDeleteTask.mockResolvedValue({ task_id: 'task-1', status: 'completed', total: 0, deleted: 0, message: 'ok' })
   endpointMocks.resolvePoolKeySelection.mockResolvedValue({ total: 0, items: [] })
   endpointMocks.refreshProviderQuota.mockResolvedValue({ success: 0, failed: 0 })
+  endpointMocks.resetCodexQuota.mockResolvedValue({
+    message: '额度已重置',
+    outcome: 'reset',
+    reset_applied: true,
+    windows_reset: 2,
+    refresh_succeeded: true,
+    quota_snapshot: null,
+    refresh_message: null,
+  })
   endpointMocks.resetProviderKeyCycleStats.mockResolvedValue({ message: '已重置周期统计', reset_at: 123, windows: 2 })
+  accountTestDialogMocks.openAccountTest.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -641,6 +673,39 @@ describe('PoolManagement Codex cycle stats mode', () => {
     )
     expect(root.textContent).not.toContain('累计')
     expect(root.textContent).not.toContain('总计')
+  })
+
+  it('exposes account testing and Codex quota reset in the account list', async () => {
+    const codexKey = createPoolKey('codex')
+    if (codexKey.status_snapshot?.quota) {
+      codexKey.status_snapshot.quota.reset_credits = { available_count: 1 }
+    }
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(codexKey))
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+
+    const root = mountPoolManagement()
+    await settle()
+
+    const testButtons = root.querySelectorAll<HTMLButtonElement>('[data-testid="pool-test-account"]')
+    const resetButtons = root.querySelectorAll<HTMLButtonElement>('[data-testid="pool-reset-codex-quota"]')
+    expect(testButtons.length).toBeGreaterThan(0)
+    expect(resetButtons.length).toBeGreaterThan(0)
+    expect(resetButtons[0]?.disabled).toBe(false)
+    expect(root.textContent).toContain('主动重置 1')
+
+    testButtons[0]?.click()
+    await settle()
+    expect(accountTestDialogMocks.openAccountTest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'codex-key-1', provider_id: 'codex-provider' }),
+    )
+
+    resetButtons[0]?.click()
+    await settle()
+    expect(endpointMocks.resetCodexQuota).toHaveBeenCalledWith(
+      'codex-key-1',
+      expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+    )
   })
 
   it('renders every upstream Codex quota window including monthly', async () => {

@@ -18,7 +18,10 @@ pub use chatgpt_web::{
     CHATGPT_WEB_DEFAULT_BASE_URL,
 };
 pub use codex::CodexProviderPoolAdapter;
-pub use codex::{build_codex_pool_quota_request, CODEX_WHAM_USAGE_URL};
+pub use codex::{
+    build_codex_pool_quota_request, build_codex_pool_quota_reset_request,
+    CODEX_WHAM_RESET_CREDITS_CONSUME_URL, CODEX_WHAM_USAGE_URL,
+};
 pub use default::DefaultProviderPoolAdapter;
 pub use grok::{
     grok_mode_id_for_model, grok_pool_tier_from_quota_bucket, grok_quota_window_key_for_model,

@@ -5,6 +5,7 @@ use super::super::shared::{
 use crate::handlers::admin::request::{AdminAppState, AdminGatewayProviderTransportSnapshot};
 use crate::GatewayError;
 use aether_contracts::ProxySnapshot;
+use aether_provider_pool::build_codex_pool_quota_reset_request;
 use aether_provider_pool::{build_codex_pool_quota_request, ProviderPoolQuotaRequestSpec};
 
 pub(super) fn build_codex_quota_request_spec(
@@ -18,6 +19,25 @@ pub(super) fn build_codex_quota_request_spec(
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
     build_codex_pool_quota_request(
         &transport.key.id,
+        resolved_oauth_auth,
+        Some(transport.key.decrypted_api_key.as_str()),
+        auth_config.as_ref(),
+    )
+}
+
+pub(super) fn build_codex_quota_reset_request_spec(
+    transport: &AdminGatewayProviderTransportSnapshot,
+    redeem_request_id: &str,
+    resolved_oauth_auth: Option<(String, String)>,
+) -> Result<ProviderPoolQuotaRequestSpec, String> {
+    let auth_config = transport
+        .key
+        .decrypted_auth_config
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    build_codex_pool_quota_reset_request(
+        &transport.key.id,
+        redeem_request_id,
         resolved_oauth_auth,
         Some(transport.key.decrypted_api_key.as_str()),
         auth_config.as_ref(),

@@ -868,6 +868,29 @@
                   >
                     {{ keyUiStateMap[key.key_id]?.quotaFreshnessText }}
                   </div>
+                  <div
+                    v-if="selectedProviderType === 'codex'"
+                    class="mt-2 flex items-center justify-between gap-2 text-[10px]"
+                  >
+                    <span class="text-muted-foreground tabular-nums">
+                      {{ t('poolManagement.resetCreditCount', { count: getCodexResetCreditCount(key) ?? '-' }) }}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="h-6 px-2 text-[10px]"
+                      :disabled="!canResetCodexQuota(key) || resettingCodexQuotaKeyId !== null"
+                      :title="getCodexQuotaResetButtonTitle(key)"
+                      data-testid="pool-reset-codex-quota"
+                      @click="handleResetCodexQuota(key)"
+                    >
+                      <Loader2
+                        v-if="resettingCodexQuotaKeyId === key.key_id"
+                        class="mr-1 h-3 w-3 animate-spin"
+                      />
+                      {{ resettingCodexQuotaKeyId === key.key_id ? t('poolManagement.resettingQuota') : t('poolManagement.resetQuota') }}
+                    </Button>
+                  </div>
                 </TableCell>
                 <TableCell class="py-3 px-2 align-middle">
                   <div
@@ -1019,6 +1042,24 @@
                 </TableCell>
                 <TableCell class="py-3 px-2 align-middle">
                   <div class="flex justify-center gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="h-7 w-7 text-primary"
+                      :disabled="!key.is_active || preparingAccountTestKeyId !== null || !selectedProviderData"
+                      :title="preparingAccountTestKeyId === key.key_id ? t('poolManagement.preparingAccountTest') : t('poolManagement.testAccount')"
+                      data-testid="pool-test-account"
+                      @click="handleTestAccount(key)"
+                    >
+                      <Loader2
+                        v-if="preparingAccountTestKeyId === key.key_id"
+                        class="w-3.5 h-3.5 animate-spin"
+                      />
+                      <Play
+                        v-else
+                        class="w-3.5 h-3.5"
+                      />
+                    </Button>
                     <Button
                       v-if="key.cooldown_reason"
                       variant="ghost"
@@ -1418,9 +1459,52 @@
                 >
                   {{ keyUiStateMap[key.key_id]?.quotaFreshnessText }}
                 </div>
+                <div
+                  v-if="selectedProviderType === 'codex'"
+                  class="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[10px]"
+                >
+                  <span class="text-muted-foreground tabular-nums">
+                    {{ t('poolManagement.resetCreditCount', { count: getCodexResetCreditCount(key) ?? '-' }) }}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 px-2 text-[10px]"
+                    :disabled="!canResetCodexQuota(key) || resettingCodexQuotaKeyId !== null"
+                    :title="getCodexQuotaResetButtonTitle(key)"
+                    data-testid="pool-reset-codex-quota-mobile"
+                    @click="handleResetCodexQuota(key)"
+                  >
+                    <Loader2
+                      v-if="resettingCodexQuotaKeyId === key.key_id"
+                      class="mr-1 h-3 w-3 animate-spin"
+                    />
+                    {{ resettingCodexQuotaKeyId === key.key_id ? t('poolManagement.resettingQuota') : t('poolManagement.resetQuota') }}
+                  </Button>
+                </div>
               </div>
 
               <div class="flex items-center gap-0.5">
+                <div class="min-w-0 flex-1 flex justify-center">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    class="h-7 w-7 shrink-0 text-primary"
+                    :disabled="!key.is_active || preparingAccountTestKeyId !== null || !selectedProviderData"
+                    :title="preparingAccountTestKeyId === key.key_id ? t('poolManagement.preparingAccountTest') : t('poolManagement.testAccount')"
+                    data-testid="pool-test-account-mobile"
+                    @click="handleTestAccount(key)"
+                  >
+                    <Loader2
+                      v-if="preparingAccountTestKeyId === key.key_id"
+                      class="w-3.5 h-3.5 animate-spin"
+                    />
+                    <Play
+                      v-else
+                      class="w-3.5 h-3.5"
+                    />
+                  </Button>
+                </div>
                 <div
                   v-for="actionId in keyUiStateMap[key.key_id]?.mobileActionIds || []"
                   :key="`${key.key_id}-${actionId}`"
@@ -1696,6 +1780,10 @@
       @close="closeOAuthEditDialog"
       @saved="handleDialogSaved"
     />
+    <PoolAccountTestDialog
+      ref="poolAccountTestDialogRef"
+      :provider="selectedProviderData"
+    />
     <KeyAllowedModelsEditDialog
       v-if="selectedProviderId"
       :open="keyPermissionsDialogOpen"
@@ -1733,6 +1821,8 @@ import {
   CircleHelp,
   Edit,
   Plug,
+  Loader2,
+  Play,
 } from 'lucide-vue-next'
 
 import {
@@ -1783,6 +1873,7 @@ import {
   deleteEndpointKey,
   updateProviderKey,
   refreshProviderQuota,
+  resetCodexQuota,
   resetProviderKeyCycleStats,
 } from '@/api/endpoints/keys'
 import { refreshProviderOAuth } from '@/api/endpoints/provider_oauth'
@@ -1808,6 +1899,7 @@ import PoolSchedulingDialog from '@/features/pool/components/PoolSchedulingDialo
 import PoolAdvancedDialog from '@/features/pool/components/PoolAdvancedDialog.vue'
 import PoolDemandMetricsDialog from '@/features/pool/components/PoolDemandMetricsDialog.vue'
 import PoolAccountBatchDialog from '@/features/pool/components/PoolAccountBatchDialog.vue'
+import PoolAccountTestDialog from '@/features/pool/components/PoolAccountTestDialog.vue'
 import ProviderProxyPopover from '@/features/pool/components/ProviderProxyPopover.vue'
 import KeyAllowedModelsEditDialog from '@/features/providers/components/KeyAllowedModelsEditDialog.vue'
 import KeyFormDialog from '@/features/providers/components/KeyFormDialog.vue'
@@ -2484,6 +2576,10 @@ const poolSummaryTotal = computed(() => Number(keyPage.value.summary?.total ?? k
 const MANUAL_QUOTA_REFRESH_COOLDOWN_SECONDS = 5 * 60
 const refreshingOAuthKeyId = ref<string | null>(null)
 const resettingCycleKeyId = ref<string | null>(null)
+const resettingCodexQuotaKeyId = ref<string | null>(null)
+const preparingAccountTestKeyId = ref<string | null>(null)
+const poolAccountTestDialogRef = ref<InstanceType<typeof PoolAccountTestDialog> | null>(null)
+const codexQuotaResetIdempotencyKeys = new Map<string, string>()
 const savingProxyKeyId = ref<string | null>(null)
 const proxyDesktopPopoverOpenKeyId = ref<string | null>(null)
 const proxyMobilePopoverOpenKeyId = ref<string | null>(null)
@@ -2814,6 +2910,24 @@ const quotaRefreshSupported = computed(() => {
 
 function canResetCycleStats(_key: PoolKeyDetail): boolean {
   return selectedProviderType.value === 'codex' && Boolean(_key.key_id)
+}
+
+function getCodexResetCreditCount(key: PoolKeyDetail): number | null {
+  if (selectedProviderType.value !== 'codex') return null
+  const raw = key.status_snapshot?.quota?.reset_credits?.available_count
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return null
+  return Math.floor(raw)
+}
+
+function canResetCodexQuota(key: PoolKeyDetail): boolean {
+  return (getCodexResetCreditCount(key) ?? 0) > 0
+}
+
+function getCodexQuotaResetButtonTitle(key: PoolKeyDetail): string {
+  const count = getCodexResetCreditCount(key)
+  if (count === null) return t('poolManagement.resetQuotaUnknown')
+  if (count <= 0) return t('poolManagement.resetQuotaUnavailable')
+  return t('poolManagement.resetQuota')
 }
 
 const refreshCurrentPageLoading = computed(() => {
@@ -3747,6 +3861,94 @@ async function handleRefreshOAuth(key: PoolKeyDetail) {
 }
 
 // --- Actions ---
+async function handleTestAccount(key: PoolKeyDetail) {
+  if (!key.is_active || preparingAccountTestKeyId.value || !poolAccountTestDialogRef.value) return
+  preparingAccountTestKeyId.value = key.key_id
+  try {
+    await poolAccountTestDialogRef.value.openAccountTest(toEndpointApiKey(key))
+  } finally {
+    preparingAccountTestKeyId.value = null
+  }
+}
+
+function createCodexQuotaResetIdempotencyKey(): string {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto)
+  if (randomUUID) return randomUUID()
+
+  const bytes = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes)
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256)
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+function applyCodexQuotaResetResult(
+  key: PoolKeyDetail,
+  result: Awaited<ReturnType<typeof resetCodexQuota>>,
+) {
+  const quotaSnapshot = result.quota_snapshot
+  if (key.status_snapshot && quotaSnapshot) {
+    key.status_snapshot.quota = quotaSnapshot
+    key.quota_updated_at = quotaSnapshot.updated_at ?? quotaSnapshot.observed_at ?? key.quota_updated_at
+    return
+  }
+
+  const resetCredits = key.status_snapshot?.quota?.reset_credits
+  if (!resetCredits) return
+  const currentCount = getCodexResetCreditCount(key)
+  if (result.outcome === 'no_credit') {
+    resetCredits.available_count = 0
+  } else if (result.reset_applied && currentCount !== null) {
+    resetCredits.available_count = Math.max(0, currentCount - 1)
+  }
+}
+
+async function handleResetCodexQuota(key: PoolKeyDetail) {
+  if (resettingCodexQuotaKeyId.value || !canResetCodexQuota(key)) return
+  const confirmed = await confirm({
+    title: t('poolManagement.resetQuota'),
+    message: t('poolManagement.resetQuotaConfirm', {
+      name: getPoolAccountDisplayName(key),
+    }),
+    confirmText: t('poolManagement.confirmResetQuota'),
+    variant: 'warning',
+  })
+  if (!confirmed) return
+
+  const idempotencyKey = codexQuotaResetIdempotencyKeys.get(key.key_id)
+    || createCodexQuotaResetIdempotencyKey()
+  codexQuotaResetIdempotencyKeys.set(key.key_id, idempotencyKey)
+  resettingCodexQuotaKeyId.value = key.key_id
+  try {
+    const result = await resetCodexQuota(key.key_id, idempotencyKey)
+    codexQuotaResetIdempotencyKeys.delete(key.key_id)
+    applyCodexQuotaResetResult(key, result)
+
+    if (result.reset_applied && result.refresh_succeeded) {
+      success(t('poolManagement.quotaResetSuccess'))
+      await loadKeys()
+      refreshOverviewInBackground()
+    } else if (result.reset_applied) {
+      showWarning(t('poolManagement.quotaResetRefreshFailed'))
+    } else if (result.outcome === 'no_credit') {
+      showWarning(t('poolManagement.quotaNoCredit'))
+    } else {
+      showWarning(t('poolManagement.quotaNothingToReset'))
+    }
+  } catch (err) {
+    showError(parseApiError(err, t('poolManagement.quotaResetFailed')))
+  } finally {
+    resettingCodexQuotaKeyId.value = null
+  }
+}
+
 async function clearCooldown(keyId: string) {
   if (!selectedProviderId.value) return
   try {

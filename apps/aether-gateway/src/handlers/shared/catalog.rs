@@ -410,6 +410,7 @@ fn is_codex_quota_metadata_key(key: &str) -> bool {
         "has_credits"
             | "credits_balance"
             | "credits_unlimited"
+            | "rate_limit_reset_credits"
             | "primary_over_secondary_limit_percent"
             | "windows"
     ) || [
@@ -1032,6 +1033,11 @@ fn build_codex_quota_status_snapshot(
     let credits_unlimited = metadata
         .get("credits_unlimited")
         .and_then(admin_provider_quota_pure::coerce_json_bool);
+    let reset_credits_available_count = metadata
+        .get("rate_limit_reset_credits")
+        .and_then(Value::as_object)
+        .and_then(|credits| credits.get("available_count"))
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
 
     let windows = metadata
         .get("windows")
@@ -1087,6 +1093,7 @@ fn build_codex_quota_status_snapshot(
         && credits_has_credits.is_none()
         && credits_balance.is_none()
         && credits_unlimited.is_none()
+        && reset_credits_available_count.is_none()
         && observed_at_unix_secs.is_none()
     {
         return None;
@@ -1157,6 +1164,9 @@ fn build_codex_quota_status_snapshot(
         } else {
             Value::Object(credits)
         },
+        "reset_credits": reset_credits_available_count.map(|available_count| json!({
+            "available_count": available_count,
+        })),
         "windows": windows,
     }))
 }

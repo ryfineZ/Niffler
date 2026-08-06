@@ -2,6 +2,7 @@ mod batch;
 mod create;
 mod delete;
 mod oauth_invalid;
+mod reset_codex_quota;
 mod reset_cycle_stats;
 mod update;
 
@@ -33,6 +34,11 @@ pub(super) async fn maybe_handle(
     }
     if let Some(response) =
         reset_cycle_stats::maybe_handle(state, request_context, request_body).await?
+    {
+        return Ok(Some(response));
+    }
+    if let Some(response) =
+        reset_codex_quota::maybe_handle(state, request_context, request_body).await?
     {
         return Ok(Some(response));
     }

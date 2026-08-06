@@ -368,6 +368,9 @@ export interface CodexUpstreamMetadata {
   spark_secondary_window_minutes?: number
   has_credits?: boolean  // 是否有积分
   credits_balance?: number  // 积分余额
+  rate_limit_reset_credits?: {
+    available_count?: number
+  }
 }
 
 export interface AntigravityModelQuota extends Record<string, unknown> {

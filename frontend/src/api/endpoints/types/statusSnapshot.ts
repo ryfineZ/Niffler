@@ -50,6 +50,10 @@ export interface QuotaCreditsSnapshot {
   unlimited?: boolean | null
 }
 
+export interface QuotaResetCreditsSnapshot {
+  available_count?: number | null
+}
+
 export interface QuotaStatusSnapshot {
   version?: number | null
   provider_type?: string | null
@@ -67,6 +71,7 @@ export interface QuotaStatusSnapshot {
   plan_type?: string | null
   pool_tier?: string | null
   credits?: QuotaCreditsSnapshot | null
+  reset_credits?: QuotaResetCreditsSnapshot | null
   windows?: QuotaWindowSnapshot[] | null
 }
 
