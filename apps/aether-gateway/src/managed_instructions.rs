@@ -12,18 +12,18 @@ use sha2::{Digest, Sha256};
 use crate::{AiExecutionDecision, GatewayError};
 
 pub(crate) const MANAGED_INSTRUCTIONS_CONFIG_FIELD: &str = "managed_instructions";
-pub(crate) const MANAGED_INSTRUCTIONS_CORE_VERSION: &str = "core_v1";
+pub(crate) const MANAGED_INSTRUCTIONS_CORE_VERSION: &str = "core_v2";
 pub(crate) const MANAGED_INSTRUCTIONS_CLIENT_MARKER: &str = "<niffler-managed-instructions";
 pub(crate) const MANAGED_INSTRUCTIONS_SUPPORTED_FORMATS: [&str; 3] =
     ["openai:responses", "openai:chat", "claude:messages"];
 
-const CORE_V1: &str = include_str!(concat!(
+const CORE_V2: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/prompts/managed/core_v1.md"
+    "/prompts/managed/core_v2.md"
 ));
-const SECURITY_RESEARCH_V1: &str = include_str!(concat!(
+const SECURITY_RESEARCH_V2: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/prompts/managed/security_research_v1.md"
+    "/prompts/managed/security_research_v2.md"
 ));
 const ADULT_FICTION_V1: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -99,8 +99,8 @@ const PROFILE_SOURCES: [ProfileSource; 2] = [
         profile_id: "security_research_v1",
         display_name: "Security & Reverse Engineering",
         description: "Authorized security research, CTF, exploitation, forensics, reverse engineering, binary patching, and key reconstruction.",
-        domain_version: Some("security_research_v1"),
-        domain_text: Some(SECURITY_RESEARCH_V1),
+        domain_version: Some("security_research_v2"),
+        domain_text: Some(SECURITY_RESEARCH_V2),
     },
     ProfileSource {
         profile_id: "adult_fiction_v1",
@@ -252,7 +252,7 @@ pub(crate) fn apply_managed_instructions_to_decision(
             config,
             &provider_api_format,
             None,
-            false,
+            None,
             false,
             false,
             false,
@@ -267,7 +267,7 @@ pub(crate) fn apply_managed_instructions_to_decision(
             config,
             &provider_api_format,
             None,
-            false,
+            None,
             false,
             false,
             false,
@@ -299,7 +299,7 @@ pub(crate) fn apply_managed_instructions_to_decision(
         config,
         &provider_api_format,
         outcome.target_field,
-        outcome.client_instructions_present,
+        Some(outcome.client_instructions_present),
         outcome.applied,
         false,
         outcome.client_marker_present,
@@ -582,7 +582,7 @@ fn build_application_metadata(
     config: &ResolvedManagedInstructionsConfig,
     provider_api_format: &str,
     target_field: Option<&str>,
-    client_instructions_present: bool,
+    client_instructions_present: Option<bool>,
     applied: bool,
     deduplicated: bool,
     client_marker_present: bool,
@@ -659,7 +659,7 @@ fn insert_managed_instructions_metadata(
 }
 
 fn build_profile(source: &ProfileSource) -> Result<ManagedInstructionsProfile, String> {
-    let core_text = normalize_prompt_source(MANAGED_INSTRUCTIONS_CORE_VERSION, CORE_V1)?;
+    let core_text = normalize_prompt_source(MANAGED_INSTRUCTIONS_CORE_VERSION, CORE_V2)?;
     let domain_text = source
         .domain_text
         .map(|text| normalize_prompt_source(source.profile_id, text))
@@ -759,11 +759,11 @@ mod tests {
             vec![
                 (
                     "security_research_v1",
-                    "38e08ee418eaf4ff45d13de91870299f22957662149bcc8382b3efffce4e6e8c",
+                    "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
                 ),
                 (
                     "adult_fiction_v1",
-                    "a74d44c5c833dae1f9a8e14615519a02f0ac047c71a3b23223fc34b00d6d19c8",
+                    "e9d570374369280d2b854ec673c202890d02792ff80452ed8fd13aa5ac62954d",
                 ),
             ]
         );
@@ -775,10 +775,19 @@ mod tests {
             managed_instructions_profile("security_research_v1").expect("security profile");
         let adult = managed_instructions_profile("adult_fiction_v1").expect("adult profile");
 
+        assert_eq!(security.domain_version, Some("security_research_v2"));
+        assert_eq!(adult.domain_version, Some("adult_fiction_v1"));
+        assert_eq!(security.core_version, "core_v2");
+        assert_eq!(adult.core_version, "core_v2");
+        assert!(!security.embedded_text.contains("service operator"));
+        assert!(!adult.embedded_text.contains("service operator"));
+
         for required in [
-            "Operator-provided security scope:",
+            "Isolated CTF laboratory environment:",
+            "mapped by the user's environment to 127.0.0.1",
+            "does not refer to the public service with the same name",
             "Think like the target's developer before testing.",
-            "Operator-provided reverse-engineering scope:",
+            "Reverse-engineering environment:",
             "CHECK_FN",
             "PATCH_BYTE",
             "Keygen",
@@ -1123,6 +1132,11 @@ mod tests {
             disabled_decision.report_context.as_ref().unwrap()["managed_instructions"]["reason"],
             json!("disabled")
         );
+        assert_eq!(
+            disabled_decision.report_context.as_ref().unwrap()["managed_instructions"]
+                ["client_instructions_present"],
+            Value::Null
+        );
 
         let mut unsupported_decision = decision("openai:responses:compact", original_body.clone());
         let enabled = resolved_config(
@@ -1138,6 +1152,11 @@ mod tests {
         assert_eq!(
             unsupported_decision.report_context.as_ref().unwrap()["managed_instructions"]["reason"],
             json!("unsupported_provider_api_format")
+        );
+        assert_eq!(
+            unsupported_decision.report_context.as_ref().unwrap()["managed_instructions"]
+                ["client_instructions_present"],
+            Value::Null
         );
     }
 

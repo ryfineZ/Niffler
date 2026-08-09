@@ -76,15 +76,15 @@ const registry = {
       profile_id: 'security_research_v1',
       display_name: 'Security & Reverse Engineering',
       description: 'Security and reverse engineering',
-      core_version: 'core_v1',
-      domain_version: 'security_research_v1',
+      core_version: 'core_v2',
+      domain_version: 'security_research_v2',
       profile_sha256: 'a'.repeat(64),
     },
     {
       profile_id: 'adult_fiction_v1',
       display_name: 'Adult Fiction',
       description: 'Adult fiction',
-      core_version: 'core_v1',
+      core_version: 'core_v2',
       domain_version: 'adult_fiction_v1',
       profile_sha256: 'b'.repeat(64),
     },
@@ -149,7 +149,7 @@ describe('ManagedInstructionsConfigSection', () => {
     await flushUi()
 
     const summary = root.querySelector('[data-testid="managed-instructions-summary"]')
-    expect(summary?.textContent).toContain('core_v1')
+    expect(summary?.textContent).toContain('core_v2')
     expect(summary?.textContent).toContain(`SHA-256 ${'a'.repeat(64)}`)
   })
 

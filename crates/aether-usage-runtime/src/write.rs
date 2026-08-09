@@ -13,9 +13,9 @@ use crate::body_capture::{
 };
 use crate::request_metadata::{
     attach_client_request_body_metadata, attach_provider_request_body_metadata,
-    build_usage_request_metadata_seed, merge_usage_request_metadata,
-    merge_usage_request_metadata_owned, sanitize_usage_request_metadata,
-    sanitize_usage_request_metadata_ref,
+    build_usage_request_metadata_seed, copy_managed_instructions_metadata,
+    merge_usage_request_metadata, merge_usage_request_metadata_owned,
+    sanitize_usage_request_metadata, sanitize_usage_request_metadata_ref,
 };
 use crate::{
     map_usage_from_response, GatewayStreamReportRequest, GatewaySyncReportRequest,
@@ -1697,6 +1697,9 @@ fn build_runtime_request_metadata_seed_from_parts(
         &mut metadata,
         provider_request_body_base64,
     );
+    if let Some(context) = context {
+        copy_managed_instructions_metadata(context, &mut metadata);
+    }
 
     (!metadata.is_empty()).then_some(Value::Object(metadata))
 }
@@ -3195,6 +3198,23 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
 
+    fn managed_instructions_status() -> Value {
+        json!({
+            "applied": true,
+            "user_group_id": "security-users",
+            "profile_id": "security_research_v1",
+            "merge_mode": "prepend",
+            "core_version": "core_v2",
+            "profile_sha256": "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
+            "provider_api_format": "openai:responses",
+            "target_field": "instructions",
+            "client_instructions_present": true,
+            "deduplicated": false,
+            "client_marker_present": false,
+            "reason": "applied"
+        })
+    }
+
     #[test]
     fn request_usage_estimate_ignores_native_input_image_data_bytes() {
         let request_with_image = |image_bytes: &str| {
@@ -3595,7 +3615,8 @@ mod tests {
             Some(&json!({
                 "api_key_is_standalone": true,
                 "client_ip": "203.0.113.8",
-                "user_agent": "Claude-Code/1.0"
+                "user_agent": "Claude-Code/1.0",
+                "managed_instructions": managed_instructions_status()
             })),
             1_700_000_000,
         )
@@ -3606,13 +3627,14 @@ mod tests {
             Some(json!({
                 "api_key_is_standalone": true,
                 "client_ip": "203.0.113.8",
-                "user_agent": "Claude-Code/1.0"
+                "user_agent": "Claude-Code/1.0",
+                "managed_instructions": managed_instructions_status()
             }))
         );
     }
 
     #[test]
-    fn streaming_usage_records_stay_lightweight_by_default() {
+    fn streaming_usage_records_stay_lightweight_and_preserve_managed_instructions() {
         let plan = ExecutionPlan {
             request_id: "req-streaming-usage-1".to_string(),
             candidate_id: Some("cand-streaming-usage-1".to_string()),
@@ -3640,7 +3662,8 @@ mod tests {
             Some(&json!({
                 "candidate_id": "cand-streaming-usage-1",
                 "original_request_body": {"messages": [{"content": "omit me"}]},
-                "provider_request_body": {"input": "omit me too"}
+                "provider_request_body": {"input": "omit me too"},
+                "managed_instructions": managed_instructions_status()
             })),
             200,
             None,
@@ -3657,6 +3680,13 @@ mod tests {
         assert!(record.provider_request_body.is_none());
         assert!(record.response_headers.is_none());
         assert!(record.client_response_headers.is_none());
+        assert_eq!(
+            record
+                .request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("managed_instructions")),
+            Some(&managed_instructions_status())
+        );
     }
 
     #[test]
