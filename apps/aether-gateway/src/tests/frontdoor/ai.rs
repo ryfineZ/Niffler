@@ -94,6 +94,9 @@ async fn gateway_handles_ccswitch_usage_without_touching_last_used() {
             remaining_usd: 6.0,
             base_remaining_usd: 6.0,
             allow_wallet_overage: true,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         },
     });
 
@@ -180,6 +183,9 @@ async fn gateway_handles_ccswitch_user_balance_with_api_key_without_proxying_ups
             remaining_usd: 6.0,
             base_remaining_usd: 6.0,
             allow_wallet_overage: true,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         },
     });
 
@@ -278,6 +284,9 @@ async fn gateway_reports_ccswitch_user_balance_as_unlimited_without_numeric_rema
             remaining_usd: 0.0,
             base_remaining_usd: 0.0,
             allow_wallet_overage: true,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         },
     });
 
@@ -334,6 +343,9 @@ async fn gateway_reports_ccswitch_user_balance_as_inactive_for_unknown_api_key()
             remaining_usd: 0.0,
             base_remaining_usd: 0.0,
             allow_wallet_overage: true,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         },
     });
 

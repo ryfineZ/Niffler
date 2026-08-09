@@ -100,6 +100,7 @@ export interface BillingPlan {
   sort_order: number
   max_active_per_user: number
   purchase_limit_scope: BillingPurchaseLimitScope
+  allowed_provider_ids: string[]
   entitlements: BillingEntitlementsInput
   created_at?: number | null
   updated_at?: number | null
@@ -116,6 +117,7 @@ export interface BillingPlanWriteRequest {
   sort_order: number
   max_active_per_user: number
   purchase_limit_scope: BillingPurchaseLimitScope
+  allowed_provider_ids: string[]
   entitlements: BillingEntitlementsInput
 }
 
@@ -147,6 +149,7 @@ export interface UserPlanEntitlement {
   status: string
   starts_at: string | null
   expires_at: string | null
+  allowed_provider_ids: string[]
   entitlements: BillingEntitlementsInput
   active?: boolean
   created_at?: string | null

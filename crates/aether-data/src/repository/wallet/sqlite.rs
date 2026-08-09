@@ -1,6 +1,6 @@
 use super::plan_overrides::{
     admin_grant_expires_at_unix_secs, admin_grant_starts_at_unix_secs,
-    entitlements_with_admin_grant_overrides,
+    entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
     redeem_code_credits_recharge_balance, redeem_code_payment_method, redeem_code_refundable_amount,
@@ -1243,7 +1243,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'wallet_recharge', 'pending', ?, 
 
         let wallet_row = sqlx::query(
             r#"
-SELECT id, status
+SELECT id, status, balance + gift_balance AS signed_balance
 FROM wallets
 WHERE user_id = ?
 LIMIT 1
@@ -1253,8 +1253,12 @@ LIMIT 1
         .fetch_optional(&mut *tx)
         .await
         .map_sql_err()?;
-        let (wallet_id, wallet_status) = if let Some(row) = wallet_row {
-            (get::<String>(&row, "id")?, get::<String>(&row, "status")?)
+        let (wallet_id, wallet_status, signed_balance) = if let Some(row) = wallet_row {
+            (
+                get::<String>(&row, "id")?,
+                get::<String>(&row, "status")?,
+                get::<f64>(&row, "signed_balance")?,
+            )
         } else {
             let wallet_id = input
                 .preferred_wallet_id
@@ -1277,11 +1281,37 @@ VALUES (?, ?, 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, ?, ?)
             .execute(&mut *tx)
             .await
             .map_sql_err()?;
-            (wallet_id, "active".to_string())
+            (wallet_id, "active".to_string(), 0.0)
         };
         if wallet_status != "active" {
             tx.commit().await.map_sql_err()?;
             return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
+        }
+        if input.payment_method != "admin_grant" && signed_balance < 0.0 {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::WalletInDebt);
+        }
+
+        let requested_starts_at = plan_starts_at_unix(&input.product_snapshot, now);
+        let requested_expires_at =
+            plan_expires_at_unix(&input.product_snapshot, requested_starts_at);
+        if has_other_overlapping_plan_sqlite(
+            &mut tx,
+            &input.user_id,
+            &input.product_id,
+            requested_starts_at,
+            requested_expires_at,
+        )
+        .await?
+        {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
+        }
+        if has_pending_other_plan_purchase_sqlite(&mut tx, &input.user_id, &input.product_id, now)
+            .await?
+        {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
         }
 
         let purchase_limit_scope = plan_purchase_limit_scope(&input.product_snapshot);
@@ -1805,11 +1835,51 @@ VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'received', ?, NULL, ?, NULL)
             .await
             .map_sql_err()?;
             if existing_entitlement_id.is_none() {
+                if plan_purchase_wallet_in_debt_sqlite(
+                    &mut tx,
+                    &order_wallet_id,
+                    &input.payment_method,
+                )
+                .await?
+                {
+                    update_sqlite_payment_callback_failure(
+                        &mut tx,
+                        &callback_id,
+                        &input,
+                        &payload,
+                        "wallet is in debt",
+                    )
+                    .await?;
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(ProcessPaymentCallbackOutcome::Failed {
+                        duplicate,
+                        error: "wallet is in debt".to_string(),
+                    });
+                }
                 let requested_starts_at = plan_starts_at_unix(&snapshot, now);
                 let starts_at =
                     plan_renewal_starts_at_sqlite(&mut tx, &user_id, &plan_id, requested_starts_at)
                         .await?;
                 let expires_at = plan_expires_at_unix(&snapshot, starts_at);
+                if has_other_overlapping_plan_sqlite(
+                    &mut tx, &user_id, &plan_id, starts_at, expires_at,
+                )
+                .await?
+                {
+                    update_sqlite_payment_callback_failure(
+                        &mut tx,
+                        &callback_id,
+                        &input,
+                        &payload,
+                        "another plan overlaps this entitlement",
+                    )
+                    .await?;
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(ProcessPaymentCallbackOutcome::Failed {
+                        duplicate,
+                        error: "another plan overlaps this entitlement".to_string(),
+                    });
+                }
                 let entitlements = plan_entitlements_snapshot(&snapshot);
                 let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                 if purchase_limit_scope != "unlimited" {
@@ -1848,6 +1918,7 @@ WHERE user_id = ?
                         });
                     }
                 }
+                let entitlement_id = uuid::Uuid::new_v4().to_string();
                 sqlx::query(
                     r#"
 INSERT INTO user_plan_entitlements (
@@ -1857,7 +1928,7 @@ INSERT INTO user_plan_entitlements (
 VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                     "#,
                 )
-                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&entitlement_id)
                 .bind(&user_id)
                 .bind(&plan_id)
                 .bind(&order_id)
@@ -1872,6 +1943,13 @@ VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                 .execute(&mut *tx)
                 .await
                 .map_sql_err()?;
+                save_entitlement_providers_sqlite(
+                    &mut tx,
+                    &entitlement_id,
+                    &plan_provider_ids_snapshot(&snapshot),
+                    now,
+                )
+                .await?;
                 apply_plan_wallet_credit_sqlite(
                     &mut tx,
                     &order_wallet_id,
@@ -2954,11 +3032,33 @@ WHERE id = ? AND wallet_id = ?
             .await
             .map_sql_err()?;
             if existing_entitlement_id.is_none() {
+                if plan_purchase_wallet_in_debt_sqlite(
+                    &mut tx,
+                    &order.wallet_id,
+                    &order.payment_method,
+                )
+                .await?
+                {
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(WalletMutationOutcome::Invalid(
+                        "wallet is in debt".to_string(),
+                    ));
+                }
                 let requested_starts_at = plan_starts_at_unix(&snapshot, now);
                 let starts_at =
                     plan_renewal_starts_at_sqlite(&mut tx, &user_id, &plan_id, requested_starts_at)
                         .await?;
                 let expires_at = plan_expires_at_unix(&snapshot, starts_at);
+                if has_other_overlapping_plan_sqlite(
+                    &mut tx, &user_id, &plan_id, starts_at, expires_at,
+                )
+                .await?
+                {
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(WalletMutationOutcome::Invalid(
+                        "another plan overlaps this entitlement".to_string(),
+                    ));
+                }
                 let entitlements = plan_entitlements_snapshot(&snapshot);
                 let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                 if purchase_limit_scope != "unlimited" {
@@ -2988,6 +3088,7 @@ WHERE user_id = ?
                         ));
                     }
                 }
+                let entitlement_id = uuid::Uuid::new_v4().to_string();
                 sqlx::query(
                     r#"
 INSERT INTO user_plan_entitlements (
@@ -2997,7 +3098,7 @@ INSERT INTO user_plan_entitlements (
 VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                     "#,
                 )
-                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&entitlement_id)
                 .bind(&user_id)
                 .bind(&plan_id)
                 .bind(&input.order_id)
@@ -3012,6 +3113,13 @@ VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                 .execute(&mut *tx)
                 .await
                 .map_sql_err()?;
+                save_entitlement_providers_sqlite(
+                    &mut tx,
+                    &entitlement_id,
+                    &plan_provider_ids_snapshot(&snapshot),
+                    now,
+                )
+                .await?;
                 apply_plan_wallet_credit_sqlite(
                     &mut tx,
                     &order.wallet_id,
@@ -3936,6 +4044,106 @@ LIMIT 1
     Ok(latest_expires_at
         .filter(|value| *value > requested_starts_at)
         .unwrap_or(requested_starts_at))
+}
+
+async fn has_other_overlapping_plan_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    user_id: &str,
+    plan_id: &str,
+    starts_at: i64,
+    expires_at: i64,
+) -> Result<bool, DataLayerError> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM user_plan_entitlements
+WHERE user_id = ?
+  AND plan_id <> ?
+  AND status = 'active'
+  AND starts_at < ?
+  AND expires_at > ?
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(expires_at)
+    .bind(starts_at)
+    .fetch_one(&mut **tx)
+    .await
+    .map_sql_err()?;
+    Ok(count > 0)
+}
+
+async fn has_pending_other_plan_purchase_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    user_id: &str,
+    plan_id: &str,
+    now: i64,
+) -> Result<bool, DataLayerError> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM payment_orders
+WHERE user_id = ?
+  AND order_kind = 'plan_purchase'
+  AND product_id <> ?
+  AND status = 'pending'
+  AND expires_at > ?
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(now)
+    .fetch_one(&mut **tx)
+    .await
+    .map_sql_err()?;
+    Ok(count > 0)
+}
+
+async fn plan_purchase_wallet_in_debt_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wallet_id: &str,
+    payment_method: &str,
+) -> Result<bool, DataLayerError> {
+    if payment_method == "admin_grant" {
+        return Ok(false);
+    }
+    let Some(row) = sqlx::query("SELECT balance, gift_balance FROM wallets WHERE id = ? LIMIT 1")
+        .bind(wallet_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_sql_err()?
+    else {
+        return Err(DataLayerError::UnexpectedValue(
+            "wallet not found for plan fulfillment".to_string(),
+        ));
+    };
+    Ok(sqlite_real(&row, "balance")? + sqlite_real(&row, "gift_balance")? < 0.0)
+}
+
+async fn save_entitlement_providers_sqlite(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    entitlement_id: &str,
+    provider_ids: &[String],
+    now: i64,
+) -> Result<(), DataLayerError> {
+    for provider_id in provider_ids {
+        sqlx::query(
+            r#"
+INSERT OR IGNORE INTO user_entitlement_providers (
+  user_entitlement_id, provider_id, created_at
+)
+VALUES (?, ?, ?)
+            "#,
+        )
+        .bind(entitlement_id)
+        .bind(provider_id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_sql_err()?;
+    }
+    Ok(())
 }
 
 fn plan_starts_at_unix(snapshot: &serde_json::Value, now_unix_secs: i64) -> i64 {
@@ -4932,6 +5140,10 @@ fn mask_redeem_code(prefix: &str, suffix: &str) -> String {
 mod tests {
     use super::SqliteWalletReadRepository;
     use crate::lifecycle::migrate::run_sqlite_migrations;
+    use crate::repository::billing::{
+        AdminBillingMutationOutcome, BillingReadRepository, SqliteBillingReadRepository,
+        UserPlanEntitlementUpdateInput,
+    };
     use crate::repository::wallet::{
         AdjustWalletBalanceInput, AdminPaymentOrderListQuery, AdminRedeemCodeListQuery,
         AdminWalletLedgerQuery, AdminWalletListQuery, AdminWalletRefundRequestListQuery,
@@ -5757,7 +5969,7 @@ mod tests {
 
         let credited_update = repository
             .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
-                order_id: order.id,
+                order_id: order.id.clone(),
                 gateway_order_id: "cs_should_not_apply".to_string(),
                 gateway_response: json!({ "payment_url": "https://checkout.example.com/late" }),
             })
@@ -5791,7 +6003,6 @@ mod tests {
         .execute(repository.pool())
         .await
         .expect("user should seed");
-
         let _wallet_order = match repository
             .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
                 preferred_wallet_id: Some("wallet-active-period-1".to_string()),
@@ -5855,6 +6066,37 @@ INSERT INTO billing_plans (
         .execute(repository.pool())
         .await
         .expect("billing plan should seed");
+        let other_plan_snapshot = json!({
+            "id": "other-active-period-plan",
+            "title": "其他周期套餐",
+            "duration_unit": "month",
+            "duration_value": 1,
+            "max_active_per_user": 1,
+            "purchase_limit_scope": "active_period",
+            "entitlements": plan_snapshot["entitlements"].clone(),
+        });
+        sqlx::query(
+            r#"
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit, duration_value,
+  max_active_per_user, purchase_limit_scope, entitlements_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"#,
+        )
+        .bind("other-active-period-plan")
+        .bind("其他周期套餐")
+        .bind(100.0_f64)
+        .bind("CNY")
+        .bind("month")
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind("active_period")
+        .bind(other_plan_snapshot["entitlements"].to_string())
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(repository.pool())
+        .await
+        .expect("other billing plan should seed");
 
         let first_order = match repository
             .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
@@ -5880,6 +6122,30 @@ INSERT INTO billing_plans (
             CreatePlanPurchaseOrderOutcome::Created(order) => order,
             other => panic!("first active period order should be created, got {other:?}"),
         };
+        let different_pending = repository
+            .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
+                preferred_wallet_id: None,
+                user_id: "user-active-period-1".to_string(),
+                amount_usd: 13.8,
+                pay_amount: 100.0,
+                pay_currency: "CNY".to_string(),
+                exchange_rate: 7.24637681,
+                payment_method: "alipay".to_string(),
+                payment_provider: Some("epay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: "gateway-other-pending-plan-1".to_string(),
+                gateway_response: json!({ "checkout": true }),
+                order_no: "order-other-pending-plan-1".to_string(),
+                product_id: "other-active-period-plan".to_string(),
+                product_snapshot: other_plan_snapshot.clone(),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("different pending plan should resolve");
+        assert!(matches!(
+            different_pending,
+            CreatePlanPurchaseOrderOutcome::OverlappingPlanExists
+        ));
         let duplicate_pending = repository
             .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
                 preferred_wallet_id: None,
@@ -5934,6 +6200,31 @@ INSERT INTO billing_plans (
         .expect("entitlement count should query");
         assert_eq!(entitlement_count, 1);
 
+        let other_plan_order = repository
+            .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
+                preferred_wallet_id: None,
+                user_id: "user-active-period-1".to_string(),
+                amount_usd: 13.8,
+                pay_amount: 100.0,
+                pay_currency: "CNY".to_string(),
+                exchange_rate: 7.24637681,
+                payment_method: "alipay".to_string(),
+                payment_provider: Some("epay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: "gateway-other-active-period-1".to_string(),
+                gateway_response: json!({ "checkout": true }),
+                order_no: "order-other-active-period-1".to_string(),
+                product_id: "other-active-period-plan".to_string(),
+                product_snapshot: other_plan_snapshot,
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("other active plan purchase should resolve");
+        assert!(matches!(
+            other_plan_order,
+            CreatePlanPurchaseOrderOutcome::OverlappingPlanExists
+        ));
+
         let second_order = match repository
             .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
                 preferred_wallet_id: None,
@@ -5973,8 +6264,8 @@ INSERT INTO billing_plans (
         else {
             panic!("renewal plan credit should apply");
         };
-        let windows: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT starts_at, expires_at FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ? ORDER BY starts_at ASC",
+        let windows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT id, starts_at, expires_at FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ? ORDER BY starts_at ASC",
         )
         .bind("user-active-period-1")
         .bind("active-period-plan")
@@ -5982,8 +6273,28 @@ INSERT INTO billing_plans (
         .await
         .expect("renewal windows should query");
         assert_eq!(windows.len(), 2);
-        assert_eq!(windows[1].0, windows[0].1);
-        assert_eq!(windows[1].1, windows[0].1 + 30 * 86_400);
+        assert_eq!(windows[1].1, windows[0].2);
+        assert_eq!(windows[1].2, windows[0].2 + 30 * 86_400);
+
+        let billing_repository = SqliteBillingReadRepository::new(repository.pool().clone());
+        let overlapping_update = billing_repository
+            .update_user_plan_entitlement(
+                "user-active-period-1",
+                &windows[1].0,
+                &UserPlanEntitlementUpdateInput {
+                    starts_at_unix_secs: windows[0].1 as u64,
+                    expires_at_unix_secs: windows[1].2 as u64,
+                    allowed_provider_ids: None,
+                    entitlements_snapshot: None,
+                },
+            )
+            .await
+            .expect("overlapping admin update should resolve");
+        assert!(matches!(
+            overlapping_update,
+            AdminBillingMutationOutcome::Invalid(message)
+                if message.contains("同一时间只能有一个")
+        ));
 
         let wallet_balance: f64 = sqlx::query_scalar("SELECT balance FROM wallets WHERE id = ?")
             .bind("wallet-active-period-1")
@@ -6017,6 +6328,17 @@ INSERT INTO billing_plans (
         .execute(repository.pool())
         .await
         .expect("user should seed");
+        sqlx::query(
+            "INSERT INTO providers (id, name, provider_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("provider-admin-grant-1")
+        .bind("Admin Grant Provider")
+        .bind("openai")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(repository.pool())
+        .await
+        .expect("provider should seed");
 
         let _wallet_order = match repository
             .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
@@ -6052,6 +6374,7 @@ INSERT INTO billing_plans (
             "duration_value": 1,
             "max_active_per_user": 1,
             "purchase_limit_scope": "unlimited",
+            "allowed_provider_ids": ["provider-admin-grant-1"],
             "admin_grant_overrides": {
                 "starts_at_unix_secs": starts_at,
                 "expires_at_unix_secs": expires_at,
@@ -6147,10 +6470,144 @@ INSERT INTO billing_plans (
         assert_eq!(entitlements[0]["daily_quota_usd"], json!(50.0));
         assert_eq!(entitlements[0]["weekly_quota_usd"], json!(80.0));
         assert_eq!(entitlements[0]["monthly_quota_usd"], json!(80.0));
+        let provider_ids = sqlx::query_scalar::<_, String>(
+            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = (SELECT id FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ?)",
+        )
+        .bind("user-admin-grant-1")
+        .bind("admin-grant-plan")
+        .fetch_all(repository.pool())
+        .await
+        .expect("entitlement providers should query");
+        assert_eq!(provider_ids, vec!["provider-admin-grant-1".to_string()]);
     }
 
     #[tokio::test]
-    async fn sqlite_plan_purchase_keeps_different_plans_active_on_manual_credit() {
+    async fn sqlite_plan_fulfillment_rechecks_negative_wallet() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        let repository = SqliteWalletReadRepository::new(pool);
+        sqlx::query(
+            "INSERT INTO users (id, username, email, auth_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("user-plan-debt-1")
+        .bind("Plan Debt Buyer")
+        .bind("plan-debt@example.com")
+        .bind("local")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(repository.pool())
+        .await
+        .expect("user should seed");
+        sqlx::query(
+            r#"
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit, duration_value,
+  max_active_per_user, purchase_limit_scope, entitlements_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("plan-debt-1")
+        .bind("欠费回调测试套餐")
+        .bind(1.0_f64)
+        .bind("USD")
+        .bind("month")
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind("active_period")
+        .bind(json!([{"type": "daily_quota", "daily_quota_usd": 10.0}]).to_string())
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(repository.pool())
+        .await
+        .expect("billing plan should seed");
+        repository
+            .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
+                preferred_wallet_id: Some("wallet-plan-debt-1".to_string()),
+                user_id: "user-plan-debt-1".to_string(),
+                amount_usd: 1.0,
+                pay_amount: Some(1.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                payment_method: "bootstrap".to_string(),
+                payment_provider: None,
+                payment_channel: None,
+                gateway_order_id: "gateway-bootstrap-plan-debt-1".to_string(),
+                gateway_response: json!({}),
+                order_no: "order-bootstrap-plan-debt-1".to_string(),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("wallet should create");
+        let snapshot = json!({
+            "id": "plan-debt-1",
+            "duration_unit": "month",
+            "duration_value": 1,
+            "purchase_limit_scope": "active_period",
+            "max_active_per_user": 1,
+            "entitlements": [{"type": "daily_quota", "daily_quota_usd": 10.0}]
+        });
+        let order = match repository
+            .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
+                preferred_wallet_id: None,
+                user_id: "user-plan-debt-1".to_string(),
+                amount_usd: 1.0,
+                pay_amount: 1.0,
+                pay_currency: "USD".to_string(),
+                exchange_rate: 1.0,
+                payment_method: "alipay".to_string(),
+                payment_provider: Some("epay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: "gateway-plan-debt-1".to_string(),
+                gateway_response: json!({}),
+                order_no: "order-plan-debt-1".to_string(),
+                product_id: "plan-debt-1".to_string(),
+                product_snapshot: snapshot,
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("plan order should create")
+        {
+            CreatePlanPurchaseOrderOutcome::Created(order) => order,
+            other => panic!("plan order should be created, got {other:?}"),
+        };
+        sqlx::query("UPDATE wallets SET balance = -1 WHERE id = ?")
+            .bind("wallet-plan-debt-1")
+            .execute(repository.pool())
+            .await
+            .expect("wallet should become negative");
+
+        let outcome = repository
+            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
+                order_id: order.id.clone(),
+                gateway_order_id: Some("gateway-plan-debt-paid-1".to_string()),
+                pay_amount: Some(1.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                gateway_response_patch: None,
+                operator_id: Some("admin-1".to_string()),
+            })
+            .await
+            .expect("credit should return a business outcome");
+
+        assert!(matches!(outcome, WalletMutationOutcome::Invalid(_)));
+        let entitlement_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_plan_entitlements WHERE payment_order_id = ?",
+        )
+        .bind(order.id)
+        .fetch_one(repository.pool())
+        .await
+        .expect("entitlement count should query");
+        assert_eq!(entitlement_count, 0);
+    }
+
+    #[tokio::test]
+    async fn sqlite_plan_purchase_blocks_different_plan_while_one_is_active() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -6285,7 +6742,7 @@ INSERT INTO billing_plans (
             panic!("low plan credit should apply");
         };
 
-        let high_order = match repository
+        let high_order = repository
             .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
                 preferred_wallet_id: None,
                 user_id: "user-upgrade-1".to_string(),
@@ -6304,26 +6761,11 @@ INSERT INTO billing_plans (
                 expires_at_unix_secs: 4_102_444_800,
             })
             .await
-            .expect("high order should create")
-        {
-            CreatePlanPurchaseOrderOutcome::Created(order) => order,
-            other => panic!("high order should be created, got {other:?}"),
-        };
-        let WalletMutationOutcome::Applied((_, true)) = repository
-            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
-                order_id: high_order.id,
-                gateway_order_id: Some("gateway-pro-plus-paid-1".to_string()),
-                pay_amount: Some(100.0),
-                pay_currency: Some("CNY".to_string()),
-                exchange_rate: Some(7.24637681),
-                gateway_response_patch: Some(json!({ "settled": true })),
-                operator_id: Some("admin-1".to_string()),
-            })
-            .await
-            .expect("high plan credit should run")
-        else {
-            panic!("high plan credit should apply");
-        };
+            .expect("high order should resolve");
+        assert!(matches!(
+            high_order,
+            CreatePlanPurchaseOrderOutcome::OverlappingPlanExists
+        ));
 
         let low_status: String = sqlx::query_scalar(
             "SELECT status FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ?",
@@ -6334,15 +6776,6 @@ INSERT INTO billing_plans (
         .await
         .expect("low entitlement status should query");
         assert_eq!(low_status, "active");
-        let active_high_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ? AND status = 'active'",
-        )
-        .bind("user-upgrade-1")
-        .bind("pro-plus")
-        .fetch_one(repository.pool())
-        .await
-        .expect("high entitlement count should query");
-        assert_eq!(active_high_count, 1);
     }
 
     #[tokio::test]
@@ -6516,107 +6949,6 @@ INSERT INTO billing_plans (
             second_order,
             CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached
         ));
-
-        let unlimited_snapshot = json!({
-            "id": "unlimited-plan",
-            "title": "不限购余额包",
-            "duration_unit": "month",
-            "duration_value": 1,
-            "max_active_per_user": 1,
-            "purchase_limit_scope": "unlimited",
-            "entitlements": [
-                {
-                    "type": "wallet_credit",
-                    "amount_usd": 1.0,
-                    "balance_bucket": "gift"
-                }
-            ]
-        });
-        sqlx::query(
-            r#"
-INSERT INTO billing_plans (
-  id, title, price_amount, price_currency, duration_unit, duration_value,
-  max_active_per_user, purchase_limit_scope, entitlements_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"#,
-        )
-        .bind("unlimited-plan")
-        .bind("不限购余额包")
-        .bind(7.2_f64)
-        .bind("CNY")
-        .bind("month")
-        .bind(1_i64)
-        .bind(1_i64)
-        .bind("unlimited")
-        .bind(unlimited_snapshot["entitlements"].to_string())
-        .bind(1_i64)
-        .bind(1_i64)
-        .execute(repository.pool())
-        .await
-        .expect("unlimited billing plan should seed");
-
-        for index in 1..=2 {
-            let order_no = format!("order-plan-unlimited-{index}");
-            let gateway_order_id = format!("gateway-plan-unlimited-{index}");
-            let order = match repository
-                .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
-                    preferred_wallet_id: None,
-                    user_id: "user-lifetime-1".to_string(),
-                    amount_usd: 1.0,
-                    pay_amount: 7.2,
-                    pay_currency: "CNY".to_string(),
-                    exchange_rate: 7.2,
-                    payment_method: "alipay".to_string(),
-                    payment_provider: Some("epay".to_string()),
-                    payment_channel: Some("alipay".to_string()),
-                    gateway_order_id: gateway_order_id.clone(),
-                    gateway_response: json!({ "checkout": true }),
-                    order_no: order_no.clone(),
-                    product_id: "unlimited-plan".to_string(),
-                    product_snapshot: unlimited_snapshot.clone(),
-                    expires_at_unix_secs: 4_102_444_800,
-                })
-                .await
-                .expect("unlimited plan order should create")
-            {
-                CreatePlanPurchaseOrderOutcome::Created(order) => order,
-                other => panic!("unlimited plan order should be created, got {other:?}"),
-            };
-            assert_eq!(order.status, "pending");
-
-            let callback = repository
-                .process_payment_callback(ProcessPaymentCallbackInput {
-                    payment_method: "alipay".to_string(),
-                    payment_provider: Some("epay".to_string()),
-                    payment_channel: Some("alipay".to_string()),
-                    callback_key: format!("callback-plan-unlimited-{index}"),
-                    order_no: Some(order_no),
-                    gateway_order_id: Some(gateway_order_id),
-                    amount_usd: 1.0,
-                    pay_amount: Some(7.2),
-                    pay_currency: Some("CNY".to_string()),
-                    exchange_rate: Some(7.2),
-                    payload_hash: format!("payload-plan-unlimited-{index}"),
-                    payload: json!({ "trade_status": "TRADE_SUCCESS" }),
-                    signature_valid: true,
-                })
-                .await
-                .expect("unlimited plan payment callback should process");
-            assert!(matches!(
-                callback,
-                ProcessPaymentCallbackOutcome::Applied { .. }
-            ));
-        }
-
-        let unlimited_entitlement_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM user_plan_entitlements WHERE user_id = ? AND plan_id = ?",
-        )
-        .bind("user-lifetime-1")
-        .bind("unlimited-plan")
-        .fetch_one(repository.pool())
-        .await
-        .expect("unlimited entitlement count should query");
-        assert_eq!(unlimited_entitlement_count, 2);
     }
 
     impl SqliteWalletReadRepository {

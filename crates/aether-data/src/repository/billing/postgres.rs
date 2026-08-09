@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
@@ -6,7 +6,7 @@ use sqlx::{PgPool, Row};
 use super::{
     quota::{
         entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
-        usage_quota_grants_from_entitlement, StoredUsageQuotaWindow, QUOTA_SCOPE_FIVE_HOUR,
+        usage_quota_grants_from_entitlement, StoredUsageQuotaWindow,
     },
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
@@ -155,6 +155,94 @@ impl SqlxBillingReadRepository {
             .map_postgres_err()?;
         row.as_ref().map(map_row).transpose()
     }
+
+    async fn load_all_plan_provider_ids(
+        &self,
+    ) -> Result<BTreeMap<String, Vec<String>>, DataLayerError> {
+        let rows = sqlx::query(
+            "SELECT plan_id, provider_id FROM billing_plan_providers ORDER BY plan_id, provider_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_postgres_err()?;
+        let mut scopes = BTreeMap::<String, Vec<String>>::new();
+        for row in rows {
+            scopes
+                .entry(row.try_get("plan_id").map_postgres_err()?)
+                .or_default()
+                .push(row.try_get("provider_id").map_postgres_err()?);
+        }
+        Ok(scopes)
+    }
+
+    async fn load_plan_provider_ids(&self, plan_id: &str) -> Result<Vec<String>, DataLayerError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT provider_id FROM billing_plan_providers WHERE plan_id = $1 ORDER BY provider_id",
+        )
+        .bind(plan_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_postgres_err()
+    }
+
+    async fn load_entitlement_provider_ids(
+        &self,
+        entitlement_id: &str,
+    ) -> Result<Vec<String>, DataLayerError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = $1 ORDER BY provider_id",
+        )
+        .bind(entitlement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_postgres_err()
+    }
+}
+
+async fn replace_plan_provider_ids_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    plan_id: &str,
+    provider_ids: &[String],
+) -> Result<(), DataLayerError> {
+    sqlx::query("DELETE FROM billing_plan_providers WHERE plan_id = $1")
+        .bind(plan_id)
+        .execute(&mut **transaction)
+        .await
+        .map_postgres_err()?;
+    for provider_id in provider_ids {
+        sqlx::query(
+            "INSERT INTO billing_plan_providers (plan_id, provider_id, created_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(plan_id)
+        .bind(provider_id)
+        .execute(&mut **transaction)
+        .await
+        .map_postgres_err()?;
+    }
+    Ok(())
+}
+
+async fn replace_entitlement_provider_ids_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entitlement_id: &str,
+    provider_ids: &[String],
+) -> Result<(), DataLayerError> {
+    sqlx::query("DELETE FROM user_entitlement_providers WHERE user_entitlement_id = $1")
+        .bind(entitlement_id)
+        .execute(&mut **transaction)
+        .await
+        .map_postgres_err()?;
+    for provider_id in provider_ids {
+        sqlx::query(
+            "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id, created_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(entitlement_id)
+        .bind(provider_id)
+        .execute(&mut **transaction)
+        .await
+        .map_postgres_err()?;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -809,11 +897,15 @@ ORDER BY sort_order ASC, price_amount ASC, id ASC
         .fetch_all(&self.pool)
         .await
         .map_postgres_err()?;
-        Ok(Some(
-            rows.iter()
-                .map(map_billing_plan_row)
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
+        let mut plans = rows
+            .iter()
+            .map(map_billing_plan_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut scopes = self.load_all_plan_provider_ids().await?;
+        for plan in &mut plans {
+            plan.allowed_provider_ids = scopes.remove(&plan.id).unwrap_or_default();
+        }
+        Ok(Some(plans))
     }
 
     async fn find_billing_plan(
@@ -838,7 +930,12 @@ LIMIT 1
         .fetch_optional(&self.pool)
         .await
         .map_postgres_err()?;
-        row.as_ref().map(map_billing_plan_row).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut plan = map_billing_plan_row(&row)?;
+        plan.allowed_provider_ids = self.load_plan_provider_ids(plan_id).await?;
+        Ok(Some(plan))
     }
 
     async fn create_billing_plan(
@@ -846,7 +943,8 @@ LIMIT 1
         input: &BillingPlanWriteInput,
     ) -> Result<AdminBillingMutationOutcome<BillingPlanRecord>, DataLayerError> {
         let id = uuid::Uuid::new_v4().to_string();
-        let row = sqlx::query(BILLING_PLAN_INSERT_RETURNING_SQL)
+        let mut transaction = self.pool.begin().await.map_postgres_err()?;
+        sqlx::query(BILLING_PLAN_INSERT_RETURNING_SQL)
             .bind(&id)
             .bind(&input.title)
             .bind(input.description.as_deref())
@@ -859,12 +957,18 @@ LIMIT 1
             .bind(input.max_active_per_user)
             .bind(&input.purchase_limit_scope)
             .bind(&input.entitlements_json)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *transaction)
             .await
             .map_postgres_err()?;
-        Ok(AdminBillingMutationOutcome::Applied(map_billing_plan_row(
-            &row,
-        )?))
+        replace_plan_provider_ids_postgres(&mut transaction, &id, &input.allowed_provider_ids)
+            .await?;
+        transaction.commit().await.map_postgres_err()?;
+        self.find_billing_plan(&id)
+            .await?
+            .map(AdminBillingMutationOutcome::Applied)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("created billing plan missing".to_string())
+            })
     }
 
     async fn update_billing_plan(
@@ -872,6 +976,7 @@ LIMIT 1
         plan_id: &str,
         input: &BillingPlanWriteInput,
     ) -> Result<AdminBillingMutationOutcome<BillingPlanRecord>, DataLayerError> {
+        let mut transaction = self.pool.begin().await.map_postgres_err()?;
         let row = sqlx::query(BILLING_PLAN_UPDATE_RETURNING_SQL)
             .bind(plan_id)
             .bind(&input.title)
@@ -885,15 +990,21 @@ LIMIT 1
             .bind(input.max_active_per_user)
             .bind(&input.purchase_limit_scope)
             .bind(&input.entitlements_json)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await
             .map_postgres_err()?;
-        match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(map_billing_plan_row(
-                &row,
-            )?)),
-            None => Ok(AdminBillingMutationOutcome::NotFound),
+        if row.is_none() {
+            return Ok(AdminBillingMutationOutcome::NotFound);
         }
+        replace_plan_provider_ids_postgres(&mut transaction, plan_id, &input.allowed_provider_ids)
+            .await?;
+        transaction.commit().await.map_postgres_err()?;
+        self.find_billing_plan(plan_id)
+            .await?
+            .map(AdminBillingMutationOutcome::Applied)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("updated billing plan missing".to_string())
+            })
     }
 
     async fn set_billing_plan_enabled(
@@ -921,9 +1032,13 @@ RETURNING
         .await
         .map_postgres_err()?;
         match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(map_billing_plan_row(
-                &row,
-            )?)),
+            Some(_) => self
+                .find_billing_plan(plan_id)
+                .await?
+                .map(AdminBillingMutationOutcome::Applied)
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("updated billing plan missing".to_string())
+                }),
             None => Ok(AdminBillingMutationOutcome::NotFound),
         }
     }
@@ -1002,11 +1117,15 @@ ORDER BY created_at DESC, expires_at DESC
         .fetch_all(&self.pool)
         .await
         .map_postgres_err()?;
-        Ok(Some(
-            rows.iter()
-                .map(map_user_plan_entitlement_row)
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
+        let mut entitlements = rows
+            .iter()
+            .map(map_user_plan_entitlement_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        for entitlement in &mut entitlements {
+            entitlement.allowed_provider_ids =
+                self.load_entitlement_provider_ids(&entitlement.id).await?;
+        }
+        Ok(Some(entitlements))
     }
 
     async fn cancel_user_plan_entitlement(
@@ -1040,9 +1159,12 @@ RETURNING
         .await
         .map_postgres_err()?;
         match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(
-                map_user_plan_entitlement_row(&row)?,
-            )),
+            Some(row) => {
+                let mut entitlement = map_user_plan_entitlement_row(&row)?;
+                entitlement.allowed_provider_ids =
+                    self.load_entitlement_provider_ids(entitlement_id).await?;
+                Ok(AdminBillingMutationOutcome::Applied(entitlement))
+            }
             None => Ok(AdminBillingMutationOutcome::NotFound),
         }
     }
@@ -1053,6 +1175,59 @@ RETURNING
         entitlement_id: &str,
         input: &UserPlanEntitlementUpdateInput,
     ) -> Result<AdminBillingMutationOutcome<UserPlanEntitlementRecord>, DataLayerError> {
+        if input.starts_at_unix_secs >= input.expires_at_unix_secs {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "套餐开始时间必须早于结束时间".to_string(),
+            ));
+        }
+        let mut transaction = self.pool.begin().await.map_postgres_err()?;
+        sqlx::query("SELECT id FROM wallets WHERE user_id = $1 LIMIT 1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_postgres_err()?;
+        let target_exists = sqlx::query_scalar::<_, String>(
+            r#"
+SELECT id
+FROM user_plan_entitlements
+WHERE id = $1 AND user_id = $2 AND status = 'active' AND expires_at > NOW()
+FOR UPDATE
+            "#,
+        )
+        .bind(entitlement_id)
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_postgres_err()?
+        .is_some();
+        if !target_exists {
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        }
+        let overlap = sqlx::query_scalar::<_, bool>(
+            r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM user_plan_entitlements
+  WHERE user_id = $1
+    AND id <> $2
+    AND status = 'active'
+    AND starts_at < to_timestamp($4)
+    AND expires_at > to_timestamp($3)
+)
+            "#,
+        )
+        .bind(user_id)
+        .bind(entitlement_id)
+        .bind(input.starts_at_unix_secs as i64)
+        .bind(input.expires_at_unix_secs as i64)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_postgres_err()?;
+        if overlap {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "同一时间只能有一个生效套餐".to_string(),
+            ));
+        }
         let row = sqlx::query(
             r#"
 UPDATE user_plan_entitlements
@@ -1079,15 +1254,32 @@ RETURNING
         .bind(input.starts_at_unix_secs as i64)
         .bind(input.expires_at_unix_secs as i64)
         .bind(input.entitlements_snapshot.clone())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_postgres_err()?;
-        match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(
-                map_user_plan_entitlement_row(&row)?,
-            )),
-            None => Ok(AdminBillingMutationOutcome::NotFound),
+        if row.is_none() {
+            return Ok(AdminBillingMutationOutcome::NotFound);
         }
+        if let Some(provider_ids) = input.allowed_provider_ids.as_deref() {
+            replace_entitlement_provider_ids_postgres(
+                &mut transaction,
+                entitlement_id,
+                provider_ids,
+            )
+            .await?;
+        }
+        transaction.commit().await.map_postgres_err()?;
+        let entitlements = self
+            .list_user_plan_entitlements(user_id)
+            .await?
+            .unwrap_or_default();
+        entitlements
+            .into_iter()
+            .find(|entitlement| entitlement.id == entitlement_id)
+            .map(AdminBillingMutationOutcome::Applied)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("updated user entitlement missing".to_string())
+            })
     }
 
     async fn find_user_daily_quota_availability(
@@ -1105,41 +1297,161 @@ RETURNING
     ) -> Result<Option<UserDailyQuotaAvailabilityRecord>, DataLayerError> {
         let rows = sqlx::query(
             r#"
-SELECT id, starts_at, entitlements_snapshot
-FROM user_plan_entitlements
-WHERE user_id = $1
-  AND status = 'active'
-  AND starts_at <= NOW()
-  AND expires_at > NOW()
-ORDER BY expires_at ASC, created_at ASC, id ASC
+SELECT
+  upe.id,
+  upe.starts_at,
+  upe.entitlements_snapshot,
+  ARRAY(
+    SELECT uep.provider_id
+    FROM user_entitlement_providers uep
+    WHERE uep.user_entitlement_id = upe.id
+    ORDER BY uep.provider_id
+  ) AS provider_ids,
+  EXISTS (
+    SELECT 1 FROM user_entitlement_providers uep
+    WHERE uep.user_entitlement_id = upe.id
+  ) AS has_provider_scope,
+  (
+    $2::TEXT IS NULL OR EXISTS (
+      SELECT 1
+      FROM user_entitlement_providers uep
+      JOIN providers p ON p.id = uep.provider_id AND p.is_active = TRUE
+      JOIN models m ON m.provider_id = uep.provider_id
+        AND m.global_model_id = $2
+        AND m.is_active = TRUE
+      WHERE uep.user_entitlement_id = upe.id
+    )
+  ) AS provider_scope_allows_model,
+  five_hour.window_key AS five_hour_window_key,
+  five_hour.window_started_at AS five_hour_window_started_at,
+  five_hour.window_ends_at AS five_hour_window_ends_at,
+  COALESCE(
+    (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'scope', usage_window.window_scope,
+          'key', usage_window.window_key,
+          'used_usd', CAST(usage_window.used_usd AS DOUBLE PRECISION)
+        )
+        ORDER BY usage_window.window_scope, usage_window.window_key
+      )
+      FROM entitlement_usage_windows usage_window
+      WHERE usage_window.user_entitlement_id = upe.id
+    ),
+    '[]'::jsonb
+  ) AS usage_windows,
+  COALESCE(
+    (
+      SELECT jsonb_object_agg(legacy_usage.usage_date, legacy_usage.used_usd)
+      FROM (
+        SELECT
+          usage_date,
+          CAST(SUM(amount_usd) AS DOUBLE PRECISION) AS used_usd
+        FROM entitlement_usage_ledgers
+        WHERE user_entitlement_id = upe.id
+        GROUP BY usage_date
+      ) legacy_usage
+    ),
+    '{}'::jsonb
+  ) AS legacy_usage_by_key
+FROM user_plan_entitlements upe
+LEFT JOIN LATERAL (
+  SELECT window_key, window_started_at, window_ends_at
+  FROM entitlement_usage_windows
+  WHERE user_entitlement_id = upe.id
+    AND window_scope = 'five_hour'
+  LIMIT 1
+) five_hour ON TRUE
+WHERE upe.user_id = $1
+  AND upe.status = 'active'
+  AND upe.starts_at <= NOW()
+  AND upe.expires_at > NOW()
+ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             "#,
         )
         .bind(user_id)
+        .bind(global_model_id)
         .fetch_all(&self.pool)
         .await
         .map_postgres_err()?;
         let now = chrono::Utc::now();
         let mut grants = Vec::new();
+        let mut provider_scoped_entitlement_ids = BTreeSet::new();
+        let mut provider_ids_by_entitlement = BTreeMap::<String, Vec<String>>::new();
+        let mut usage_by_entitlement =
+            BTreeMap::<String, (BTreeMap<(String, String), f64>, BTreeMap<String, f64>)>::new();
         for row in rows {
             let entitlement_id: String = row.try_get("id").map_postgres_err()?;
             let entitlement_started_at: chrono::DateTime<chrono::Utc> =
                 row.try_get("starts_at").map_postgres_err()?;
             let entitlements: serde_json::Value =
                 row.try_get("entitlements_snapshot").map_postgres_err()?;
+            let has_provider_scope: bool = row.try_get("has_provider_scope").map_postgres_err()?;
+            let provider_ids: Vec<String> = row.try_get("provider_ids").map_postgres_err()?;
+            provider_ids_by_entitlement.insert(entitlement_id.clone(), provider_ids);
+            let provider_scope_allows_model: bool = row
+                .try_get("provider_scope_allows_model")
+                .map_postgres_err()?;
             if global_model_id.is_some()
-                && !entitlements_snapshot_has_usage_quota_for_global_model(
-                    &entitlements,
-                    global_model_id,
-                )
+                && ((has_provider_scope && !provider_scope_allows_model)
+                    || (!has_provider_scope
+                        && !entitlements_snapshot_has_usage_quota_for_global_model(
+                            &entitlements,
+                            global_model_id,
+                        )))
             {
                 continue;
             }
-            let stored_five_hour = find_usage_quota_window_postgres(
-                &self.pool,
-                &entitlement_id,
-                QUOTA_SCOPE_FIVE_HOUR,
-            )
-            .await?;
+            if has_provider_scope {
+                provider_scoped_entitlement_ids.insert(entitlement_id.clone());
+            }
+            let stored_five_hour = row
+                .try_get::<Option<String>, _>("five_hour_window_key")
+                .map_postgres_err()?
+                .map(|window_key| {
+                    Ok(StoredUsageQuotaWindow {
+                        window_key,
+                        window_started_at: row
+                            .try_get("five_hour_window_started_at")
+                            .map_postgres_err()?,
+                        window_ends_at: row
+                            .try_get("five_hour_window_ends_at")
+                            .map_postgres_err()?,
+                    })
+                })
+                .transpose()?;
+            let usage_windows: serde_json::Value =
+                row.try_get("usage_windows").map_postgres_err()?;
+            let mut usage_by_window = BTreeMap::new();
+            for item in usage_windows.as_array().into_iter().flatten() {
+                let Some(scope) = item.get("scope").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(window_key) = item.get("key").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(used_usd) = item.get("used_usd").and_then(serde_json::Value::as_f64)
+                else {
+                    continue;
+                };
+                usage_by_window.insert((scope.to_string(), window_key.to_string()), used_usd);
+            }
+            let legacy_usage_by_key: serde_json::Value =
+                row.try_get("legacy_usage_by_key").map_postgres_err()?;
+            let legacy_usage_by_key = legacy_usage_by_key
+                .as_object()
+                .into_iter()
+                .flat_map(|values| values.iter())
+                .filter_map(|(window_key, used_usd)| {
+                    used_usd
+                        .as_f64()
+                        .map(|used_usd| (window_key.clone(), used_usd))
+                })
+                .collect::<BTreeMap<_, _>>();
+            usage_by_entitlement.insert(
+                entitlement_id.clone(),
+                (usage_by_window, legacy_usage_by_key),
+            );
             grants.extend(usage_quota_grants_from_entitlement(
                 &entitlement_id,
                 &entitlements,
@@ -1150,10 +1462,11 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
         }
         if global_model_id.is_some() {
             grants.retain(|grant| {
-                entitlement_allows_global_model(
-                    grant.allowed_global_model_ids.as_deref(),
-                    global_model_id,
-                )
+                provider_scoped_entitlement_ids.contains(&grant.entitlement_id)
+                    || entitlement_allows_global_model(
+                        grant.allowed_global_model_ids.as_deref(),
+                        global_model_id,
+                    )
             });
         }
 
@@ -1161,33 +1474,15 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
         let mut allow_wallet_overage = true;
         for grant in &grants {
             allow_wallet_overage &= grant.allow_wallet_overage;
-            let used = sqlx::query_scalar::<_, Option<f64>>(
-                r#"
-SELECT COALESCE(
-  (
-    SELECT CAST(used_usd AS DOUBLE PRECISION)
-    FROM entitlement_usage_windows
-    WHERE user_entitlement_id = $1
-      AND window_scope = $2
-      AND window_key = $3
-    LIMIT 1
-  ),
-  (
-    SELECT CAST(COALESCE(SUM(amount_usd), 0) AS DOUBLE PRECISION)
-    FROM entitlement_usage_ledgers
-    WHERE user_entitlement_id = $1
-      AND usage_date = $3
-  )
-)
-                "#,
-            )
-            .bind(&grant.entitlement_id)
-            .bind(grant.scope)
-            .bind(&grant.window_key)
-            .fetch_one(&self.pool)
-            .await
-            .map_postgres_err()?
-            .unwrap_or(0.0);
+            let used = usage_by_entitlement
+                .get(&grant.entitlement_id)
+                .and_then(|(usage_by_window, legacy_usage_by_key)| {
+                    usage_by_window
+                        .get(&(grant.scope.to_string(), grant.window_key.clone()))
+                        .or_else(|| legacy_usage_by_key.get(&grant.window_key))
+                })
+                .copied()
+                .unwrap_or(0.0);
             let remaining = (grant.limit_usd - used).max(0.0);
             let entry = grouped_limits
                 .entry(grant.entitlement_id.clone())
@@ -1203,13 +1498,24 @@ SELECT COALESCE(
         let mut used_usd = 0.0;
         let mut remaining_usd = 0.0;
         let mut base_remaining_usd = 0.0;
-        for (limit, remaining, quota_multiplier) in grouped_limits.values() {
+        let mut eligible_entitlement_ids = Vec::new();
+        let mut allowed_provider_ids = BTreeSet::new();
+        let mut eligible_provider_ids_by_entitlement = BTreeMap::new();
+        for (entitlement_id, (limit, remaining, quota_multiplier)) in &grouped_limits {
             let limit = limit.unwrap_or(0.0);
             let remaining = remaining.unwrap_or(0.0);
             total_quota_usd += limit;
             used_usd += (limit - remaining).max(0.0);
             remaining_usd += remaining;
             base_remaining_usd += super::quota::quota_base_amount(remaining, *quota_multiplier);
+            if remaining > 0.000_000_01 {
+                eligible_entitlement_ids.push(entitlement_id.clone());
+                if let Some(provider_ids) = provider_ids_by_entitlement.get(entitlement_id) {
+                    allowed_provider_ids.extend(provider_ids.iter().cloned());
+                    eligible_provider_ids_by_entitlement
+                        .insert(entitlement_id.clone(), provider_ids.clone());
+                }
+            }
         }
         let has_active_daily_quota = !grants.is_empty();
         Ok(Some(UserDailyQuotaAvailabilityRecord {
@@ -1219,6 +1525,9 @@ SELECT COALESCE(
             remaining_usd,
             base_remaining_usd,
             allow_wallet_overage: has_active_daily_quota && allow_wallet_overage,
+            eligible_entitlement_ids,
+            allowed_provider_ids: allowed_provider_ids.into_iter().collect(),
+            provider_ids_by_entitlement: eligible_provider_ids_by_entitlement,
         }))
     }
 }
@@ -1294,42 +1603,6 @@ fn read_count(row: sqlx::postgres::PgRow) -> Result<u64, DataLayerError> {
     Ok(row.try_get::<i64, _>("total").map_postgres_err()?.max(0) as u64)
 }
 
-async fn find_usage_quota_window_postgres<'e, E>(
-    executor: E,
-    entitlement_id: &str,
-    scope: &str,
-) -> Result<Option<StoredUsageQuotaWindow>, DataLayerError>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
-{
-    let row = sqlx::query(
-        r#"
-SELECT
-  window_key,
-  window_started_at,
-  window_ends_at,
-  CAST(used_usd AS DOUBLE PRECISION) AS used_usd
-FROM entitlement_usage_windows
-WHERE user_entitlement_id = $1
-  AND window_scope = $2
-LIMIT 1
-        "#,
-    )
-    .bind(entitlement_id)
-    .bind(scope)
-    .fetch_optional(executor)
-    .await
-    .map_postgres_err()?;
-    row.map(|row| {
-        Ok(StoredUsageQuotaWindow {
-            window_key: row.try_get("window_key").map_postgres_err()?,
-            window_started_at: row.try_get("window_started_at").map_postgres_err()?,
-            window_ends_at: row.try_get("window_ends_at").map_postgres_err()?,
-        })
-    })
-    .transpose()
-}
-
 fn map_payment_gateway_config_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<PaymentGatewayConfigRecord, DataLayerError> {
@@ -1372,6 +1645,7 @@ fn map_billing_plan_row(row: &sqlx::postgres::PgRow) -> Result<BillingPlanRecord
         sort_order: row.try_get("sort_order").map_postgres_err()?,
         max_active_per_user: row.try_get("max_active_per_user").map_postgres_err()?,
         purchase_limit_scope: row.try_get("purchase_limit_scope").map_postgres_err()?,
+        allowed_provider_ids: Vec::new(),
         entitlements_json: row.try_get("entitlements_json").map_postgres_err()?,
         created_at_unix_secs: row
             .try_get::<i64, _>("created_at_unix_secs")
@@ -1401,6 +1675,7 @@ fn map_user_plan_entitlement_row(
             .try_get::<i64, _>("expires_at_unix_secs")
             .map_postgres_err()?
             .max(0) as u64,
+        allowed_provider_ids: Vec::new(),
         entitlements_snapshot: row.try_get("entitlements_snapshot").map_postgres_err()?,
         created_at_unix_secs: row
             .try_get::<i64, _>("created_at_unix_secs")

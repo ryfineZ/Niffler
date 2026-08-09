@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use aether_data_contracts::repository::billing::{
+    BillingFundingSource, BillingRequestAdmissionInput, BillingRequestAdmissionRecord,
+};
 use async_trait::async_trait;
-use sqlx::{mysql::MySqlRow, MySql, QueryBuilder, Row};
+use sqlx::{mysql::MySqlRow, MySql, MySqlConnection, QueryBuilder, Row};
 
 use super::{
     PublicHealthStatusCount, PublicHealthTimelineBucket, RequestCandidateReadRepository,
@@ -41,6 +44,30 @@ SELECT
 FROM request_candidates
 "#;
 
+const DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL: &str = r#"
+DELETE FROM billing_request_admissions
+WHERE request_id IN (
+  SELECT request_id
+  FROM (
+    SELECT admission.request_id
+    FROM billing_request_admissions admission
+    LEFT JOIN `usage` usage_record
+      ON usage_record.request_id = admission.request_id
+    LEFT JOIN usage_settlement_snapshots settlement
+      ON settlement.request_id = admission.request_id
+    WHERE admission.created_at < ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM request_candidates candidate
+        WHERE candidate.request_id = admission.request_id
+      )
+      AND COALESCE(settlement.billing_status, usage_record.billing_status, 'settled') <> 'pending'
+    ORDER BY admission.created_at ASC, admission.request_id ASC
+    LIMIT ?
+  ) AS old_billing_admissions
+)
+"#;
+
 #[derive(Debug, Clone)]
 pub struct MysqlRequestCandidateRepository {
     pool: MysqlPool,
@@ -72,6 +99,28 @@ impl MysqlRequestCandidateRepository {
 
 #[async_trait]
 impl RequestCandidateReadRepository for MysqlRequestCandidateRepository {
+    async fn find_billing_admission(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<BillingRequestAdmissionRecord>, DataLayerError> {
+        let row = sqlx::query(
+            r#"
+SELECT request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+       wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+       entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+       billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+FROM billing_request_admissions
+WHERE request_id = ?
+LIMIT 1
+            "#,
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_sql_err()?;
+        row.as_ref().map(map_billing_admission_row).transpose()
+    }
+
     async fn list_by_request_id(
         &self,
         request_id: &str,
@@ -272,8 +321,99 @@ impl RequestCandidateWriteRepository for MysqlRequestCandidateRepository {
             )
             .await?;
         let merged = merge_candidate(candidate, existing)?;
-        upsert_merged_candidate(&self.pool, &merged).await?;
+        let mut connection = self.pool.acquire().await.map_sql_err()?;
+        upsert_merged_candidate(&mut connection, &merged).await?;
         Ok(merged)
+    }
+
+    async fn upsert_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: BillingRequestAdmissionInput,
+    ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
+        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        let mut tx = self.pool.begin().await.map_sql_err()?;
+        let existing = sqlx::query(&format!(
+            "{CANDIDATE_COLUMNS} WHERE request_id = ? AND candidate_index = ? AND retry_index = ? LIMIT 1"
+        ))
+        .bind(&candidate.request_id)
+        .bind(to_i32(candidate.candidate_index)?)
+        .bind(to_i32(candidate.retry_index)?)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_sql_err()?
+        .as_ref()
+        .map(map_candidate_row)
+        .transpose()?;
+        let merged = merge_candidate(candidate, existing)?;
+        let now = super::admission::current_unix_ms();
+        sqlx::query(
+            r#"
+INSERT IGNORE INTO billing_request_admissions (
+  request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+  wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+  entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+  billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'admitted', NULL, ?, ?, ?)
+            "#,
+        )
+        .bind(&admission.request_id)
+        .bind(&admission.user_id)
+        .bind(&admission.api_key_id)
+        .bind(&admission.wallet_id)
+        .bind(&admission.global_model_id)
+        .bind(admission.funding_source.as_str())
+        .bind(admission.wallet_balance_at_admission)
+        .bind(admission.wallet_payment_allowed)
+        .bind(admission.wallet_overage_allowed)
+        .bind(
+            serde_json::to_string(&admission.entitlement_ids).map_err(|error| {
+                DataLayerError::UnexpectedValue(format!(
+                    "billing entitlement ids encode failed: {error}"
+                ))
+            })?,
+        )
+        .bind(
+            serde_json::to_string(&admission.entitlement_provider_scopes).map_err(|error| {
+                DataLayerError::UnexpectedValue(format!(
+                    "billing entitlement provider scopes encode failed: {error}"
+                ))
+            })?,
+        )
+        .bind(
+            serde_json::to_string(&admission.allowed_provider_ids).map_err(|error| {
+                DataLayerError::UnexpectedValue(format!(
+                    "billing provider ids encode failed: {error}"
+                ))
+            })?,
+        )
+        .bind(i64::from(admission.schema_version))
+        .bind(u64_to_i64(now, "billing admission created_at")?)
+        .bind(u64_to_i64(now, "billing admission updated_at")?)
+        .execute(&mut *tx)
+        .await
+        .map_sql_err()?;
+        let stored_admission = sqlx::query(
+            r#"
+SELECT request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+       wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+       entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+       billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+FROM billing_request_admissions
+WHERE request_id = ?
+LIMIT 1
+            "#,
+        )
+        .bind(&admission.request_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_sql_err()
+        .and_then(|row| map_billing_admission_row(&row))?;
+        super::admission::validate_stored_admission_matches_input(&stored_admission, &admission)?;
+        upsert_merged_candidate(&mut tx, &merged).await?;
+        tx.commit().await.map_sql_err()?;
+        Ok((merged, stored_admission))
     }
 
     async fn delete_created_before(
@@ -305,12 +445,18 @@ WHERE id IN (
         .await
         .map_sql_err()?
         .rows_affected();
+        sqlx::query(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL)
+            .bind(unix_secs_to_ms_i64(created_before_unix_secs)?)
+            .bind(limit_i64(limit, "billing admission delete limit")?)
+            .execute(&self.pool)
+            .await
+            .map_sql_err()?;
         Ok(usize::try_from(rows_affected).unwrap_or_default())
     }
 }
 
 async fn upsert_merged_candidate(
-    pool: &MysqlPool,
+    connection: &mut MySqlConnection,
     candidate: &StoredRequestCandidate,
 ) -> Result<(), DataLayerError> {
     sqlx::query(
@@ -378,7 +524,7 @@ ON DUPLICATE KEY UPDATE
         candidate.finished_at_unix_ms,
         "request candidate finished_at",
     )?)
-    .execute(pool)
+    .execute(connection)
     .await
     .map_sql_err()?;
     Ok(())
@@ -612,6 +758,70 @@ fn map_candidate_row(row: &MySqlRow) -> Result<StoredRequestCandidate, DataLayer
     )
 }
 
+fn map_billing_admission_row(
+    row: &MySqlRow,
+) -> Result<BillingRequestAdmissionRecord, DataLayerError> {
+    let entitlement_ids = serde_json::from_str::<Vec<String>>(
+        &row.try_get::<String, _>("entitlement_ids").map_sql_err()?,
+    )
+    .map_err(|error| {
+        DataLayerError::UnexpectedValue(format!(
+            "billing admission entitlement ids are invalid: {error}"
+        ))
+    })?;
+    let allowed_provider_ids = serde_json::from_str::<Vec<String>>(
+        &row.try_get::<String, _>("allowed_provider_ids")
+            .map_sql_err()?,
+    )
+    .map_err(|error| {
+        DataLayerError::UnexpectedValue(format!(
+            "billing admission provider ids are invalid: {error}"
+        ))
+    })?;
+    let entitlement_provider_scopes = serde_json::from_str(
+        &row.try_get::<String, _>("entitlement_provider_scopes")
+            .map_sql_err()?,
+    )
+    .map_err(|error| {
+        DataLayerError::UnexpectedValue(format!(
+            "billing admission entitlement provider scopes are invalid: {error}"
+        ))
+    })?;
+    let schema_version = row.try_get::<i64, _>("schema_version").map_sql_err()?;
+    let created_at = row.try_get::<i64, _>("created_at").map_sql_err()?;
+    let updated_at = row.try_get::<i64, _>("updated_at").map_sql_err()?;
+    Ok(BillingRequestAdmissionRecord {
+        request_id: row.try_get("request_id").map_sql_err()?,
+        user_id: row.try_get("user_id").map_sql_err()?,
+        api_key_id: row.try_get("api_key_id").map_sql_err()?,
+        wallet_id: row.try_get("wallet_id").map_sql_err()?,
+        global_model_id: row.try_get("global_model_id").map_sql_err()?,
+        funding_source: BillingFundingSource::from_database(
+            &row.try_get::<String, _>("funding_source").map_sql_err()?,
+        )?,
+        wallet_balance_at_admission: row.try_get("wallet_balance_at_admission").map_sql_err()?,
+        wallet_payment_allowed: row.try_get("wallet_payment_allowed").map_sql_err()?,
+        wallet_overage_allowed: row.try_get("wallet_overage_allowed").map_sql_err()?,
+        entitlement_ids,
+        entitlement_provider_scopes,
+        allowed_provider_ids,
+        billing_admitted: row.try_get("billing_admitted").map_sql_err()?,
+        status: row.try_get("status").map_sql_err()?,
+        rejection_reason: row.try_get("rejection_reason").map_sql_err()?,
+        schema_version: u16::try_from(schema_version).map_err(|_| {
+            DataLayerError::UnexpectedValue(
+                "billing admission schema_version is invalid".to_string(),
+            )
+        })?,
+        created_at_unix_ms: u64::try_from(created_at).map_err(|_| {
+            DataLayerError::UnexpectedValue("billing admission created_at is invalid".to_string())
+        })?,
+        updated_at_unix_ms: u64::try_from(updated_at).map_err(|_| {
+            DataLayerError::UnexpectedValue("billing admission updated_at is invalid".to_string())
+        })?,
+    })
+}
+
 fn parse_json(value: Option<String>) -> Result<Option<serde_json::Value>, DataLayerError> {
     value
         .filter(|value| !value.trim().is_empty())
@@ -708,7 +918,18 @@ fn optional_u64_to_i64(value: Option<u64>, name: &str) -> Result<Option<i64>, Da
 
 #[cfg(test)]
 mod tests {
-    use super::MysqlRequestCandidateRepository;
+    use super::{
+        MysqlRequestCandidateRepository, DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL,
+    };
+
+    #[test]
+    fn billing_admission_cleanup_keeps_pending_costs_and_live_candidates() {
+        assert!(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL.contains(
+            "COALESCE(settlement.billing_status, usage_record.billing_status, 'settled') <> 'pending'"
+        ));
+        assert!(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL
+            .contains("FROM request_candidates candidate"));
+    }
 
     #[tokio::test]
     async fn repository_builds_from_lazy_pool() {

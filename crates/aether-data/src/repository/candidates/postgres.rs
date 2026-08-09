@@ -1,3 +1,6 @@
+use aether_data_contracts::repository::billing::{
+    BillingFundingSource, BillingRequestAdmissionInput, BillingRequestAdmissionRecord,
+};
 use async_trait::async_trait;
 use futures_util::{future::BoxFuture, stream::TryStream, TryStreamExt};
 use sqlx::{postgres::PgRow, PgPool, Postgres, QueryBuilder, Row};
@@ -189,6 +192,27 @@ WHERE id IN (
   FROM request_candidates
   WHERE created_at < TO_TIMESTAMP($1)
   ORDER BY created_at ASC, id ASC
+  LIMIT $2
+)
+"#;
+
+const DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL: &str = r#"
+DELETE FROM billing_request_admissions
+WHERE request_id IN (
+  SELECT admission.request_id
+  FROM billing_request_admissions admission
+  LEFT JOIN "usage" usage_record
+    ON usage_record.request_id = admission.request_id
+  LEFT JOIN usage_settlement_snapshots settlement
+    ON settlement.request_id = admission.request_id
+  WHERE admission.created_at < TO_TIMESTAMP($1)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM request_candidates candidate
+      WHERE candidate.request_id = admission.request_id
+    )
+    AND COALESCE(settlement.billing_status, usage_record.billing_status, 'settled') <> 'pending'
+  ORDER BY admission.created_at ASC, admission.request_id ASC
   LIMIT $2
 )
 "#;
@@ -483,41 +507,26 @@ WHERE created_at >= TO_TIMESTAMP($1::double precision / 1000.0)
         candidate.validate()?;
         self.tx_runner
             .run_read_write(|tx| {
+                Box::pin(async move { upsert_candidate_postgres(tx, candidate).await })
+                    as BoxFuture<'_, Result<StoredRequestCandidate, DataLayerError>>
+            })
+            .await
+    }
+
+    pub async fn upsert_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: BillingRequestAdmissionInput,
+    ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
+        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        self.tx_runner
+            .run_read_write(|tx| {
                 Box::pin(async move {
-                    let row = sqlx::query(UPSERT_SQL)
-                        .bind(if candidate.id.trim().is_empty() {
-                            Uuid::new_v4().to_string()
-                        } else {
-                            candidate.id.clone()
-                        })
-                        .bind(&candidate.request_id)
-                        .bind(&candidate.user_id)
-                        .bind(&candidate.api_key_id)
-                        .bind(&candidate.username)
-                        .bind(&candidate.api_key_name)
-                        .bind(to_i32(candidate.candidate_index)?)
-                        .bind(to_i32(candidate.retry_index)?)
-                        .bind(&candidate.provider_id)
-                        .bind(&candidate.endpoint_id)
-                        .bind(&candidate.key_id)
-                        .bind(status_to_database(candidate.status))
-                        .bind(&candidate.skip_reason)
-                        .bind(candidate.is_cached)
-                        .bind(candidate.status_code.map(i32::from))
-                        .bind(&candidate.error_type)
-                        .bind(&candidate.error_message)
-                        .bind(candidate.latency_ms.map(to_i32_u64).transpose()?)
-                        .bind(candidate.concurrent_requests.map(to_i32).transpose()?)
-                        .bind(&candidate.extra_data)
-                        .bind(&candidate.required_capabilities)
-                        .bind(candidate.created_at_unix_ms.map(|value| value as f64))
-                        .bind(candidate.started_at_unix_ms.map(|value| value as f64))
-                        .bind(candidate.finished_at_unix_ms.map(|value| value as f64))
-                        .fetch_one(&mut **tx)
-                        .await
-                        .map_postgres_err()?;
-                    map_request_candidate_row(&row)
-                }) as BoxFuture<'_, Result<StoredRequestCandidate, DataLayerError>>
+                    let stored_admission =
+                        insert_billing_admission_postgres(tx, &admission).await?;
+                    let stored = upsert_candidate_postgres(tx, candidate).await?;
+                    Ok((stored, stored_admission))
+                })
             })
             .await
     }
@@ -541,12 +550,44 @@ WHERE created_at >= TO_TIMESTAMP($1::double precision / 1000.0)
             .execute(&self.pool)
             .await
             .map_postgres_err()?;
+        sqlx::query(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL)
+            .bind(created_before_unix_secs as f64)
+            .bind(i64::try_from(limit).map_err(|_| {
+                DataLayerError::UnexpectedValue(format!(
+                    "invalid billing admission delete limit: {limit}"
+                ))
+            })?)
+            .execute(&self.pool)
+            .await
+            .map_postgres_err()?;
         Ok(result.rows_affected() as usize)
     }
 }
 
 #[async_trait]
 impl RequestCandidateReadRepository for SqlxRequestCandidateReadRepository {
+    async fn find_billing_admission(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<BillingRequestAdmissionRecord>, DataLayerError> {
+        let row = sqlx::query(
+            r#"
+SELECT request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+       wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+       entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+       billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+FROM billing_request_admissions
+WHERE request_id = $1
+LIMIT 1
+            "#,
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_postgres_err()?;
+        row.as_ref().map(map_billing_admission_row).transpose()
+    }
+
     async fn list_by_request_id(
         &self,
         request_id: &str,
@@ -627,6 +668,14 @@ impl RequestCandidateWriteRepository for SqlxRequestCandidateReadRepository {
         Self::upsert(self, candidate).await
     }
 
+    async fn upsert_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: BillingRequestAdmissionInput,
+    ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
+        Self::upsert_with_billing_admission(self, candidate, admission).await
+    }
+
     async fn delete_created_before(
         &self,
         created_before_unix_secs: u64,
@@ -634,6 +683,108 @@ impl RequestCandidateWriteRepository for SqlxRequestCandidateReadRepository {
     ) -> Result<usize, DataLayerError> {
         Self::delete_created_before(self, created_before_unix_secs, limit).await
     }
+}
+
+async fn upsert_candidate_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    candidate: UpsertRequestCandidateRecord,
+) -> Result<StoredRequestCandidate, DataLayerError> {
+    let row = sqlx::query(UPSERT_SQL)
+        .bind(if candidate.id.trim().is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            candidate.id.clone()
+        })
+        .bind(&candidate.request_id)
+        .bind(&candidate.user_id)
+        .bind(&candidate.api_key_id)
+        .bind(&candidate.username)
+        .bind(&candidate.api_key_name)
+        .bind(to_i32(candidate.candidate_index)?)
+        .bind(to_i32(candidate.retry_index)?)
+        .bind(&candidate.provider_id)
+        .bind(&candidate.endpoint_id)
+        .bind(&candidate.key_id)
+        .bind(status_to_database(candidate.status))
+        .bind(&candidate.skip_reason)
+        .bind(candidate.is_cached)
+        .bind(candidate.status_code.map(i32::from))
+        .bind(&candidate.error_type)
+        .bind(&candidate.error_message)
+        .bind(candidate.latency_ms.map(to_i32_u64).transpose()?)
+        .bind(candidate.concurrent_requests.map(to_i32).transpose()?)
+        .bind(&candidate.extra_data)
+        .bind(&candidate.required_capabilities)
+        .bind(candidate.created_at_unix_ms.map(|value| value as f64))
+        .bind(candidate.started_at_unix_ms.map(|value| value as f64))
+        .bind(candidate.finished_at_unix_ms.map(|value| value as f64))
+        .fetch_one(&mut **tx)
+        .await
+        .map_postgres_err()?;
+    map_request_candidate_row(&row)
+}
+
+async fn insert_billing_admission_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    admission: &BillingRequestAdmissionInput,
+) -> Result<BillingRequestAdmissionRecord, DataLayerError> {
+    let row = sqlx::query(
+        r#"
+INSERT INTO billing_request_admissions (
+  request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+  wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+  entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+  billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+)
+VALUES (
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+  TRUE, 'admitted', NULL, $13, NOW(), NOW()
+)
+ON CONFLICT (request_id) DO UPDATE
+SET request_id = EXCLUDED.request_id
+RETURNING request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
+          wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+          entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
+          billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+        "#,
+    )
+    .bind(&admission.request_id)
+    .bind(&admission.user_id)
+    .bind(&admission.api_key_id)
+    .bind(&admission.wallet_id)
+    .bind(&admission.global_model_id)
+    .bind(admission.funding_source.as_str())
+    .bind(admission.wallet_balance_at_admission)
+    .bind(admission.wallet_payment_allowed)
+    .bind(admission.wallet_overage_allowed)
+    .bind(
+        serde_json::to_value(&admission.entitlement_ids).map_err(|error| {
+            DataLayerError::UnexpectedValue(format!(
+                "billing entitlement ids encode failed: {error}"
+            ))
+        })?,
+    )
+    .bind(
+        serde_json::to_value(&admission.entitlement_provider_scopes).map_err(|error| {
+            DataLayerError::UnexpectedValue(format!(
+                "billing entitlement provider scopes encode failed: {error}"
+            ))
+        })?,
+    )
+    .bind(
+        serde_json::to_value(&admission.allowed_provider_ids).map_err(|error| {
+            DataLayerError::UnexpectedValue(format!("billing provider ids encode failed: {error}"))
+        })?,
+    )
+    .bind(i16::try_from(admission.schema_version).map_err(|_| {
+        DataLayerError::InvalidInput("billing admission schema_version overflow".to_string())
+    })?)
+    .fetch_one(&mut **tx)
+    .await
+    .map_postgres_err()?;
+    let stored = map_billing_admission_row(&row)?;
+    super::admission::validate_stored_admission_matches_input(&stored, admission)?;
+    Ok(stored)
 }
 
 async fn collect_query_rows<T, S>(
@@ -678,6 +829,63 @@ fn map_request_candidate_row(row: &PgRow) -> Result<StoredRequestCandidate, Data
         row_get(row, "started_at_unix_ms")?,
         row_get(row, "finished_at_unix_ms")?,
     )
+}
+
+fn map_billing_admission_row(row: &PgRow) -> Result<BillingRequestAdmissionRecord, DataLayerError> {
+    let entitlement_ids = serde_json::from_value::<Vec<String>>(row_get(row, "entitlement_ids")?)
+        .map_err(|error| {
+        DataLayerError::UnexpectedValue(format!(
+            "billing admission entitlement ids are invalid: {error}"
+        ))
+    })?;
+    let allowed_provider_ids =
+        serde_json::from_value::<Vec<String>>(row_get(row, "allowed_provider_ids")?).map_err(
+            |error| {
+                DataLayerError::UnexpectedValue(format!(
+                    "billing admission provider ids are invalid: {error}"
+                ))
+            },
+        )?;
+    let entitlement_provider_scopes =
+        serde_json::from_value(row_get(row, "entitlement_provider_scopes")?).map_err(|error| {
+            DataLayerError::UnexpectedValue(format!(
+                "billing admission entitlement provider scopes are invalid: {error}"
+            ))
+        })?;
+    let schema_version: i16 = row_get(row, "schema_version")?;
+    let created_at: chrono::DateTime<chrono::Utc> = row_get(row, "created_at")?;
+    let updated_at: chrono::DateTime<chrono::Utc> = row_get(row, "updated_at")?;
+    Ok(BillingRequestAdmissionRecord {
+        request_id: row_get(row, "request_id")?,
+        user_id: row_get(row, "user_id")?,
+        api_key_id: row_get(row, "api_key_id")?,
+        wallet_id: row_get(row, "wallet_id")?,
+        global_model_id: row_get(row, "global_model_id")?,
+        funding_source: BillingFundingSource::from_database(&row_get::<String>(
+            row,
+            "funding_source",
+        )?)?,
+        wallet_balance_at_admission: row_get(row, "wallet_balance_at_admission")?,
+        wallet_payment_allowed: row_get(row, "wallet_payment_allowed")?,
+        wallet_overage_allowed: row_get(row, "wallet_overage_allowed")?,
+        entitlement_ids,
+        entitlement_provider_scopes,
+        allowed_provider_ids,
+        billing_admitted: row_get(row, "billing_admitted")?,
+        status: row_get(row, "status")?,
+        rejection_reason: row_get(row, "rejection_reason")?,
+        schema_version: u16::try_from(schema_version).map_err(|_| {
+            DataLayerError::UnexpectedValue(
+                "billing admission schema_version is invalid".to_string(),
+            )
+        })?,
+        created_at_unix_ms: u64::try_from(created_at.timestamp_millis()).map_err(|_| {
+            DataLayerError::UnexpectedValue("billing admission created_at is invalid".to_string())
+        })?,
+        updated_at_unix_ms: u64::try_from(updated_at.timestamp_millis()).map_err(|_| {
+            DataLayerError::UnexpectedValue("billing admission updated_at is invalid".to_string())
+        })?,
+    })
 }
 
 fn row_get<T>(row: &PgRow, column: &str) -> Result<T, DataLayerError>
@@ -726,7 +934,10 @@ fn unix_ms_to_i64(value: u64, name: &str) -> Result<i64, DataLayerError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SqlxRequestCandidateReadRepository, UPSERT_SQL};
+    use super::{
+        SqlxRequestCandidateReadRepository, DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL,
+        UPSERT_SQL,
+    };
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
 
     #[test]
@@ -739,6 +950,15 @@ mod tests {
         assert!(UPSERT_SQL.contains("NOW()"));
         assert!(UPSERT_SQL.contains("request_candidates.created_at <= TO_TIMESTAMP(1)"));
         assert!(UPSERT_SQL.contains("THEN EXCLUDED.created_at"));
+    }
+
+    #[test]
+    fn billing_admission_cleanup_keeps_pending_costs_and_live_candidates() {
+        assert!(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL.contains(
+            "COALESCE(settlement.billing_status, usage_record.billing_status, 'settled') <> 'pending'"
+        ));
+        assert!(DELETE_SETTLED_BILLING_ADMISSIONS_CREATED_BEFORE_SQL
+            .contains("FROM request_candidates candidate"));
     }
 
     #[tokio::test]

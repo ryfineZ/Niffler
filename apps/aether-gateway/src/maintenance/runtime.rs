@@ -42,6 +42,8 @@ mod request_candidate_cleanup;
 mod runners;
 #[path = "runtime/schedule.rs"]
 mod schedule;
+#[path = "runtime/settlement_retry.rs"]
+mod settlement_retry;
 #[path = "runtime/stats_daily.rs"]
 mod stats_daily;
 #[path = "runtime/stats_hourly.rs"]
@@ -115,6 +117,7 @@ pub(crate) use runners::{
     run_manual_usage_cleanup_once, start_manual_usage_cleanup_task, ManualUsageCleanupError,
 };
 use schedule::*;
+use settlement_retry::*;
 use stats_daily::*;
 use stats_hourly::*;
 use usage_cleanup::*;

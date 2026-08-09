@@ -114,6 +114,7 @@ fn billing_plan_payload(
         "sort_order": record.sort_order,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
         "created_at": record.created_at_unix_secs,
         "updated_at": record.updated_at_unix_secs,
@@ -133,6 +134,7 @@ fn billing_plan_snapshot(
         "duration_value": record.duration_value,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
     })
 }
@@ -193,6 +195,7 @@ fn entitlement_payload(
         "status": record.status,
         "starts_at": unix_secs_to_rfc3339(record.starts_at_unix_secs),
         "expires_at": unix_secs_to_rfc3339(record.expires_at_unix_secs),
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_snapshot,
         "created_at": unix_secs_to_rfc3339(record.created_at_unix_secs),
         "updated_at": unix_secs_to_rfc3339(record.updated_at_unix_secs),
@@ -428,6 +431,20 @@ pub(super) async fn handle_billing_plan_checkout(
                     false,
                 )
             }
+            aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::WalletInDebt => {
+                return build_auth_error_response(
+                    http::StatusCode::PAYMENT_REQUIRED,
+                    "钱包欠费，请先充值结清欠费后再购买套餐",
+                    false,
+                )
+            }
+            aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {
+                return build_auth_error_response(
+                    http::StatusCode::CONFLICT,
+                    "当前已有生效套餐，只能续费原套餐",
+                    false,
+                )
+            }
             aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached => {
                 return build_auth_error_response(
                     http::StatusCode::CONFLICT,
@@ -633,6 +650,20 @@ pub(super) async fn handle_billing_plan_checkout(
                 false,
             )
         }
+        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::WalletInDebt => {
+            return build_auth_error_response(
+                http::StatusCode::PAYMENT_REQUIRED,
+                "钱包欠费，请先充值结清欠费后再购买套餐",
+                false,
+            )
+        }
+        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {
+            return build_auth_error_response(
+                http::StatusCode::CONFLICT,
+                "当前已有生效套餐，只能续费原套餐",
+                false,
+            )
+        }
         aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached => {
             return build_auth_error_response(
                 http::StatusCode::CONFLICT,
@@ -693,6 +724,7 @@ mod tests {
             sort_order: 0,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec!["provider-test".to_string()],
             entitlements_json: json!([
                 {
                     "type": "daily_quota",

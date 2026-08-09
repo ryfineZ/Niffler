@@ -22,6 +22,9 @@ use crate::ai_serving::{
 use crate::orchestration::LocalExecutionCandidateMetadata;
 
 use super::candidate_ranking::rank_eligible_local_execution_candidates;
+use super::candidate_source::{
+    resolve_billing_provider_routing_scope, BillingProviderRoutingScope,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EligibleLocalExecutionCandidate {
@@ -31,6 +34,8 @@ pub(crate) struct EligibleLocalExecutionCandidate {
     pub(crate) provider_api_format: String,
     pub(crate) orchestration: LocalExecutionCandidateMetadata,
     pub(crate) ranking: Option<SchedulerRankingOutcome>,
+    pub(crate) billing_admission:
+        Option<aether_data_contracts::repository::billing::BillingRequestAdmissionInput>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -163,6 +168,7 @@ impl AiCandidateResolutionPort for GatewayLocalCandidateResolutionPort<'_> {
             provider_api_format,
             orchestration: LocalExecutionCandidateMetadata::default(),
             ranking: None,
+            billing_admission: None,
         }
     }
 
@@ -285,6 +291,43 @@ pub(crate) async fn resolve_and_rank_logical_local_execution_candidates(
         request_auth_channel,
         mode,
         false,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
+    state: PlannerAppState<'_>,
+    candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
+    client_api_format: &str,
+    requested_model: Option<&str>,
+    auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
+    client_session_affinity: Option<&ClientSessionAffinity>,
+    required_capabilities: Option<&serde_json::Value>,
+    routing_policy: Option<&ResolvedRoutingPolicy>,
+    _sticky_session_token: Option<&str>,
+    request_auth_channel: Option<&str>,
+    mode: AiCandidateResolutionMode,
+    billing_provider_scope: &BillingProviderRoutingScope,
+) -> (
+    Vec<EligibleLocalExecutionCandidate>,
+    Vec<SkippedLocalExecutionCandidate>,
+) {
+    resolve_and_rank_local_execution_candidates_with_pool_expansion(
+        state,
+        candidates,
+        client_api_format,
+        requested_model,
+        auth_snapshot,
+        client_session_affinity,
+        required_capabilities,
+        routing_policy,
+        None,
+        request_auth_channel,
+        mode,
+        false,
+        Some(billing_provider_scope),
     )
     .await
 }
@@ -318,6 +361,7 @@ async fn resolve_and_rank_local_execution_candidates_with_mode(
         request_auth_channel,
         mode,
         false,
+        None,
     )
     .await
 }
@@ -325,7 +369,7 @@ async fn resolve_and_rank_local_execution_candidates_with_mode(
 #[allow(clippy::too_many_arguments)]
 async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     state: PlannerAppState<'_>,
-    candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
+    mut candidates: Vec<SchedulerMinimalCandidateSelectionCandidate>,
     client_api_format: &str,
     requested_model: Option<&str>,
     auth_snapshot: Option<&GatewayAuthApiKeySnapshot>,
@@ -336,10 +380,44 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     request_auth_channel: Option<&str>,
     mode: AiCandidateResolutionMode,
     expand_pool_groups: bool,
+    preloaded_billing_provider_scope: Option<&BillingProviderRoutingScope>,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
 ) {
+    let billing_global_model_id = candidates
+        .first()
+        .map(|candidate| candidate.global_model_id.as_str());
+    let mut resolved_billing_provider_scope = None;
+    if preloaded_billing_provider_scope.is_none() {
+        if let Some(auth_snapshot) = auth_snapshot {
+            match resolve_billing_provider_routing_scope(
+                state,
+                auth_snapshot,
+                billing_global_model_id,
+            )
+            .await
+            {
+                Ok(scope) => resolved_billing_provider_scope = Some(scope),
+                Err(err) => {
+                    warn!(
+                        event_name = "billing_provider_scope_resolution_failed",
+                        user_id = %auth_snapshot.user_id,
+                        api_key_id = %auth_snapshot.api_key_id,
+                        error = ?err,
+                        "gateway stopped candidate resolution because billing provider scope could not be read"
+                    );
+                    return (Vec::new(), Vec::new());
+                }
+            }
+        }
+    }
+    let billing_provider_scope =
+        preloaded_billing_provider_scope.or(resolved_billing_provider_scope.as_ref());
+    if let Some(scope) = billing_provider_scope {
+        let plan_applies = scope.plan_applies();
+        candidates.retain(|candidate| scope.allows(&candidate.provider_id, plan_applies));
+    }
     let scheduler_affinity_epoch = state.app().scheduler_affinity_epoch();
     let port = GatewayLocalCandidateResolutionPort {
         state,
@@ -360,6 +438,17 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
 
     match run_ai_candidate_resolution(&port, candidates, request).await {
         Ok(mut outcome) => {
+            if let Some(scope) = billing_provider_scope {
+                outcome
+                    .eligible_candidates
+                    .sort_by_key(|candidate| !scope.prefers(&candidate.candidate.provider_id));
+                if let Some(auth_snapshot) = auth_snapshot {
+                    for candidate in &mut outcome.eligible_candidates {
+                        candidate.billing_admission =
+                            scope.admission_for_candidate(auth_snapshot, &candidate.candidate);
+                    }
+                }
+            }
             for candidate in &mut outcome.eligible_candidates {
                 candidate.orchestration.scheduler_affinity_epoch = Some(scheduler_affinity_epoch);
             }

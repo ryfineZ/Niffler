@@ -664,6 +664,8 @@ pub struct CreatePlanPurchaseOrderInput {
 pub enum CreatePlanPurchaseOrderOutcome {
     Created(StoredAdminPaymentOrder),
     WalletInactive,
+    WalletInDebt,
+    OverlappingPlanExists,
     ActivePlanLimitReached,
 }
 

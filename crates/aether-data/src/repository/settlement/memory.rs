@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use aether_data_contracts::repository::billing::{
+    BillingFundingSource, BillingRequestAdmissionInput,
+};
 use async_trait::async_trait;
 
 use super::{
     plan_finite_wallet_debit, settlement_billing_status_for_usage_status,
-    SettlementWriteRepository, StoredUsageSettlement, UsageSettlementInput, SETTLEMENT_EPSILON_USD,
+    SettlementWriteRepository, StoredUsageSettlement, UsageSettlementInput,
 };
 use crate::repository::wallet::{InMemoryWalletRepository, StoredWalletSnapshot};
 use crate::DataLayerError;
@@ -48,6 +51,7 @@ impl InMemorySettlementWalletStore {
 #[derive(Debug, Default)]
 pub struct InMemorySettlementRepository {
     wallets: InMemorySettlementWalletStore,
+    admissions_by_request_id: RwLock<BTreeMap<String, BillingRequestAdmissionInput>>,
     provider_monthly_used: RwLock<BTreeMap<String, f64>>,
     settlements: RwLock<BTreeMap<String, StoredUsageSettlement>>,
 }
@@ -59,6 +63,7 @@ impl InMemorySettlementRepository {
     {
         Self {
             wallets: InMemorySettlementWalletStore::seeded(items),
+            admissions_by_request_id: RwLock::new(BTreeMap::new()),
             provider_monthly_used: RwLock::new(BTreeMap::new()),
             settlements: RwLock::new(BTreeMap::new()),
         }
@@ -67,8 +72,44 @@ impl InMemorySettlementRepository {
     pub fn from_wallet_repository(wallet_repository: Arc<InMemoryWalletRepository>) -> Self {
         Self {
             wallets: InMemorySettlementWalletStore::Shared(wallet_repository),
+            admissions_by_request_id: RwLock::new(BTreeMap::new()),
             provider_monthly_used: RwLock::new(BTreeMap::new()),
             settlements: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn seed_with_admissions<I, J>(wallets: I, admissions: J) -> Self
+    where
+        I: IntoIterator<Item = StoredWalletSnapshot>,
+        J: IntoIterator<Item = BillingRequestAdmissionInput>,
+    {
+        let repository = Self::seed(wallets);
+        repository.insert_admissions(admissions);
+        repository
+    }
+
+    pub fn from_wallet_repository_with_admissions<I>(
+        wallet_repository: Arc<InMemoryWalletRepository>,
+        admissions: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = BillingRequestAdmissionInput>,
+    {
+        let repository = Self::from_wallet_repository(wallet_repository);
+        repository.insert_admissions(admissions);
+        repository
+    }
+
+    fn insert_admissions<I>(&self, admissions: I)
+    where
+        I: IntoIterator<Item = BillingRequestAdmissionInput>,
+    {
+        let mut stored = self
+            .admissions_by_request_id
+            .write()
+            .expect("billing admission lock");
+        for admission in admissions {
+            stored.insert(admission.request_id.clone(), admission);
         }
     }
 }
@@ -102,29 +143,37 @@ impl SettlementWriteRepository for InMemorySettlementRepository {
             })));
         }
 
-        let mut final_billing_status =
+        let final_billing_status =
             settlement_billing_status_for_usage_status(&input.status).to_string();
+        let billing_admission = if final_billing_status == "settled" {
+            Some(
+                self.admissions_by_request_id
+                    .read()
+                    .expect("billing admission lock")
+                    .get(&input.request_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        DataLayerError::UnexpectedValue(format!(
+                            "billing admission missing for request {}",
+                            input.request_id
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        if billing_admission
+            .as_ref()
+            .is_some_and(|admission| admission.funding_source == BillingFundingSource::Plan)
+        {
+            return Err(DataLayerError::UnexpectedValue(
+                "in-memory settlement does not implement plan quota accounting".to_string(),
+            ));
+        }
         let mut settlement = self.wallets.with_mut(|wallets| {
-            let wallet_id = input
-                .api_key_id
-                .as_deref()
-                .and_then(|api_key_id| {
-                    wallets
-                        .values()
-                        .find(|wallet| wallet.api_key_id.as_deref() == Some(api_key_id))
-                        .map(|wallet| wallet.id.clone())
-                })
-                .or_else(|| {
-                    if input.api_key_is_standalone {
-                        return None;
-                    }
-                    input.user_id.as_deref().and_then(|user_id| {
-                        wallets
-                            .values()
-                            .find(|wallet| wallet.user_id.as_deref() == Some(user_id))
-                            .map(|wallet| wallet.id.clone())
-                    })
-                });
+            let wallet_id = billing_admission
+                .as_ref()
+                .and_then(|admission| admission.wallet_id.clone());
             let wallet = wallet_id
                 .as_deref()
                 .and_then(|wallet_id| wallets.get_mut(wallet_id));
@@ -143,6 +192,30 @@ impl SettlementWriteRepository for InMemorySettlementRepository {
                 finalized_at_unix_secs: input.finalized_at_unix_secs,
             };
 
+            let funding_source = billing_admission
+                .as_ref()
+                .map(|admission| admission.funding_source);
+            let wallet_required = matches!(
+                funding_source,
+                Some(BillingFundingSource::Wallet | BillingFundingSource::Unlimited)
+            );
+            if wallet_required && wallet.is_none() {
+                return Err(DataLayerError::UnexpectedValue(format!(
+                    "billing admission wallet missing for request {}",
+                    input.request_id
+                )));
+            }
+            if funding_source == Some(BillingFundingSource::Wallet)
+                && billing_admission
+                    .as_ref()
+                    .is_some_and(|admission| !admission.wallet_payment_allowed)
+            {
+                return Err(DataLayerError::UnexpectedValue(format!(
+                    "wallet payment was not admitted for request {}",
+                    input.request_id
+                )));
+            }
+
             if let Some(wallet) = wallet {
                 let before_recharge = wallet.balance;
                 let before_gift = wallet.gift_balance;
@@ -153,9 +226,9 @@ impl SettlementWriteRepository for InMemorySettlementRepository {
                 settlement.wallet_gift_balance_before = Some(before_gift);
 
                 if final_billing_status == "settled" {
-                    if wallet.limit_mode.eq_ignore_ascii_case("unlimited") {
+                    if funding_source == Some(BillingFundingSource::Unlimited) {
                         wallet.total_consumed += input.total_cost_usd;
-                    } else {
+                    } else if funding_source == Some(BillingFundingSource::Wallet) {
                         let debit_plan = plan_finite_wallet_debit(
                             before_recharge,
                             before_gift,
@@ -170,15 +243,10 @@ impl SettlementWriteRepository for InMemorySettlementRepository {
                 settlement.wallet_recharge_balance_after = Some(wallet.balance);
                 settlement.wallet_gift_balance_after = Some(wallet.gift_balance);
                 settlement.wallet_balance_after = Some(wallet.balance + wallet.gift_balance);
-            } else if final_billing_status == "settled"
-                && input.total_cost_usd > SETTLEMENT_EPSILON_USD
-            {
-                final_billing_status = "insufficient_quota".to_string();
-                settlement.billing_status = final_billing_status.clone();
             }
 
-            settlement
-        });
+            Ok(settlement)
+        })?;
 
         if final_billing_status == "settled" {
             if let Some(provider_id) = input.provider_id {
@@ -206,6 +274,10 @@ mod tests {
     use super::InMemorySettlementRepository;
     use crate::repository::settlement::{SettlementWriteRepository, UsageSettlementInput};
     use crate::repository::wallet::StoredWalletSnapshot;
+    use aether_data_contracts::repository::billing::{
+        BillingFundingSource, BillingRequestAdmissionInput,
+    };
+    use std::collections::BTreeMap;
 
     fn sample_wallet() -> StoredWalletSnapshot {
         StoredWalletSnapshot::new(
@@ -245,9 +317,34 @@ mod tests {
         .expect("wallet should build")
     }
 
+    fn wallet_admission(
+        request_id: &str,
+        wallet_id: &str,
+        wallet_balance: f64,
+    ) -> BillingRequestAdmissionInput {
+        BillingRequestAdmissionInput {
+            request_id: request_id.to_string(),
+            user_id: Some("user-1".to_string()),
+            api_key_id: Some("key-1".to_string()),
+            wallet_id: Some(wallet_id.to_string()),
+            global_model_id: Some("global-model-1".to_string()),
+            funding_source: BillingFundingSource::Wallet,
+            wallet_balance_at_admission: Some(wallet_balance),
+            wallet_payment_allowed: wallet_balance > 0.0,
+            wallet_overage_allowed: false,
+            entitlement_ids: Vec::new(),
+            entitlement_provider_scopes: BTreeMap::new(),
+            allowed_provider_ids: Vec::new(),
+            schema_version: 1,
+        }
+    }
+
     #[tokio::test]
     async fn settles_usage_against_wallet_and_provider_quota() {
-        let repository = InMemorySettlementRepository::seed(vec![sample_wallet()]);
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_wallet()],
+            vec![wallet_admission("req-1", "wallet-1", 12.0)],
+        );
         let settlement = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-1".to_string(),
@@ -276,9 +373,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normal_key_settlement_falls_back_to_user_wallet() {
-        let repository =
-            InMemorySettlementRepository::seed(vec![sample_user_wallet("wallet-user-1", "user-1")]);
+    async fn wallet_settlement_uses_the_wallet_saved_at_request_start() {
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_user_wallet("wallet-user-1", "user-1")],
+            vec![wallet_admission("req-user-wallet", "wallet-user-1", 12.0)],
+        );
         let settlement = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-user-wallet".to_string(),
@@ -307,7 +406,10 @@ mod tests {
 
     #[tokio::test]
     async fn settles_cancelled_usage_against_wallet_and_provider_quota() {
-        let repository = InMemorySettlementRepository::seed(vec![sample_wallet()]);
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_wallet()],
+            vec![wallet_admission("req-cancelled", "wallet-1", 12.0)],
+        );
         let settlement = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-cancelled".to_string(),
@@ -337,11 +439,15 @@ mod tests {
 
     #[tokio::test]
     async fn standalone_key_settlement_never_falls_back_to_owner_wallet() {
-        let repository = InMemorySettlementRepository::seed(vec![sample_user_wallet(
-            "wallet-admin-owner",
-            "admin-owner",
-        )]);
-        let settlement = repository
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_user_wallet("wallet-admin-owner", "admin-owner")],
+            vec![wallet_admission(
+                "req-standalone-no-key-wallet",
+                "missing-key-wallet",
+                1.0,
+            )],
+        );
+        let result = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-standalone-no-key-wallet".to_string(),
                 user_id: Some("admin-owner".to_string()),
@@ -358,19 +464,21 @@ mod tests {
                 actual_total_cost_usd: 1.5,
                 finalized_at_unix_secs: Some(200),
             })
-            .await
-            .expect("settlement should succeed")
-            .expect("settlement should exist");
+            .await;
 
-        assert_eq!(settlement.billing_status, "insufficient_quota");
-        assert_eq!(settlement.wallet_id, None);
-        assert_eq!(settlement.wallet_balance_before, None);
-        assert_eq!(settlement.wallet_balance_after, None);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn finite_wallet_insufficient_balance_overdraws_and_settles() {
-        let repository = InMemorySettlementRepository::seed(vec![sample_wallet()]);
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_wallet()],
+            vec![wallet_admission(
+                "req-insufficient-wallet",
+                "wallet-1",
+                12.0,
+            )],
+        );
         let settlement = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-insufficient-wallet".to_string(),
@@ -402,7 +510,10 @@ mod tests {
 
     #[tokio::test]
     async fn returns_stored_snapshot_when_usage_is_already_finalized() {
-        let repository = InMemorySettlementRepository::seed(vec![sample_wallet()]);
+        let repository = InMemorySettlementRepository::seed_with_admissions(
+            vec![sample_wallet()],
+            vec![wallet_admission("req-2", "wallet-1", 12.0)],
+        );
         let settled = repository
             .settle_usage(UsageSettlementInput {
                 request_id: "req-2".to_string(),

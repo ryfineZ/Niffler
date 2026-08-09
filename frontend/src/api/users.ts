@@ -2,6 +2,7 @@ import apiClient from './client'
 import { cachedRequest } from '@/utils/cache'
 import type { UserSession as SessionRecord } from '@/types/session'
 import type { BillingPlan, UserPlanEntitlement } from './billing'
+import type { AdminWallet } from './admin-wallets'
 
 export type UserRole = 'admin' | 'audit_admin' | 'user'
 export type ListPolicyMode = 'inherit' | 'unrestricted' | 'specific' | 'deny_all'
@@ -76,6 +77,7 @@ export interface User {
   last_login_at?: string | null
   request_count?: number
   total_tokens?: number
+  wallet?: AdminWallet | null
 }
 
 export interface CreateUserRequest {
@@ -327,6 +329,7 @@ export interface UpdateUserPlanEntitlementRequest {
   starts_at?: string | null
   expires_at?: string | null
   initial_remaining_quota_usd?: number | null
+  allowed_provider_ids?: string[]
 }
 
 export interface UpdateUserPlanEntitlementResponse extends AdminUserPlanEntitlementsResponse {

@@ -2145,6 +2145,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260723120000,
             20260801190000,
             20260804120000,
+            20260809130000,
         ]
     );
     assert_eq!(
@@ -2184,6 +2185,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260723120000,
             20260801190000,
             20260804120000,
+            20260809130000,
         ]
     );
 }
@@ -2740,6 +2742,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260731190000,
             20260801190000,
             20260804120000,
+            20260809130000,
         ]
     );
 }
@@ -2784,6 +2787,7 @@ fn pending_migrations_from_applied_after_empty_database_snapshot_stamp_returns_p
             20260731190000,
             20260801190000,
             20260804120000,
+            20260809130000,
         ],
         "empty database snapshot-stamped databases should run only post-snapshot incrementals on first startup"
     );
@@ -3187,4 +3191,27 @@ async fn prepare_database_for_startup_bootstraps_when_only_unrelated_public_tabl
         .await
         .expect("migrated database startup preparation should succeed");
     assert!(pending_after_migration.is_empty());
+}
+
+#[test]
+fn billing_overdraft_root_fix_migrations_define_provider_scopes_and_admissions() {
+    let postgres = include_str!(
+        "../../../migrations/postgres/20260809130000_add_billing_admissions_and_plan_providers.sql"
+    );
+    let mysql = include_str!(
+        "../../../migrations/mysql/20260809130000_add_billing_admissions_and_plan_providers.sql"
+    );
+    let sqlite = include_str!(
+        "../../../migrations/sqlite/20260809130000_add_billing_admissions_and_plan_providers.sql"
+    );
+
+    for migration in [postgres, mysql, sqlite] {
+        assert!(migration.contains("billing_plan_providers"));
+        assert!(migration.contains("user_entitlement_providers"));
+        assert!(migration.contains("billing_request_admissions"));
+        assert!(migration.contains("wallet_payment_allowed"));
+        assert!(migration.contains("wallet_overage_allowed"));
+        assert!(migration.contains("entitlement_provider_scopes"));
+        assert!(!migration.contains("selected_provider_id"));
+    }
 }

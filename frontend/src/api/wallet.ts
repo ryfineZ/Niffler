@@ -36,6 +36,10 @@ export interface WalletBalanceResponse {
   gift_balance?: number | null
   refundable_balance?: number | null
   wallet_balance?: number | null
+  actual_wallet_balance?: number | null
+  spendable_wallet_balance?: number | null
+  debt_usd?: number | null
+  billing_state?: 'active' | 'in_debt' | 'unlimited'
   package_balance?: number | null
   total_available_balance?: number | null
   daily_quota?: WalletDailyQuotaSummary | null

@@ -2353,6 +2353,32 @@ ORDER BY request_count DESC, "usage".provider_name ASC
         Ok(items)
     }
 
+    pub async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let sql = FIND_BY_ID_SQL.replacen(
+            "WHERE \"usage\".id = $1\nLIMIT 1",
+            r#"WHERE "usage".status IN ('completed', 'failed', 'cancelled')
+  AND COALESCE(usage_settlement_snapshots.billing_status, "usage".billing_status) = 'pending'
+ORDER BY "usage".created_at ASC, "usage".request_id ASC
+LIMIT $1"#,
+            1,
+        );
+        let limit = i64::try_from(limit).map_err(|_| {
+            DataLayerError::UnexpectedValue("invalid pending settlement limit".to_string())
+        })?;
+        let mut rows = sqlx::query(&sql).bind(limit).fetch(&self.pool);
+        let mut items = Vec::new();
+        while let Some(row) = rows.try_next().await.map_postgres_err()? {
+            items.push(map_usage_row(&row, false)?);
+        }
+        Ok(items)
+    }
+
     pub async fn resolve_body_ref(&self, body_ref: &str) -> Result<Option<Value>, DataLayerError> {
         let object_row = sqlx::query(FIND_USAGE_BODY_OBJECT_BY_REF_SQL)
             .bind(body_ref)
@@ -9237,6 +9263,13 @@ impl UsageReadRepository for SqlxUsageReadRepository {
         ids: &[String],
     ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
         Self::list_by_ids(self, ids).await
+    }
+
+    async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
+        Self::list_pending_terminal_usage_for_settlement(self, limit).await
     }
 
     async fn find_by_request_id(

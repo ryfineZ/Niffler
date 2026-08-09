@@ -14,6 +14,14 @@
       </div>
 
       <template v-else>
+        <div
+          v-if="walletInDebt"
+          class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm leading-6 text-rose-700 dark:text-rose-300"
+          role="status"
+        >
+          {{ t('billing.walletDebtNotice', { amount: formatDebtAmount(walletDebtUsd) }) }}
+        </div>
+
         <CardSection
           :title="t('billing.current')"
           :description="t('billing.currentHint')"
@@ -40,12 +48,12 @@
                   </div>
                 </div>
                 <Badge variant="success">
-                    {{ t('billing.active') }}
+                  {{ t('billing.active') }}
                 </Badge>
               </div>
               <div class="mt-3 flex flex-wrap gap-1.5">
                 <Badge
-                  v-for="label in entitlementLabels(item.entitlements)"
+                  v-for="label in entitlementLabels(item.entitlements, item.allowed_provider_ids)"
                   :key="label"
                   variant="outline"
                 >
@@ -74,7 +82,9 @@
               <div class="flex items-start justify-between gap-3">
                 <div>
                   <h3 class="text-base font-semibold">
-                    {{ plan.title }}
+                    {{ hasMatchingActivePlan(plan)
+                      ? t('billing.renewPlanTitle', { title: plan.title })
+                      : plan.title }}
                   </h3>
                   <p class="mt-1 min-h-[32px] text-xs text-muted-foreground">
                     {{ plan.description || t('billing.standard') }}
@@ -96,7 +106,7 @@
 
               <div class="mt-5 flex flex-wrap gap-1.5">
                 <Badge
-                  v-for="label in entitlementLabels(plan.entitlements)"
+                  v-for="label in entitlementLabels(plan.entitlements, plan.allowed_provider_ids)"
                   :key="label"
                   variant="outline"
                 >
@@ -114,7 +124,10 @@
               <div class="mt-5 flex-1" />
 
               <div class="mt-5 space-y-3">
-                <Select v-model="selectedPaymentOptionKey">
+                <Select
+                  v-model="selectedPaymentOptionKey"
+                  :disabled="planBlockedByActivePlan(plan)"
+                >
                   <SelectTrigger>
                     <SelectValue
                       :placeholder="paymentOptions.length ? t('billing.choosePayment') : t('billing.noPayment')"
@@ -136,11 +149,20 @@
                     checkoutLoadingPlanId === plan.id
                       || paymentOptions.length === 0
                       || !selectedPaymentOption
+                      || walletInDebt
+                      || planBlockedByActivePlan(plan)
                   "
+                  :title="planPurchaseDisabledReason(plan)"
                   @click="checkoutPlan(plan)"
                 >
                   <CreditCard class="mr-2 h-4 w-4" />
-                  {{ checkoutLoadingPlanId === plan.id ? t('billing.creating') : t('billing.buy') }}
+                  {{ checkoutLoadingPlanId === plan.id
+                    ? t('billing.creating')
+                    : walletInDebt
+                      ? t('billing.walletDebtBuyDisabled')
+                      : planBlockedByActivePlan(plan)
+                        ? t('billing.otherPlanBuyDisabled')
+                        : t('billing.buy') }}
                 </Button>
               </div>
             </Card>
@@ -205,7 +227,7 @@ import {
   type BillingPlan,
   type UserPlanEntitlement,
 } from '@/api/billing'
-import { walletApi, type WalletRechargeOption } from '@/api/wallet'
+import { walletApi, type WalletBalanceResponse, type WalletRechargeOption } from '@/api/wallet'
 import {
   Badge,
   Button,
@@ -235,10 +257,29 @@ const loading = ref(true)
 const plans = ref<BillingPlan[]>([])
 const entitlements = ref<UserPlanEntitlement[]>([])
 const rechargeOptions = ref<WalletRechargeOption[]>([])
+const walletBalance = ref<WalletBalanceResponse | null>(null)
 const selectedPaymentOptionKey = ref('')
 const checkoutLoadingPlanId = ref<string | null>(null)
 const latestCheckout = ref<BillingCheckoutResponse | null>(null)
 const BILLING_SUMMARY_REFRESH_EVENT = 'aether:billing-summary-refresh'
+
+const actualWalletBalance = computed(() => {
+  const value = walletBalance.value?.actual_wallet_balance
+    ?? walletBalance.value?.wallet_balance
+    ?? walletBalance.value?.balance
+    ?? 0
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+})
+const walletInDebt = computed(() =>
+  walletBalance.value?.billing_state === 'in_debt' || actualWalletBalance.value < 0
+)
+const walletDebtUsd = computed(() => {
+  const explicitDebt = walletBalance.value?.debt_usd
+  if (typeof explicitDebt === 'number' && Number.isFinite(explicitDebt)) {
+    return Math.max(0, explicitDebt)
+  }
+  return Math.max(0, -actualWalletBalance.value)
+})
 
 const paymentOptions = computed(() =>
   rechargeOptions.value
@@ -268,6 +309,8 @@ const activeEntitlements = computed(() =>
   )
 )
 
+const activePlanId = computed(() => activeEntitlements.value[0]?.plan_id || '')
+
 const purchaseablePlans = computed(() =>
   plans.value.filter((plan) => hasPackageEntitlement(plan.entitlements))
 )
@@ -293,6 +336,7 @@ onMounted(async () => {
   await Promise.all([
     loadPlans(),
     loadEntitlements(),
+    loadWalletBalance(),
     loadRechargeOptions(),
   ])
   loading.value = false
@@ -332,7 +376,24 @@ async function loadRechargeOptions() {
   }
 }
 
+async function loadWalletBalance() {
+  try {
+    walletBalance.value = await walletApi.getBalance()
+  } catch (err) {
+    log.error('加载钱包余额失败:', err)
+    showError(parseApiError(err, t('billing.loadWalletFailed')))
+  }
+}
+
 async function checkoutPlan(plan: BillingPlan) {
+  if (walletInDebt.value) {
+    showError(t('billing.walletDebtBuyDisabled'))
+    return
+  }
+  if (planBlockedByActivePlan(plan)) {
+    showError(t('billing.otherPlanBuyDisabled'))
+    return
+  }
   if (hasMatchingActivePlan(plan)) {
     const confirmed = window.confirm(t('billing.renewConfirm'))
     if (!confirmed) return
@@ -358,6 +419,20 @@ async function checkoutPlan(plan: BillingPlan) {
   } finally {
     checkoutLoadingPlanId.value = null
   }
+}
+
+function planBlockedByActivePlan(plan: BillingPlan): boolean {
+  return Boolean(activePlanId.value && activePlanId.value !== plan.id)
+}
+
+function planPurchaseDisabledReason(plan: BillingPlan): string | undefined {
+  if (walletInDebt.value) return t('billing.walletDebtBuyDisabled')
+  if (planBlockedByActivePlan(plan)) return t('billing.otherPlanBuyDisabled')
+  return undefined
+}
+
+function formatDebtAmount(value: number): string {
+  return `$${value.toFixed(2)}`
 }
 
 function openPaymentUrl(url: string) {
@@ -419,13 +494,13 @@ function replacementNotice(plan: BillingPlan): string {
   return ''
 }
 
-function entitlementLabels(items: BillingEntitlementsInput): string[] {
+function entitlementLabels(items: BillingEntitlementsInput, providerIds: string[] = []): string[] {
   return normalizeBillingEntitlements(items).map((item) => {
     if (item.type === 'wallet_credit') {
       return t('billing.walletCredit', { amount: Number(item.amount_usd || 0).toFixed(2) })
     }
     if (item.type === 'daily_quota') {
-      return quotaEntitlementLabel(item)
+      return quotaEntitlementLabel(item, providerIds)
     }
     if (item.type === 'membership_group') {
       return t('billing.membershipGroups', { groups: item.grant_user_groups.join(', ') })
@@ -438,7 +513,7 @@ function hasPackageEntitlement(items: BillingEntitlementsInput): boolean {
   return hasPackageBillingEntitlement(items)
 }
 
-function quotaEntitlementLabel(item: DailyQuotaEntitlement): string {
+function quotaEntitlementLabel(item: DailyQuotaEntitlement, providerIds: string[]): string {
   const limits = item.limits || {}
   const parts = []
   const daily = Number(item.daily_quota_usd ?? limits.daily_limit_usd ?? 0)
@@ -450,13 +525,16 @@ function quotaEntitlementLabel(item: DailyQuotaEntitlement): string {
   if (weekly > 0) parts.push(t('billing.quota7Days', { amount: weekly.toFixed(2) }))
   if (monthly > 0) parts.push(t('billing.quota30Days', { amount: monthly.toFixed(2) }))
   const quotaText = parts.join(' / ') || t('billing.usageQuota')
-  const labels = [quotaModelScopeLabel(item.allowed_global_model_ids)]
+  const labels = [quotaModelScopeLabel(item.allowed_global_model_ids, providerIds)]
   const multiplierLabel = quotaConsumptionMultiplierLabel(item, t)
   if (multiplierLabel) labels.push(multiplierLabel)
   return `${quotaText} · ${labels.join(' · ')}`
 }
 
-function quotaModelScopeLabel(modelIds?: string[]): string {
+function quotaModelScopeLabel(modelIds: string[] | undefined, providerIds: string[]): string {
+  if (providerIds.length > 0) {
+    return t('billing.modelsByProviders')
+  }
   if (!Array.isArray(modelIds) || modelIds.length === 0) {
     return t('billing.allModels')
   }

@@ -54,12 +54,13 @@ impl WalletSnapshot {
     }
 
     pub fn balance_snapshot(&self) -> Option<f64> {
-        if self.recharge_balance < 0.0 {
-            return Some(quantize_money(self.recharge_balance));
+        let signed_balance = self.spendable_balance();
+        if signed_balance < 0.0 {
+            return Some(signed_balance);
         }
         match self.limit_mode {
             WalletLimitMode::Unlimited => None,
-            WalletLimitMode::Finite => Some(self.spendable_balance()),
+            WalletLimitMode::Finite => Some(signed_balance),
         }
     }
 
@@ -67,15 +68,13 @@ impl WalletSnapshot {
         if self.status != WalletStatus::Active {
             return WalletAccessDecision::wallet_unavailable(self.balance_snapshot());
         }
-        if self.recharge_balance < 0.0 {
-            return WalletAccessDecision::balance_denied(Some(quantize_money(
-                self.recharge_balance,
-            )));
+        let remaining = self.spendable_balance();
+        if remaining < 0.0 {
+            return WalletAccessDecision::balance_denied(Some(remaining));
         }
         if self.limit_mode == WalletLimitMode::Unlimited {
             return WalletAccessDecision::allowed(None);
         }
-        let remaining = self.spendable_balance();
         if remaining <= 0.0 {
             return WalletAccessDecision::balance_denied(Some(remaining));
         }
@@ -149,6 +148,14 @@ mod tests {
         assert!(!decision.allowed);
         assert_eq!(decision.failure, Some(WalletAccessFailure::BalanceDenied));
         assert_eq!(decision.remaining, Some(0.0));
+    }
+
+    #[test]
+    fn finite_wallet_uses_the_signed_sum_of_recharge_and_gift_balances() {
+        let decision = wallet_snapshot(WalletLimitMode::Finite, -10.0, 20.0).access_decision(false);
+        assert!(decision.allowed);
+        assert_eq!(decision.failure, None);
+        assert_eq!(decision.remaining, Some(10.0));
     }
 
     #[test]

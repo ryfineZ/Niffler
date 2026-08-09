@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::plan_overrides::{
     admin_grant_expires_at_unix_secs, admin_grant_starts_at_unix_secs,
-    entitlements_with_admin_grant_overrides,
+    entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
     redeem_code_credits_recharge_balance, redeem_code_payment_method,
@@ -1461,7 +1461,7 @@ impl WalletWriteRepository for SqlxWalletRepository {
                 Box::pin(async move {
                     let wallet_row = match sqlx::query(
                         r#"
-SELECT id, status
+SELECT id, status, CAST(balance + gift_balance AS DOUBLE PRECISION) AS signed_balance
 FROM wallets
 WHERE user_id = $1
 LIMIT 1
@@ -1513,7 +1513,7 @@ VALUES (
 )
 ON CONFLICT (user_id) DO UPDATE
 SET updated_at = wallets.updated_at
-RETURNING id, status
+RETURNING id, status, CAST(balance + gift_balance AS DOUBLE PRECISION) AS signed_balance
                                 "#,
                             )
                             .bind(&wallet_id)
@@ -1619,7 +1619,7 @@ RETURNING
                 Box::pin(async move {
                     let wallet_row = match sqlx::query(
                         r#"
-SELECT id, status
+SELECT id, status, CAST(balance + gift_balance AS DOUBLE PRECISION) AS signed_balance
 FROM wallets
 WHERE user_id = $1
 LIMIT 1
@@ -1647,7 +1647,7 @@ INSERT INTO wallets (
 VALUES ($1, $2, 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, NOW(), NOW())
 ON CONFLICT (user_id) DO UPDATE
 SET updated_at = wallets.updated_at
-RETURNING id, status
+RETURNING id, status, CAST(balance + gift_balance AS DOUBLE PRECISION) AS signed_balance
                                 "#,
                             )
                             .bind(&wallet_id)
@@ -1661,6 +1661,34 @@ RETURNING id, status
                     let wallet_status: String = row_get(&wallet_row, "status")?;
                     if wallet_status != "active" {
                         return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
+                    }
+                    let signed_balance: f64 = row_get(&wallet_row, "signed_balance")?;
+                    if input.payment_method != "admin_grant" && signed_balance < 0.0 {
+                        return Ok(CreatePlanPurchaseOrderOutcome::WalletInDebt);
+                    }
+
+                    let requested_starts_at = plan_starts_at(&input.product_snapshot, Utc::now());
+                    let requested_expires_at =
+                        plan_expires_at(&input.product_snapshot, requested_starts_at);
+                    if has_other_overlapping_plan_postgres(
+                        tx,
+                        &input.user_id,
+                        &input.product_id,
+                        requested_starts_at,
+                        requested_expires_at,
+                    )
+                    .await?
+                    {
+                        return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
+                    }
+                    if has_pending_other_plan_purchase_postgres(
+                        tx,
+                        &input.user_id,
+                        &input.product_id,
+                    )
+                    .await?
+                    {
+                        return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
                     }
 
                     let purchase_limit_scope = plan_purchase_limit_scope(&input.product_snapshot);
@@ -2350,6 +2378,25 @@ LIMIT 1
                         .map_postgres_err()?;
                         if existing_entitlement_id.is_none() {
                             lock_plan_renewal_scope_postgres(tx, &order_wallet_id).await?;
+                            if plan_purchase_wallet_in_debt_postgres(
+                                tx,
+                                &order_wallet_id,
+                                &order_payment_method,
+                            )
+                            .await?
+                            {
+                                update_payment_callback_failure(
+                                    tx,
+                                    &callback_id,
+                                    &input,
+                                    "wallet is in debt",
+                                )
+                                .await?;
+                                return Ok(ProcessPaymentCallbackOutcome::Failed {
+                                    duplicate,
+                                    error: "wallet is in debt".to_string(),
+                                });
+                            }
                             let requested_starts_at = plan_starts_at(&snapshot, now);
                             let starts_at = plan_renewal_starts_at_postgres(
                                 tx,
@@ -2359,6 +2406,23 @@ LIMIT 1
                             )
                             .await?;
                             let expires_at = plan_expires_at(&snapshot, starts_at);
+                            if has_other_overlapping_plan_postgres(
+                                tx, &user_id, &plan_id, starts_at, expires_at,
+                            )
+                            .await?
+                            {
+                                update_payment_callback_failure(
+                                    tx,
+                                    &callback_id,
+                                    &input,
+                                    "another plan overlaps this entitlement",
+                                )
+                                .await?;
+                                return Ok(ProcessPaymentCallbackOutcome::Failed {
+                                    duplicate,
+                                    error: "another plan overlaps this entitlement".to_string(),
+                                });
+                            }
                             let entitlements = plan_entitlements_snapshot(&snapshot);
                             let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                             if purchase_limit_scope != "unlimited" {
@@ -2395,6 +2459,7 @@ WHERE user_id = $1
                                     });
                                 }
                             }
+                            let entitlement_id = Uuid::new_v4().to_string();
                             sqlx::query(
                                 r#"
 INSERT INTO user_plan_entitlements (
@@ -2404,7 +2469,7 @@ INSERT INTO user_plan_entitlements (
 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, NOW(), NOW())
                                 "#,
                             )
-                            .bind(Uuid::new_v4().to_string())
+                            .bind(&entitlement_id)
                             .bind(&user_id)
                             .bind(&plan_id)
                             .bind(&order_id)
@@ -2414,6 +2479,12 @@ VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, NOW(), NOW())
                             .execute(&mut **tx)
                             .await
                             .map_postgres_err()?;
+                            save_entitlement_providers_postgres(
+                                tx,
+                                &entitlement_id,
+                                &plan_provider_ids_snapshot(&snapshot),
+                            )
+                            .await?;
                             apply_plan_wallet_credit_postgres(
                                 tx,
                                 &order_wallet_id,
@@ -4152,6 +4223,17 @@ LIMIT 1
                         .map_postgres_err()?;
                         if existing_entitlement_id.is_none() {
                             lock_plan_renewal_scope_postgres(tx, &order.wallet_id).await?;
+                            if plan_purchase_wallet_in_debt_postgres(
+                                tx,
+                                &order.wallet_id,
+                                &order.payment_method,
+                            )
+                            .await?
+                            {
+                                return Ok(WalletMutationOutcome::Invalid(
+                                    "wallet is in debt".to_string(),
+                                ));
+                            }
                             let requested_starts_at = plan_starts_at(&snapshot, now);
                             let starts_at = plan_renewal_starts_at_postgres(
                                 tx,
@@ -4161,6 +4243,15 @@ LIMIT 1
                             )
                             .await?;
                             let expires_at = plan_expires_at(&snapshot, starts_at);
+                            if has_other_overlapping_plan_postgres(
+                                tx, &user_id, &plan_id, starts_at, expires_at,
+                            )
+                            .await?
+                            {
+                                return Ok(WalletMutationOutcome::Invalid(
+                                    "another plan overlaps this entitlement".to_string(),
+                                ));
+                            }
                             let entitlements = plan_entitlements_snapshot(&snapshot);
                             let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                             if purchase_limit_scope != "unlimited" {
@@ -4189,6 +4280,7 @@ WHERE user_id = $1
                                     ));
                                 }
                             }
+                            let entitlement_id = Uuid::new_v4().to_string();
                             sqlx::query(
                                 r#"
 INSERT INTO user_plan_entitlements (
@@ -4198,7 +4290,7 @@ INSERT INTO user_plan_entitlements (
 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, NOW(), NOW())
                                 "#,
                             )
-                            .bind(Uuid::new_v4().to_string())
+                            .bind(&entitlement_id)
                             .bind(&user_id)
                             .bind(&plan_id)
                             .bind(&input.order_id)
@@ -4208,6 +4300,12 @@ VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, NOW(), NOW())
                             .execute(&mut **tx)
                             .await
                             .map_postgres_err()?;
+                            save_entitlement_providers_postgres(
+                                tx,
+                                &entitlement_id,
+                                &plan_provider_ids_snapshot(&snapshot),
+                            )
+                            .await?;
                             apply_plan_wallet_credit_postgres(
                                 tx,
                                 &order.wallet_id,
@@ -5487,6 +5585,111 @@ async fn lock_plan_renewal_scope_postgres(
         .await
         .map_postgres_err()?;
     Ok(())
+}
+
+async fn has_other_overlapping_plan_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    user_id: &str,
+    plan_id: &str,
+    starts_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+) -> Result<bool, DataLayerError> {
+    sqlx::query_scalar::<_, bool>(
+        r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM user_plan_entitlements
+  WHERE user_id = $1
+    AND plan_id <> $2
+    AND status = 'active'
+    AND starts_at < $4
+    AND expires_at > $3
+)
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(starts_at)
+    .bind(expires_at)
+    .fetch_one(&mut **tx)
+    .await
+    .map_postgres_err()
+}
+
+async fn has_pending_other_plan_purchase_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    user_id: &str,
+    plan_id: &str,
+) -> Result<bool, DataLayerError> {
+    sqlx::query_scalar::<_, bool>(
+        r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM payment_orders
+  WHERE user_id = $1
+    AND order_kind = 'plan_purchase'
+    AND product_id <> $2
+    AND status = 'pending'
+    AND expires_at > NOW()
+)
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_postgres_err()
+}
+
+async fn save_entitlement_providers_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    entitlement_id: &str,
+    provider_ids: &[String],
+) -> Result<(), DataLayerError> {
+    for provider_id in provider_ids {
+        sqlx::query(
+            r#"
+INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id)
+VALUES ($1, $2)
+ON CONFLICT (user_entitlement_id, provider_id) DO NOTHING
+            "#,
+        )
+        .bind(entitlement_id)
+        .bind(provider_id)
+        .execute(&mut **tx)
+        .await
+        .map_postgres_err()?;
+    }
+    Ok(())
+}
+
+async fn plan_purchase_wallet_in_debt_postgres(
+    tx: &mut crate::driver::postgres::PostgresTransaction,
+    wallet_id: &str,
+    payment_method: &str,
+) -> Result<bool, DataLayerError> {
+    if payment_method == "admin_grant" {
+        return Ok(false);
+    }
+    let Some(signed_balance) = sqlx::query_scalar::<_, f64>(
+        r#"
+SELECT CAST(balance + gift_balance AS DOUBLE PRECISION)
+FROM wallets
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+        "#,
+    )
+    .bind(wallet_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_postgres_err()?
+    else {
+        return Err(DataLayerError::UnexpectedValue(
+            "wallet not found for plan fulfillment".to_string(),
+        ));
+    };
+    Ok(signed_balance < 0.0)
 }
 
 async fn plan_renewal_starts_at_postgres(

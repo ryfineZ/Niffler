@@ -37,13 +37,15 @@ pub(crate) async fn resolve_wallet_auth_gate(
         {
             let quota_base_remaining_usd = quota.base_remaining_usd.max(0.0);
             let has_remaining_quota = quota_base_remaining_usd > DAILY_QUOTA_EPSILON_USD;
-            if decision.failure == Some(WalletAccessFailure::BalanceDenied) && has_remaining_quota {
+            let wallet_cannot_cover_more = decision.failure
+                == Some(WalletAccessFailure::BalanceDenied)
+                || decision
+                    .remaining
+                    .is_some_and(|remaining| remaining <= DAILY_QUOTA_EPSILON_USD);
+            if wallet_cannot_cover_more && has_remaining_quota {
                 return Ok(Some(WalletAccessDecision::allowed(Some(
                     quota_base_remaining_usd,
                 ))));
-            }
-            if decision.failure.is_none() && !quota.allow_wallet_overage && !has_remaining_quota {
-                return Ok(Some(WalletAccessDecision::balance_denied(Some(0.0))));
             }
         }
     }
@@ -125,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_wallet_snapshot_and_derives_balance_denied() {
+    fn maps_empty_wallet_snapshot_and_denies_wallet_payment() {
         let stored = StoredWalletSnapshot::new(
             "wallet-1".to_string(),
             Some("user-1".to_string()),
@@ -144,6 +146,7 @@ mod tests {
         .expect("wallet should build");
 
         let decision = map_wallet_snapshot(&stored).access_decision(false);
+        assert!(!decision.allowed);
         assert_eq!(decision.failure, Some(WalletAccessFailure::BalanceDenied));
         assert_eq!(
             local_rejection_from_wallet_access(&decision),
@@ -192,6 +195,7 @@ mod tests {
 
         let decision = map_wallet_snapshot(&stored).access_decision(true);
 
+        assert!(!decision.allowed);
         assert_eq!(decision.failure, Some(WalletAccessFailure::BalanceDenied));
     }
 
@@ -207,6 +211,7 @@ mod tests {
 
         assert!(!decision.allowed);
         assert_eq!(decision.failure, Some(WalletAccessFailure::BalanceDenied));
+        assert_eq!(decision.remaining, Some(0.0));
         assert_eq!(
             local_rejection_from_wallet_access(&decision),
             Some(GatewayLocalAuthRejection::BalanceDenied {
@@ -231,6 +236,24 @@ mod tests {
         assert!(decision.allowed);
         assert_eq!(decision.failure, None);
         assert_eq!(decision.remaining, Some(4.0));
+    }
+
+    #[tokio::test]
+    async fn exhausted_plan_does_not_allow_an_empty_wallet() {
+        let state = state_with_wallet_and_quota(
+            empty_user_wallet(),
+            Some(quota_availability(10.0, 0.0, false)),
+        );
+        let auth_snapshot = ordinary_user_api_key_snapshot();
+
+        let decision = resolve_wallet_auth_gate(&state, &auth_snapshot)
+            .await
+            .expect("wallet gate should resolve")
+            .expect("wallet gate should return a decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.failure, Some(WalletAccessFailure::BalanceDenied));
+        assert_eq!(decision.remaining, Some(0.0));
     }
 
     #[tokio::test]
@@ -316,6 +339,9 @@ mod tests {
             remaining_usd,
             base_remaining_usd,
             allow_wallet_overage,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         }
     }
 

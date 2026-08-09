@@ -223,6 +223,15 @@ pub(in super::super) async fn enrich_admin_wallet_package_summary(
     } else {
         0.0
     };
+    let spendable_wallet_balance = wallet_balance.max(0.0);
+    let debt_usd = (-wallet_balance).max(0.0);
+    let billing_state = if unlimited {
+        "unlimited"
+    } else if wallet_balance < 0.0 {
+        "in_debt"
+    } else {
+        "active"
+    };
 
     payload["daily_quota"] = json!({
         "has_active": has_active_daily_quota,
@@ -232,11 +241,15 @@ pub(in super::super) async fn enrich_admin_wallet_package_summary(
         "allow_wallet_overage": allow_wallet_overage,
     });
     payload["package_balance"] = json!(round_to(package_balance, 6));
-    payload["wallet_balance"] = json!(round_to(wallet_balance.max(0.0), 6));
+    payload["actual_wallet_balance"] = json!(round_to(wallet_balance, 6));
+    payload["spendable_wallet_balance"] = json!(round_to(spendable_wallet_balance, 6));
+    payload["debt_usd"] = json!(round_to(debt_usd, 6));
+    payload["billing_state"] = json!(billing_state);
+    payload["wallet_balance"] = json!(round_to(wallet_balance, 6));
     payload["total_available_balance"] = if unlimited {
         serde_json::Value::Null
     } else {
-        json!(round_to((wallet_balance + package_balance).max(0.0), 6))
+        json!(round_to(spendable_wallet_balance + package_balance, 6))
     };
     payload["deduction_order"] = json!([
         "package_daily_quota",

@@ -5,7 +5,7 @@ use sqlx::{mysql::MySqlRow, Row};
 use super::memory::WalletReadSeed;
 use super::plan_overrides::{
     admin_grant_expires_at_unix_secs, admin_grant_starts_at_unix_secs,
-    entitlements_with_admin_grant_overrides,
+    entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
     redeem_code_credits_recharge_balance, redeem_code_payment_method, redeem_code_refundable_amount,
@@ -706,7 +706,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'wallet_recharge', 'pending', ?, 
 
         let wallet_row = sqlx::query(
             r#"
-SELECT id, status
+SELECT id, status, balance + gift_balance AS signed_balance
 FROM wallets
 WHERE user_id = ?
 LIMIT 1
@@ -717,8 +717,12 @@ FOR UPDATE
         .fetch_optional(&mut *tx)
         .await
         .map_sql_err()?;
-        let (wallet_id, wallet_status) = if let Some(row) = wallet_row {
-            (get::<String>(&row, "id")?, get::<String>(&row, "status")?)
+        let (wallet_id, wallet_status, signed_balance) = if let Some(row) = wallet_row {
+            (
+                get::<String>(&row, "id")?,
+                get::<String>(&row, "status")?,
+                get::<f64>(&row, "signed_balance")?,
+            )
         } else {
             let wallet_id = input
                 .preferred_wallet_id
@@ -741,11 +745,37 @@ VALUES (?, ?, 0, 0, 'finite', 'USD', 'active', 0, 0, 0, 0, ?, ?)
             .execute(&mut *tx)
             .await
             .map_sql_err()?;
-            (wallet_id, "active".to_string())
+            (wallet_id, "active".to_string(), 0.0)
         };
         if wallet_status != "active" {
             tx.commit().await.map_sql_err()?;
             return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
+        }
+        if input.payment_method != "admin_grant" && signed_balance < 0.0 {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::WalletInDebt);
+        }
+
+        let requested_starts_at = plan_starts_at_unix(&input.product_snapshot, now);
+        let requested_expires_at =
+            plan_expires_at_unix(&input.product_snapshot, requested_starts_at);
+        if has_other_overlapping_plan_mysql(
+            &mut tx,
+            &input.user_id,
+            &input.product_id,
+            requested_starts_at,
+            requested_expires_at,
+        )
+        .await?
+        {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
+        }
+        if has_pending_other_plan_purchase_mysql(&mut tx, &input.user_id, &input.product_id, now)
+            .await?
+        {
+            tx.commit().await.map_sql_err()?;
+            return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
         }
 
         let purchase_limit_scope = plan_purchase_limit_scope(&input.product_snapshot);
@@ -1272,11 +1302,51 @@ VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'received', ?, NULL, ?, NULL)
             .map_sql_err()?;
             if existing_entitlement_id.is_none() {
                 lock_plan_renewal_scope_mysql(&mut tx, &order_wallet_id).await?;
+                if plan_purchase_wallet_in_debt_mysql(
+                    &mut tx,
+                    &order_wallet_id,
+                    &order_payment_method,
+                )
+                .await?
+                {
+                    update_mysql_payment_callback_failure(
+                        &mut tx,
+                        &callback_id,
+                        &input,
+                        &payload,
+                        "wallet is in debt",
+                    )
+                    .await?;
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(ProcessPaymentCallbackOutcome::Failed {
+                        duplicate,
+                        error: "wallet is in debt".to_string(),
+                    });
+                }
                 let requested_starts_at = plan_starts_at_unix(&snapshot, now);
                 let starts_at =
                     plan_renewal_starts_at_mysql(&mut tx, &user_id, &plan_id, requested_starts_at)
                         .await?;
                 let expires_at = plan_expires_at_unix(&snapshot, starts_at);
+                if has_other_overlapping_plan_mysql(
+                    &mut tx, &user_id, &plan_id, starts_at, expires_at,
+                )
+                .await?
+                {
+                    update_mysql_payment_callback_failure(
+                        &mut tx,
+                        &callback_id,
+                        &input,
+                        &payload,
+                        "another plan overlaps this entitlement",
+                    )
+                    .await?;
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(ProcessPaymentCallbackOutcome::Failed {
+                        duplicate,
+                        error: "another plan overlaps this entitlement".to_string(),
+                    });
+                }
                 let entitlements = plan_entitlements_snapshot(&snapshot);
                 let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                 if purchase_limit_scope != "unlimited" {
@@ -1315,6 +1385,7 @@ WHERE user_id = ?
                         });
                     }
                 }
+                let entitlement_id = uuid::Uuid::new_v4().to_string();
                 sqlx::query(
                     r#"
 INSERT INTO user_plan_entitlements (
@@ -1324,7 +1395,7 @@ INSERT INTO user_plan_entitlements (
 VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                     "#,
                 )
-                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&entitlement_id)
                 .bind(&user_id)
                 .bind(&plan_id)
                 .bind(&order_id)
@@ -1339,6 +1410,13 @@ VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                 .execute(&mut *tx)
                 .await
                 .map_sql_err()?;
+                save_entitlement_providers_mysql(
+                    &mut tx,
+                    &entitlement_id,
+                    &plan_provider_ids_snapshot(&snapshot),
+                    now,
+                )
+                .await?;
                 apply_plan_wallet_credit_mysql(
                     &mut tx,
                     &order_wallet_id,
@@ -2429,11 +2507,33 @@ WHERE id = ? AND wallet_id = ?
             .map_sql_err()?;
             if existing_entitlement_id.is_none() {
                 lock_plan_renewal_scope_mysql(&mut tx, &order.wallet_id).await?;
+                if plan_purchase_wallet_in_debt_mysql(
+                    &mut tx,
+                    &order.wallet_id,
+                    &order.payment_method,
+                )
+                .await?
+                {
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(WalletMutationOutcome::Invalid(
+                        "wallet is in debt".to_string(),
+                    ));
+                }
                 let requested_starts_at = plan_starts_at_unix(&snapshot, now);
                 let starts_at =
                     plan_renewal_starts_at_mysql(&mut tx, &user_id, &plan_id, requested_starts_at)
                         .await?;
                 let expires_at = plan_expires_at_unix(&snapshot, starts_at);
+                if has_other_overlapping_plan_mysql(
+                    &mut tx, &user_id, &plan_id, starts_at, expires_at,
+                )
+                .await?
+                {
+                    tx.commit().await.map_sql_err()?;
+                    return Ok(WalletMutationOutcome::Invalid(
+                        "another plan overlaps this entitlement".to_string(),
+                    ));
+                }
                 let entitlements = plan_entitlements_snapshot(&snapshot);
                 let purchase_limit_scope = plan_purchase_limit_scope(&snapshot);
                 if purchase_limit_scope != "unlimited" {
@@ -2463,6 +2563,7 @@ WHERE user_id = ?
                         ));
                     }
                 }
+                let entitlement_id = uuid::Uuid::new_v4().to_string();
                 sqlx::query(
                     r#"
 INSERT INTO user_plan_entitlements (
@@ -2472,7 +2573,7 @@ INSERT INTO user_plan_entitlements (
 VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                     "#,
                 )
-                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&entitlement_id)
                 .bind(&user_id)
                 .bind(&plan_id)
                 .bind(&input.order_id)
@@ -2487,6 +2588,13 @@ VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                 .execute(&mut *tx)
                 .await
                 .map_sql_err()?;
+                save_entitlement_providers_mysql(
+                    &mut tx,
+                    &entitlement_id,
+                    &plan_provider_ids_snapshot(&snapshot),
+                    now,
+                )
+                .await?;
                 apply_plan_wallet_credit_mysql(
                     &mut tx,
                     &order.wallet_id,
@@ -3273,6 +3381,108 @@ async fn lock_plan_renewal_scope_mysql(
         .await
         .map_sql_err()?;
     Ok(())
+}
+
+async fn has_other_overlapping_plan_mysql(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    user_id: &str,
+    plan_id: &str,
+    starts_at: i64,
+    expires_at: i64,
+) -> Result<bool, DataLayerError> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM user_plan_entitlements
+WHERE user_id = ?
+  AND plan_id <> ?
+  AND status = 'active'
+  AND starts_at < ?
+  AND expires_at > ?
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(expires_at)
+    .bind(starts_at)
+    .fetch_one(&mut **tx)
+    .await
+    .map_sql_err()?;
+    Ok(count > 0)
+}
+
+async fn has_pending_other_plan_purchase_mysql(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    user_id: &str,
+    plan_id: &str,
+    now: i64,
+) -> Result<bool, DataLayerError> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM payment_orders
+WHERE user_id = ?
+  AND order_kind = 'plan_purchase'
+  AND product_id <> ?
+  AND status = 'pending'
+  AND expires_at > ?
+        "#,
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .bind(now)
+    .fetch_one(&mut **tx)
+    .await
+    .map_sql_err()?;
+    Ok(count > 0)
+}
+
+async fn save_entitlement_providers_mysql(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    entitlement_id: &str,
+    provider_ids: &[String],
+    now: i64,
+) -> Result<(), DataLayerError> {
+    for provider_id in provider_ids {
+        sqlx::query(
+            r#"
+INSERT IGNORE INTO user_entitlement_providers (
+  user_entitlement_id, provider_id, created_at
+)
+VALUES (?, ?, ?)
+            "#,
+        )
+        .bind(entitlement_id)
+        .bind(provider_id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_sql_err()?;
+    }
+    Ok(())
+}
+
+async fn plan_purchase_wallet_in_debt_mysql(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    wallet_id: &str,
+    payment_method: &str,
+) -> Result<bool, DataLayerError> {
+    if payment_method == "admin_grant" {
+        return Ok(false);
+    }
+    let Some(signed_balance) = sqlx::query_scalar::<_, f64>(
+        "SELECT CAST(balance + gift_balance AS DOUBLE) FROM wallets WHERE id = ? LIMIT 1 FOR UPDATE",
+    )
+    .bind(wallet_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_sql_err()?
+    else {
+        return Err(DataLayerError::UnexpectedValue(
+            "wallet not found for plan fulfillment".to_string(),
+        ));
+    };
+    Ok(signed_balance < 0.0)
 }
 
 async fn plan_renewal_starts_at_mysql(

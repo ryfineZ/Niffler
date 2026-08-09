@@ -1007,7 +1007,12 @@ const accentClasses = computed(() => {
 const isApiKeyWallet = computed(() => localWallet.value?.owner_type === 'api_key')
 const dailyQuota = computed(() => localWallet.value?.daily_quota ?? null)
 const packageBalanceAmount = computed(() => toFiniteNumber(localWallet.value?.package_balance, 0))
-const walletBalanceAmount = computed(() => toFiniteNumber(localWallet.value?.wallet_balance ?? localWallet.value?.balance, 0))
+const walletBalanceAmount = computed(() => toFiniteNumber(
+  localWallet.value?.actual_wallet_balance
+    ?? localWallet.value?.wallet_balance
+    ?? localWallet.value?.balance,
+  0,
+))
 const totalAvailableAmount = computed(() => {
   if (!localWallet.value) return 0
   if (localWallet.value.unlimited || localWallet.value.total_available_balance === null) return null

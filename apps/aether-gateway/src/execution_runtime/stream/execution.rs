@@ -956,7 +956,7 @@ pub(crate) async fn execute_execution_runtime_stream(
     mut report_context: Option<serde_json::Value>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let stream_started_at = Instant::now();
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await?;
     seed_kiro_report_context_input_tokens(&plan, &mut report_context);
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
     let request_candidate_status_snapshot =

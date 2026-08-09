@@ -163,6 +163,7 @@ fn sample_billing_plan(plan_id: &str) -> BillingPlanRecord {
         sort_order: 0,
         max_active_per_user: 1,
         purchase_limit_scope: "same_entitlement_type".to_string(),
+        allowed_provider_ids: vec!["provider-test".to_string()],
         entitlements_json: json!([{
             "type": "daily_quota",
             "daily_quota_usd": 100.0
@@ -185,6 +186,7 @@ fn sample_user_plan_entitlement(
         status: "active".to_string(),
         starts_at_unix_secs: 1_711_000_000,
         expires_at_unix_secs: 4_102_444_800,
+        allowed_provider_ids: vec!["provider-test".to_string()],
         entitlements_snapshot: json!([{
             "type": "daily_quota",
             "daily_quota_usd": 100.0
@@ -297,10 +299,13 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
             sample_admin_export_user_with("user", false, "user-3", "carol@example.com", "carol"),
         ]),
     );
+    let mut indebted_wallet = sample_admin_wallet("user-3", "monthly");
+    indebted_wallet.balance = -626.71;
+    indebted_wallet.gift_balance = 0.0;
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![
         sample_admin_wallet("user-1", "unlimited"),
         sample_admin_wallet("user-2", "monthly"),
-        sample_admin_wallet("user-3", "monthly"),
+        indebted_wallet,
     ]));
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![
         sample_usage_row(
@@ -402,6 +407,10 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
     assert_eq!(search_items.len(), 1);
     assert_eq!(search_items[0]["id"], "user-3");
     assert_eq!(search_items[0]["email"], "carol@example.com");
+    assert_eq!(search_items[0]["wallet"]["actual_wallet_balance"], -626.71);
+    assert_eq!(search_items[0]["wallet"]["spendable_wallet_balance"], 0.0);
+    assert_eq!(search_items[0]["wallet"]["debt_usd"], 626.71);
+    assert_eq!(search_items[0]["wallet"]["billing_state"], "in_debt");
 
     let id_search_response = reqwest::Client::new()
         .get(format!(
@@ -539,6 +548,15 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
                 "plan-1",
             )]),
     );
+    let provider_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![sample_provider_catalog_provider(
+            "provider-test",
+            "套餐供应商",
+            true,
+        )],
+        Vec::new(),
+        Vec::new(),
+    ));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
@@ -546,6 +564,7 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
             .expect("gateway should build")
             .with_data_state_for_tests(
                 GatewayDataState::with_billing_reader_for_tests(billing_repository)
+                    .with_provider_catalog_reader(provider_repository)
                     .with_user_reader(user_repository),
             ),
     );
@@ -563,7 +582,8 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
         .json(&json!({
             "starts_at": "2024-03-10T00:00:00Z",
             "expires_at": "2100-01-01T00:00:00Z",
-            "initial_remaining_quota_usd": 80.0
+            "initial_remaining_quota_usd": 80.0,
+            "allowed_provider_ids": ["provider-test"]
         }))
         .send()
         .await
@@ -577,6 +597,10 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
     assert_eq!(
         update_payload["updated"]["entitlements"][0]["daily_quota_usd"],
         80.0
+    );
+    assert_eq!(
+        update_payload["updated"]["allowed_provider_ids"],
+        json!(["provider-test"])
     );
 
     let cancel_response = client

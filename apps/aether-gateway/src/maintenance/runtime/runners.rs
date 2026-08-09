@@ -18,8 +18,8 @@ use super::{
     perform_stats_aggregation_once, perform_stats_hourly_aggregation_once,
     perform_usage_cleanup_once, perform_wallet_daily_usage_aggregation_once,
     record_admin_cleanup_run, record_completed_cleanup_run, record_failed_cleanup_run,
-    record_proxy_upgrade_traffic_success, summarize_database_pool, AdminCleanupRunRecord,
-    ManualUsageCleanupOptions,
+    record_proxy_upgrade_traffic_success, retry_pending_usage_settlements_once,
+    summarize_database_pool, AdminCleanupRunRecord, ManualUsageCleanupOptions,
 };
 
 pub(super) async fn run_audit_cleanup_once(data: &GatewayDataState) -> Result<(), DataLayerError> {
@@ -660,15 +660,22 @@ pub(super) fn run_pool_monitor_once(data: &GatewayDataState) {
 pub(super) async fn run_pending_cleanup_once(
     data: &GatewayDataState,
 ) -> Result<(), DataLayerError> {
+    let settlement_summary = retry_pending_usage_settlements_once(data).await?;
     let summary = cleanup_stale_pending_requests_once(data).await?;
-    if summary.failed > 0 || summary.recovered > 0 {
+    if settlement_summary.settled > 0
+        || settlement_summary.failed > 0
+        || summary.failed > 0
+        || summary.recovered > 0
+    {
         info!(
             event_name = "pending_cleanup_completed",
             log_type = "ops",
             worker = "pending_cleanup",
+            settlements_retried = settlement_summary.settled,
+            settlements_failed = settlement_summary.failed,
             failed = summary.failed,
             recovered = summary.recovered,
-            "gateway cleaned stale pending and streaming requests"
+            "gateway retried pending billing and cleaned stale pending requests"
         );
     }
     Ok(())
