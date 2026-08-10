@@ -4,11 +4,11 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 
 use super::types::{
-    redeem_code_credits_recharge_balance, redeem_code_payment_method,
-    redeem_code_refundable_amount, AdjustWalletBalanceInput, AdminPaymentOrderListQuery,
-    AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery, AdminWalletLedgerQuery,
-    AdminWalletListQuery, AdminWalletRefundRequestListQuery, CancelPaymentOrderInput,
-    CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
+    plan_purchase_payment_amounts, redeem_code_credits_recharge_balance,
+    redeem_code_payment_method, redeem_code_refundable_amount, AdjustWalletBalanceInput,
+    AdminPaymentOrderListQuery, AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery,
+    AdminWalletLedgerQuery, AdminWalletListQuery, AdminWalletRefundRequestListQuery,
+    CancelPaymentOrderInput, CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
     CreateAdminRedeemCodeBatchResult, CreateManualWalletRechargeInput,
     CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome, CreateWalletRechargeOrderInput,
     CreateWalletRechargeOrderOutcome, CreateWalletRefundRequestInput,
@@ -978,6 +978,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             wallet_id,
             user_id: Some(input.user_id),
             amount_usd: input.amount_usd,
+            debt_repayment_usd: 0.0,
             pay_amount: input.pay_amount,
             pay_currency: input.pay_currency,
             exchange_rate: input.exchange_rate,
@@ -1010,7 +1011,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
         &self,
         input: CreatePlanPurchaseOrderInput,
     ) -> Result<CreatePlanPurchaseOrderOutcome, DataLayerError> {
-        let wallet_id = {
+        let (wallet_id, payment_amounts) = {
             let wallets = self.wallets_by_id.read().expect("wallet repo lock");
             let Some(wallet) = wallets
                 .values()
@@ -1021,10 +1022,9 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             if wallet.status != "active" {
                 return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
             }
-            if input.payment_method != "admin_grant" && wallet.balance + wallet.gift_balance < 0.0 {
-                return Ok(CreatePlanPurchaseOrderOutcome::WalletInDebt);
-            }
-            wallet.id.clone()
+            let payment_amounts =
+                plan_purchase_payment_amounts(&input, wallet.balance + wallet.gift_balance)?;
+            (wallet.id.clone(), payment_amounts)
         };
         let now_secs = current_unix_secs();
         let has_pending_other_plan = self
@@ -1123,8 +1123,9 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             order_no: input.order_no,
             wallet_id,
             user_id: Some(input.user_id),
-            amount_usd: input.amount_usd,
-            pay_amount: Some(input.pay_amount),
+            amount_usd: payment_amounts.amount_usd,
+            debt_repayment_usd: payment_amounts.debt_repayment_usd,
+            pay_amount: Some(payment_amounts.pay_amount),
             pay_currency: Some(input.pay_currency),
             exchange_rate: Some(input.exchange_rate),
             refunded_amount_usd: 0.0,
@@ -1738,6 +1739,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             wallet_id: wallet.id.clone(),
             user_id: Some(input.user_id.clone()),
             amount_usd,
+            debt_repayment_usd: 0.0,
             pay_amount: None,
             pay_currency: None,
             exchange_rate: None,
@@ -1929,6 +1931,7 @@ mod tests {
             wallet_id: "wallet-1".to_string(),
             user_id: user_id.map(str::to_string),
             amount_usd: 10.0,
+            debt_repayment_usd: 0.0,
             pay_amount: None,
             pay_currency: None,
             exchange_rate: None,
@@ -2169,7 +2172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn negative_wallet_blocks_user_plan_purchase_but_not_admin_grant() {
+    async fn negative_wallet_plan_purchase_includes_debt_but_admin_grant_does_not() {
         let negative_wallet = StoredWalletSnapshot::new(
             "wallet-debt".to_string(),
             Some("user-debt".to_string()),
@@ -2213,7 +2216,11 @@ mod tests {
             .create_plan_purchase_order(build_input("alipay", "purchase"))
             .await
             .expect("purchase should resolve");
-        assert_eq!(purchase, CreatePlanPurchaseOrderOutcome::WalletInDebt);
+        let CreatePlanPurchaseOrderOutcome::Created(purchase_order) = purchase else {
+            panic!("debt should be included in the purchase order");
+        };
+        assert_eq!(purchase_order.amount_usd, 4.0);
+        assert_eq!(purchase_order.pay_amount, Some(28.8));
 
         let admin_grant = repository
             .create_plan_purchase_order(build_input("admin_grant", "admin-grant"))

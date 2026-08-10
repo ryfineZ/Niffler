@@ -22,6 +22,76 @@
           {{ t('billing.walletDebtNotice', { amount: formatDebtAmount(walletDebtUsd) }) }}
         </div>
 
+        <Card
+          v-if="latestCheckout"
+          class="border-primary/30 p-4"
+          aria-live="polite"
+        >
+          <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div class="text-sm font-medium">
+                {{ t('billing.latestOrder') }}: <span class="font-mono">{{ latestCheckout.order.order_no }}</span>
+              </div>
+              <dl
+                v-if="latestCheckoutIncludesDebt"
+                class="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-3"
+              >
+                <div>
+                  <dt class="text-xs text-muted-foreground">
+                    {{ t('billing.planPrice') }}
+                  </dt>
+                  <dd class="mt-0.5 tabular-nums">
+                    {{ formatUsd(latestPlanAmountUsd) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-xs text-muted-foreground">
+                    {{ t('billing.walletDebt') }}
+                  </dt>
+                  <dd class="mt-0.5 tabular-nums text-rose-600 dark:text-rose-300">
+                    {{ formatUsd(latestDebtRepaymentUsd) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-xs font-medium text-foreground">
+                    {{ t('billing.totalDue') }}
+                  </dt>
+                  <dd class="mt-0.5 text-base font-semibold tabular-nums">
+                    {{ formatUsd(latestCheckout.order.amount_usd) }}
+                  </dd>
+                </div>
+              </dl>
+              <div
+                v-if="latestCheckoutIncludesDebt"
+                class="mt-2 text-xs leading-5 text-muted-foreground"
+              >
+                {{ t('billing.debtPaymentNotice') }}
+              </div>
+              <div class="mt-1 text-xs text-muted-foreground">
+                {{ t('billing.amountDue') }} {{ latestCheckout.order.pay_amount ?? '-' }} {{ latestCheckout.order.pay_currency || '' }}
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <Button
+                v-if="latestPaymentUrl"
+                variant="outline"
+                class="active:bg-primary/20"
+                @click="openPaymentUrl(latestPaymentUrl)"
+              >
+                {{ latestCheckoutIncludesDebt ? t('billing.proceedToPayment') : t('billing.openPayment') }}
+              </Button>
+              <Button
+                v-if="latestCancelUrl"
+                variant="ghost"
+                class="active:bg-accent/80"
+                @click="cancelLatestCheckout"
+              >
+                {{ t('billing.cancelPayment') }}
+              </Button>
+            </div>
+          </div>
+        </Card>
+
         <CardSection
           :title="t('billing.current')"
           :description="t('billing.currentHint')"
@@ -70,6 +140,7 @@
         </CardSection>
 
         <CardSection
+          v-if="!latestCheckout"
           :title="t('billing.available')"
           :description="t('billing.availableHint')"
         >
@@ -144,25 +215,23 @@
                   </SelectContent>
                 </Select>
                 <Button
-                  class="w-full"
+                  class="w-full active:bg-primary/80"
                   :disabled="
                     checkoutLoadingPlanId === plan.id
                       || paymentOptions.length === 0
                       || !selectedPaymentOption
-                      || walletInDebt
                       || planBlockedByActivePlan(plan)
                   "
                   :title="planPurchaseDisabledReason(plan)"
+                  :aria-busy="checkoutLoadingPlanId === plan.id"
                   @click="checkoutPlan(plan)"
                 >
                   <CreditCard class="mr-2 h-4 w-4" />
                   {{ checkoutLoadingPlanId === plan.id
                     ? t('billing.creating')
-                    : walletInDebt
-                      ? t('billing.walletDebtBuyDisabled')
-                      : planBlockedByActivePlan(plan)
-                        ? t('billing.otherPlanBuyDisabled')
-                        : t('billing.buy') }}
+                    : planBlockedByActivePlan(plan)
+                      ? t('billing.otherPlanBuyDisabled')
+                      : t('billing.buy') }}
                 </Button>
               </div>
             </Card>
@@ -178,38 +247,6 @@
             </div>
           </div>
         </CardSection>
-
-        <Card
-          v-if="latestCheckout"
-          class="p-4"
-        >
-          <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div class="text-sm font-medium">
-                {{ t('billing.latestOrder') }}: <span class="font-mono">{{ latestCheckout.order.order_no }}</span>
-              </div>
-              <div class="mt-1 text-xs text-muted-foreground">
-                {{ t('billing.amountDue') }} {{ latestCheckout.order.pay_amount ?? '-' }} {{ latestCheckout.order.pay_currency || '' }}
-              </div>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <Button
-                v-if="latestPaymentUrl"
-                variant="outline"
-                @click="openPaymentUrl(latestPaymentUrl)"
-              >
-                {{ t('billing.openPayment') }}
-              </Button>
-              <Button
-                v-if="latestCancelUrl"
-                variant="ghost"
-                @click="cancelLatestCheckout"
-              >
-                {{ t('billing.cancelPayment') }}
-              </Button>
-            </div>
-          </div>
-        </Card>
       </template>
     </div>
   </PageContainer>
@@ -325,6 +362,24 @@ const latestCancelUrl = computed(() => {
   return typeof value === 'string' && value ? value : ''
 })
 
+const latestDebtRepaymentUsd = computed(() => {
+  const value = latestCheckout.value?.order.debt_repayment_usd
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+})
+
+const latestCheckoutIncludesDebt = computed(() => latestDebtRepaymentUsd.value > 0)
+
+const latestPlanAmountUsd = computed(() => {
+  const explicit = latestCheckout.value?.order.plan_amount_usd
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) {
+    return Math.max(0, explicit)
+  }
+  const total = latestCheckout.value?.order.amount_usd
+  return typeof total === 'number' && Number.isFinite(total)
+    ? Math.max(0, total - latestDebtRepaymentUsd.value)
+    : 0
+})
+
 watch(paymentOptions, (options) => {
   const keys = options.map(option => option.key)
   if (!keys.includes(selectedPaymentOptionKey.value)) {
@@ -386,10 +441,6 @@ async function loadWalletBalance() {
 }
 
 async function checkoutPlan(plan: BillingPlan) {
-  if (walletInDebt.value) {
-    showError(t('billing.walletDebtBuyDisabled'))
-    return
-  }
   if (planBlockedByActivePlan(plan)) {
     showError(t('billing.otherPlanBuyDisabled'))
     return
@@ -412,7 +463,10 @@ async function checkoutPlan(plan: BillingPlan) {
     })
     latestCheckout.value = response
     success(t('billing.orderCreated'))
-    submitPaymentInstructions(response.payment_instructions)
+    const debtRepaymentUsd = response.order.debt_repayment_usd
+    if (!(typeof debtRepaymentUsd === 'number' && debtRepaymentUsd > 0)) {
+      submitPaymentInstructions(response.payment_instructions)
+    }
   } catch (err) {
     log.error('创建套餐订单失败:', err)
     showError(parseApiError(err, t('billing.createOrderFailed')))
@@ -426,12 +480,15 @@ function planBlockedByActivePlan(plan: BillingPlan): boolean {
 }
 
 function planPurchaseDisabledReason(plan: BillingPlan): string | undefined {
-  if (walletInDebt.value) return t('billing.walletDebtBuyDisabled')
   if (planBlockedByActivePlan(plan)) return t('billing.otherPlanBuyDisabled')
   return undefined
 }
 
 function formatDebtAmount(value: number): string {
+  return formatUsd(value)
+}
+
+function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`
 }
 

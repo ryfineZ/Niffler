@@ -2146,6 +2146,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260801190000,
             20260804120000,
             20260809130000,
+            20260810180000,
         ]
     );
     assert_eq!(
@@ -2186,6 +2187,7 @@ fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
             20260801190000,
             20260804120000,
             20260809130000,
+            20260810180000,
         ]
     );
 }
@@ -2660,6 +2662,7 @@ fn embedded_postgres_manifest_contains_latest_production_migrations() {
     assert!(versions.contains(&20260723120000));
     assert!(versions.contains(&20260723121000));
     assert!(versions.contains(&20260723122000));
+    assert!(versions.contains(&20260810180000));
     assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
@@ -2743,6 +2746,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260801190000,
             20260804120000,
             20260809130000,
+            20260810180000,
         ]
     );
 }
@@ -2788,6 +2792,7 @@ fn pending_migrations_from_applied_after_empty_database_snapshot_stamp_returns_p
             20260801190000,
             20260804120000,
             20260809130000,
+            20260810180000,
         ],
         "empty database snapshot-stamped databases should run only post-snapshot incrementals on first startup"
     );
@@ -3213,5 +3218,25 @@ fn billing_overdraft_root_fix_migrations_define_provider_scopes_and_admissions()
         assert!(migration.contains("wallet_overage_allowed"));
         assert!(migration.contains("entitlement_provider_scopes"));
         assert!(!migration.contains("selected_provider_id"));
+    }
+}
+
+#[test]
+fn plan_purchase_debt_repayment_migrations_add_a_non_null_zero_default() {
+    let postgres = include_str!(
+        "../../../migrations/postgres/20260810180000_add_plan_purchase_debt_repayment.sql"
+    );
+    let mysql = include_str!(
+        "../../../migrations/mysql/20260810180000_add_plan_purchase_debt_repayment.sql"
+    );
+    let sqlite = include_str!(
+        "../../../migrations/sqlite/20260810180000_add_plan_purchase_debt_repayment.sql"
+    );
+
+    for migration in [postgres, mysql, sqlite] {
+        assert!(migration.contains("debt_repayment_usd"));
+        assert!(migration
+            .to_ascii_uppercase()
+            .contains("NOT NULL DEFAULT 0"));
     }
 }

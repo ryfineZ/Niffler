@@ -365,6 +365,7 @@ pub struct StoredAdminPaymentOrder {
     pub wallet_id: String,
     pub user_id: Option<String>,
     pub amount_usd: f64,
+    pub debt_repayment_usd: f64,
     pub pay_amount: Option<f64>,
     pub pay_currency: Option<String>,
     pub exchange_rate: Option<f64>,
@@ -394,6 +395,7 @@ pub struct AdminWalletPaymentOrderRecord {
     pub wallet_id: String,
     pub user_id: Option<String>,
     pub amount_usd: f64,
+    pub debt_repayment_usd: f64,
     pub pay_amount: Option<f64>,
     pub pay_currency: Option<String>,
     pub exchange_rate: Option<f64>,
@@ -659,12 +661,61 @@ pub struct CreatePlanPurchaseOrderInput {
     pub expires_at_unix_secs: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlanPurchasePaymentAmounts {
+    pub amount_usd: f64,
+    pub debt_repayment_usd: f64,
+    pub pay_amount: f64,
+}
+
+pub(crate) fn plan_purchase_payment_amounts(
+    input: &CreatePlanPurchaseOrderInput,
+    signed_wallet_balance: f64,
+) -> Result<PlanPurchasePaymentAmounts, crate::DataLayerError> {
+    if !input.amount_usd.is_finite()
+        || input.amount_usd < 0.0
+        || !input.pay_amount.is_finite()
+        || input.pay_amount < 0.0
+        || !input.exchange_rate.is_finite()
+        || input.exchange_rate <= 0.0
+        || !signed_wallet_balance.is_finite()
+    {
+        return Err(crate::DataLayerError::InvalidInput(
+            "plan purchase payment amount is invalid".to_string(),
+        ));
+    }
+    let round = |value: f64, scale: f64| (value * scale).round() / scale;
+    let debt_repayment_usd = if input.payment_method == "admin_grant" {
+        0.0
+    } else {
+        round((-signed_wallet_balance).max(0.0), 100_000_000.0)
+    };
+    let debt_pay_amount = if input.pay_currency.eq_ignore_ascii_case("USD") {
+        debt_repayment_usd
+    } else {
+        debt_repayment_usd * input.exchange_rate
+    };
+    let amounts = PlanPurchasePaymentAmounts {
+        amount_usd: round(input.amount_usd + debt_repayment_usd, 100_000_000.0),
+        debt_repayment_usd,
+        pay_amount: round(input.pay_amount + debt_pay_amount, 100.0),
+    };
+    if !amounts.amount_usd.is_finite()
+        || !amounts.debt_repayment_usd.is_finite()
+        || !amounts.pay_amount.is_finite()
+    {
+        return Err(crate::DataLayerError::InvalidInput(
+            "plan purchase payment amount is invalid".to_string(),
+        ));
+    }
+    Ok(amounts)
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum CreatePlanPurchaseOrderOutcome {
     Created(StoredAdminPaymentOrder),
     WalletInactive,
-    WalletInDebt,
     OverlappingPlanExists,
     ActivePlanLimitReached,
 }

@@ -428,6 +428,7 @@ fn admin_payment_order_payload(record: &crate::AdminWalletPaymentOrderRecord) ->
         "wallet_id": record.wallet_id,
         "user_id": record.user_id,
         "amount_usd": record.amount_usd,
+        "debt_repayment_usd": record.debt_repayment_usd,
         "pay_amount": record.pay_amount,
         "pay_currency": record.pay_currency,
         "exchange_rate": record.exchange_rate,
@@ -779,11 +780,6 @@ pub(in super::super) async fn build_admin_grant_user_billing_plan_response(
         aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::WalletInactive => {
             return Ok(build_admin_users_bad_request_response(
                 "wallet is not active",
-            ));
-        }
-        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::WalletInDebt => {
-            return Ok(build_admin_users_bad_request_response(
-                "钱包欠费，用户不能购买套餐；管理员赠送请使用后台发放",
             ));
         }
         aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {

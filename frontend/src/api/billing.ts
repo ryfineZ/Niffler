@@ -137,6 +137,8 @@ export interface BillingCheckoutResponse {
     order_kind?: string
     product_id?: string | null
     product?: BillingPlan | null
+    plan_amount_usd?: number
+    debt_repayment_usd: number
   }
   payment_instructions: Record<string, unknown>
 }

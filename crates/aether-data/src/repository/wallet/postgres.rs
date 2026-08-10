@@ -9,11 +9,11 @@ use super::plan_overrides::{
     entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
-    redeem_code_credits_recharge_balance, redeem_code_payment_method,
-    redeem_code_refundable_amount, AdjustWalletBalanceInput, AdminPaymentOrderListQuery,
-    AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery, AdminWalletLedgerQuery,
-    AdminWalletListQuery, AdminWalletRefundRequestListQuery, CancelPaymentOrderInput,
-    CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
+    plan_purchase_payment_amounts, redeem_code_credits_recharge_balance,
+    redeem_code_payment_method, redeem_code_refundable_amount, AdjustWalletBalanceInput,
+    AdminPaymentOrderListQuery, AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery,
+    AdminWalletLedgerQuery, AdminWalletListQuery, AdminWalletRefundRequestListQuery,
+    CancelPaymentOrderInput, CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
     CreateAdminRedeemCodeBatchResult, CreateManualWalletRechargeInput,
     CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome, CreateWalletRechargeOrderInput,
     CreateWalletRechargeOrderOutcome, CreateWalletRefundRequestInput,
@@ -104,6 +104,7 @@ const ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS: &str = r#"
   wallet_id,
   user_id,
   CAST(amount_usd AS DOUBLE PRECISION) AS amount_usd,
+  CAST(debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(pay_amount AS DOUBLE PRECISION) AS pay_amount,
   pay_currency,
   CAST(exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
@@ -1663,9 +1664,7 @@ RETURNING id, status, CAST(balance + gift_balance AS DOUBLE PRECISION) AS signed
                         return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
                     }
                     let signed_balance: f64 = row_get(&wallet_row, "signed_balance")?;
-                    if input.payment_method != "admin_grant" && signed_balance < 0.0 {
-                        return Ok(CreatePlanPurchaseOrderOutcome::WalletInDebt);
-                    }
+                    let payment_amounts = plan_purchase_payment_amounts(&input, signed_balance)?;
 
                     let requested_starts_at = plan_starts_at(&input.product_snapshot, Utc::now());
                     let requested_expires_at =
@@ -1746,6 +1745,7 @@ INSERT INTO payment_orders (
   wallet_id,
   user_id,
   amount_usd,
+  debt_repayment_usd,
   pay_amount,
   pay_currency,
   exchange_rate,
@@ -1765,9 +1765,9 @@ INSERT INTO payment_orders (
   expires_at
 )
 VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9, $10, $11,
-  'plan_purchase', $12, $13, 'pending', $14, $15, 'pending', NOW(),
-  to_timestamp($16)
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, $10, $11, $12,
+  'plan_purchase', $13, $14, 'pending', $15, $16, 'pending', NOW(),
+  to_timestamp($17)
 )
 RETURNING
 {ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS}
@@ -1778,8 +1778,9 @@ RETURNING
                         .bind(&input.order_no)
                         .bind(&wallet_id)
                         .bind(&input.user_id)
-                        .bind(input.amount_usd)
-                        .bind(input.pay_amount)
+                        .bind(payment_amounts.amount_usd)
+                        .bind(payment_amounts.debt_repayment_usd)
+                        .bind(payment_amounts.pay_amount)
                         .bind(&input.pay_currency)
                         .bind(input.exchange_rate)
                         .bind(&input.payment_method)
@@ -2215,6 +2216,7 @@ FOR UPDATE
                     let now = Utc::now();
                     let order_kind: String = row_get(&order_row, "order_kind")?;
                     let order_amount_usd: f64 = row_get(&order_row, "amount_usd")?;
+                    let order_debt_repayment_usd: f64 = row_get(&order_row, "debt_repayment_usd")?;
                     let order_pay_amount: Option<f64> = row_get(&order_row, "pay_amount")?;
                     let order_status: String = row_get(&order_row, "status")?;
                     let expires_at_unix_secs: Option<i64> =
@@ -2378,25 +2380,6 @@ LIMIT 1
                         .map_postgres_err()?;
                         if existing_entitlement_id.is_none() {
                             lock_plan_renewal_scope_postgres(tx, &order_wallet_id).await?;
-                            if plan_purchase_wallet_in_debt_postgres(
-                                tx,
-                                &order_wallet_id,
-                                &order_payment_method,
-                            )
-                            .await?
-                            {
-                                update_payment_callback_failure(
-                                    tx,
-                                    &callback_id,
-                                    &input,
-                                    "wallet is in debt",
-                                )
-                                .await?;
-                                return Ok(ProcessPaymentCallbackOutcome::Failed {
-                                    duplicate,
-                                    error: "wallet is in debt".to_string(),
-                                });
-                            }
                             let requested_starts_at = plan_starts_at(&snapshot, now);
                             let starts_at = plan_renewal_starts_at_postgres(
                                 tx,
@@ -2459,6 +2442,14 @@ WHERE user_id = $1
                                     });
                                 }
                             }
+                            apply_plan_debt_repayment_postgres(
+                                tx,
+                                &order_wallet_id,
+                                &order_id,
+                                &order_payment_method,
+                                order_debt_repayment_usd,
+                            )
+                            .await?;
                             let entitlement_id = Uuid::new_v4().to_string();
                             sqlx::query(
                                 r#"
@@ -4223,17 +4214,6 @@ LIMIT 1
                         .map_postgres_err()?;
                         if existing_entitlement_id.is_none() {
                             lock_plan_renewal_scope_postgres(tx, &order.wallet_id).await?;
-                            if plan_purchase_wallet_in_debt_postgres(
-                                tx,
-                                &order.wallet_id,
-                                &order.payment_method,
-                            )
-                            .await?
-                            {
-                                return Ok(WalletMutationOutcome::Invalid(
-                                    "wallet is in debt".to_string(),
-                                ));
-                            }
                             let requested_starts_at = plan_starts_at(&snapshot, now);
                             let starts_at = plan_renewal_starts_at_postgres(
                                 tx,
@@ -4280,6 +4260,14 @@ WHERE user_id = $1
                                     ));
                                 }
                             }
+                            apply_plan_debt_repayment_postgres(
+                                tx,
+                                &order.wallet_id,
+                                &input.order_id,
+                                &order.payment_method,
+                                order.debt_repayment_usd,
+                            )
+                            .await?;
                             let entitlement_id = Uuid::new_v4().to_string();
                             sqlx::query(
                                 r#"
@@ -5663,17 +5651,27 @@ ON CONFLICT (user_entitlement_id, provider_id) DO NOTHING
     Ok(())
 }
 
-async fn plan_purchase_wallet_in_debt_postgres(
+async fn apply_plan_debt_repayment_postgres(
     tx: &mut crate::driver::postgres::PostgresTransaction,
     wallet_id: &str,
+    order_id: &str,
     payment_method: &str,
-) -> Result<bool, DataLayerError> {
-    if payment_method == "admin_grant" {
-        return Ok(false);
+    amount_usd: f64,
+) -> Result<(), DataLayerError> {
+    if payment_method == "admin_grant" || amount_usd <= 0.0 {
+        return Ok(());
     }
-    let Some(signed_balance) = sqlx::query_scalar::<_, f64>(
+    if !amount_usd.is_finite() {
+        return Err(DataLayerError::UnexpectedValue(
+            "plan debt repayment amount is invalid".to_string(),
+        ));
+    }
+    let Some(row) = sqlx::query(
         r#"
-SELECT CAST(balance + gift_balance AS DOUBLE PRECISION)
+SELECT
+  status,
+  CAST(balance AS DOUBLE PRECISION) AS balance,
+  CAST(gift_balance AS DOUBLE PRECISION) AS gift_balance
 FROM wallets
 WHERE id = $1
 LIMIT 1
@@ -5686,10 +5684,60 @@ FOR UPDATE
     .map_postgres_err()?
     else {
         return Err(DataLayerError::UnexpectedValue(
-            "wallet not found for plan fulfillment".to_string(),
+            "wallet not found for plan debt repayment".to_string(),
         ));
     };
-    Ok(signed_balance < 0.0)
+    let status: String = row_get(&row, "status")?;
+    if status != "active" {
+        return Err(DataLayerError::UnexpectedValue(
+            "wallet is not active for plan debt repayment".to_string(),
+        ));
+    }
+    let before_recharge: f64 = row_get(&row, "balance")?;
+    let before_gift: f64 = row_get(&row, "gift_balance")?;
+    let before_total = before_recharge + before_gift;
+    let after_recharge = before_recharge + amount_usd;
+    let after_total = after_recharge + before_gift;
+    sqlx::query(
+        r#"
+UPDATE wallets
+SET balance = $2,
+    total_recharged = total_recharged + $3,
+    updated_at = NOW()
+WHERE id = $1
+        "#,
+    )
+    .bind(wallet_id)
+    .bind(after_recharge)
+    .bind(amount_usd)
+    .execute(&mut **tx)
+    .await
+    .map_postgres_err()?;
+    sqlx::query(
+        r#"
+INSERT INTO wallet_transactions (
+  id, wallet_id, category, reason_code, amount, balance_before, balance_after,
+  recharge_balance_before, recharge_balance_after, gift_balance_before,
+  gift_balance_after, link_type, link_id, operator_id, description, created_at
+)
+VALUES ($1, $2, 'recharge', 'plan_debt_repayment', $3, $4, $5, $6, $7, $8, $8,
+        'payment_order', $9, NULL, $10, NOW())
+        "#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(wallet_id)
+    .bind(amount_usd)
+    .bind(before_total)
+    .bind(after_total)
+    .bind(before_recharge)
+    .bind(after_recharge)
+    .bind(before_gift)
+    .bind(order_id)
+    .bind(format!("套餐订单结清欠款({payment_method})"))
+    .execute(&mut **tx)
+    .await
+    .map_postgres_err()?;
+    Ok(())
 }
 
 async fn plan_renewal_starts_at_postgres(
@@ -6277,6 +6325,7 @@ fn map_admin_payment_order_row(row: &PgRow) -> Result<StoredAdminPaymentOrder, D
         wallet_id: row_get(row, "wallet_id")?,
         user_id: row_get(row, "user_id")?,
         amount_usd: row_get(row, "amount_usd")?,
+        debt_repayment_usd: row_get(row, "debt_repayment_usd")?,
         pay_amount: row_get(row, "pay_amount")?,
         pay_currency: row_get(row, "pay_currency")?,
         exchange_rate: row_get(row, "exchange_rate")?,
@@ -6471,6 +6520,12 @@ VALUES ($1, $2, 'gift', 'gift_initial', $3, 0, $3, 0, 0, 0, $3, 'system_task', $
 mod tests {
     use super::{SqlxWalletRepository, ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS};
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
+    use crate::repository::wallet::{
+        CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome,
+        CreateWalletRechargeOrderInput, CreditAdminPaymentOrderInput, WalletMutationOutcome,
+        WalletWriteRepository,
+    };
+    use serde_json::json;
 
     #[tokio::test]
     async fn repository_constructs_from_lazy_pool() {
@@ -6536,6 +6591,7 @@ mod tests {
             "wallet_id",
             "user_id",
             "amount_usd",
+            "debt_repayment_usd",
             "pay_amount",
             "pay_currency",
             "exchange_rate",
@@ -6562,5 +6618,181 @@ mod tests {
                 "payment order projection should include {column}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn postgres_plan_purchase_repays_only_the_recorded_debt_when_url_is_set() {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!("skipping postgres plan debt repayment test because AETHER_TEST_POSTGRES_URL is unset");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let key = &suffix[..24];
+        let user_id = format!("u-debt-{key}");
+        let wallet_id = format!("w-debt-{key}");
+        let plan_id = format!("p-debt-{key}");
+        sqlx::query("INSERT INTO users (id, username, email_verified) VALUES ($1, $2, FALSE)")
+            .bind(&user_id)
+            .bind(format!("plan-debt-{suffix}"))
+            .execute(&pool)
+            .await
+            .expect("user should seed");
+        sqlx::query(
+            r#"
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit, duration_value,
+  max_active_per_user, purchase_limit_scope, entitlements_json, created_at, updated_at
+) VALUES ($1, '欠费回调测试套餐', 1, 'USD', 'month', 1, 1, 'active_period', $2, NOW(), NOW())
+            "#,
+        )
+        .bind(&plan_id)
+        .bind(json!([{"type": "daily_quota", "daily_quota_usd": 10.0}]))
+        .execute(&pool)
+        .await
+        .expect("billing plan should seed");
+
+        let repository = SqlxWalletRepository::new(pool.clone());
+        repository
+            .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
+                preferred_wallet_id: Some(wallet_id.clone()),
+                user_id: user_id.clone(),
+                amount_usd: 1.0,
+                pay_amount: Some(1.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                payment_method: "bootstrap".to_string(),
+                payment_provider: None,
+                payment_channel: None,
+                gateway_order_id: format!("gw-bootstrap-{suffix}"),
+                gateway_response: json!({}),
+                order_no: format!("po-bootstrap-{suffix}"),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("wallet should create");
+        sqlx::query("UPDATE wallets SET balance = -3 WHERE id = $1")
+            .bind(&wallet_id)
+            .execute(&pool)
+            .await
+            .expect("wallet should start in debt");
+
+        let order = match repository
+            .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
+                preferred_wallet_id: None,
+                user_id: user_id.clone(),
+                amount_usd: 1.0,
+                pay_amount: 1.0,
+                pay_currency: "USD".to_string(),
+                exchange_rate: 1.0,
+                payment_method: "epay".to_string(),
+                payment_provider: Some("epay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: format!("gw-plan-{suffix}"),
+                gateway_response: json!({}),
+                order_no: format!("po-plan-{suffix}"),
+                product_id: plan_id.clone(),
+                product_snapshot: json!({
+                    "id": plan_id,
+                    "duration_unit": "month",
+                    "duration_value": 1,
+                    "purchase_limit_scope": "active_period",
+                    "max_active_per_user": 1,
+                    "entitlements": [{"type": "daily_quota", "daily_quota_usd": 10.0}]
+                }),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("plan order should create")
+        {
+            CreatePlanPurchaseOrderOutcome::Created(order) => order,
+            other => panic!("debt should be included in the plan order, got {other:?}"),
+        };
+        assert_eq!(order.amount_usd, 4.0);
+        assert_eq!(order.debt_repayment_usd, 3.0);
+        assert_eq!(order.pay_amount, Some(4.0));
+
+        sqlx::query("UPDATE wallets SET balance = -4 WHERE id = $1")
+            .bind(&wallet_id)
+            .execute(&pool)
+            .await
+            .expect("new usage should add one dollar of debt after checkout");
+        let credit = repository
+            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
+                order_id: order.id.clone(),
+                gateway_order_id: Some(format!("gw-plan-paid-{suffix}")),
+                pay_amount: Some(4.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                gateway_response_patch: None,
+                operator_id: Some("postgres-test".to_string()),
+            })
+            .await
+            .expect("credit should return a business outcome");
+        let WalletMutationOutcome::Applied((credited_order, true)) = credit else {
+            panic!("paid plan order should be fulfilled");
+        };
+        assert_eq!(credited_order.status, "credited");
+
+        let balance: f64 = sqlx::query_scalar(
+            "SELECT CAST(balance + gift_balance AS DOUBLE PRECISION) FROM wallets WHERE id = $1",
+        )
+        .bind(&wallet_id)
+        .fetch_one(&pool)
+        .await
+        .expect("wallet balance should query");
+        assert_eq!(balance, -1.0);
+        let debt_ledger_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM wallet_transactions WHERE wallet_id = $1 AND reason_code = 'plan_debt_repayment' AND link_id = $2",
+        )
+        .bind(&wallet_id)
+        .bind(&order.id)
+        .fetch_one(&pool)
+        .await
+        .expect("debt repayment ledger should query");
+        assert_eq!(debt_ledger_count, 1);
+        let entitlement_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_plan_entitlements WHERE payment_order_id = $1",
+        )
+        .bind(&order.id)
+        .fetch_one(&pool)
+        .await
+        .expect("entitlement should query");
+        assert_eq!(entitlement_count, 1);
+
+        let duplicate = repository
+            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
+                order_id: order.id.clone(),
+                gateway_order_id: Some(format!("gw-plan-paid-{suffix}")),
+                pay_amount: Some(4.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                gateway_response_patch: None,
+                operator_id: Some("postgres-test".to_string()),
+            })
+            .await
+            .expect("duplicate credit should return the existing result");
+        let WalletMutationOutcome::Applied((_order, false)) = duplicate else {
+            panic!("duplicate credit should not apply again");
+        };
+        let balance_after_duplicate: f64 = sqlx::query_scalar(
+            "SELECT CAST(balance + gift_balance AS DOUBLE PRECISION) FROM wallets WHERE id = $1",
+        )
+        .bind(&wallet_id)
+        .fetch_one(&pool)
+        .await
+        .expect("wallet balance should query after duplicate credit");
+        assert_eq!(balance_after_duplicate, -1.0);
     }
 }
