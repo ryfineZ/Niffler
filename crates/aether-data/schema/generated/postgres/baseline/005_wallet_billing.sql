@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS public.payment_orders (
     wallet_id character varying(64) NOT NULL,
     user_id character varying(64),
     amount_usd double precision NOT NULL,
+    debt_repayment_usd numeric DEFAULT 0 NOT NULL,
     pay_amount double precision,
     pay_currency character varying(16),
     exchange_rate double precision,
@@ -234,6 +235,17 @@ CREATE TABLE IF NOT EXISTS public.billing_plans (
 ALTER TABLE ONLY public.billing_plans ADD CONSTRAINT billing_plans_pkey PRIMARY KEY (id);
 CREATE INDEX IF NOT EXISTS idx_billing_plans_enabled_sort ON public.billing_plans USING btree (enabled, sort_order);
 
+CREATE TABLE IF NOT EXISTS public.billing_plan_providers (
+    plan_id character varying(64) NOT NULL,
+    provider_id character varying(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.billing_plan_providers ADD CONSTRAINT billing_plan_providers_pkey PRIMARY KEY (plan_id, provider_id);
+CREATE INDEX IF NOT EXISTS idx_billing_plan_providers_provider ON public.billing_plan_providers USING btree (provider_id, plan_id);
+ALTER TABLE ONLY public.billing_plan_providers ADD CONSTRAINT fk_billing_plan_providers_plan FOREIGN KEY (plan_id) REFERENCES public.billing_plans(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.billing_plan_providers ADD CONSTRAINT fk_billing_plan_providers_provider FOREIGN KEY (provider_id) REFERENCES public.providers(id) ON DELETE RESTRICT;
+
 CREATE TABLE IF NOT EXISTS public.user_plan_entitlements (
     id character varying(64) NOT NULL,
     user_id character varying(64) NOT NULL,
@@ -250,6 +262,44 @@ CREATE TABLE IF NOT EXISTS public.user_plan_entitlements (
 ALTER TABLE ONLY public.user_plan_entitlements ADD CONSTRAINT user_plan_entitlements_pkey PRIMARY KEY (id);
 CREATE INDEX IF NOT EXISTS idx_user_plan_entitlements_user_active ON public.user_plan_entitlements USING btree (user_id, status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_user_plan_entitlements_order ON public.user_plan_entitlements USING btree (payment_order_id);
+
+CREATE TABLE IF NOT EXISTS public.user_entitlement_providers (
+    user_entitlement_id character varying(64) NOT NULL,
+    provider_id character varying(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.user_entitlement_providers ADD CONSTRAINT user_entitlement_providers_pkey PRIMARY KEY (user_entitlement_id, provider_id);
+CREATE INDEX IF NOT EXISTS idx_user_entitlement_providers_provider ON public.user_entitlement_providers USING btree (provider_id, user_entitlement_id);
+ALTER TABLE ONLY public.user_entitlement_providers ADD CONSTRAINT fk_user_entitlement_providers_entitlement FOREIGN KEY (user_entitlement_id) REFERENCES public.user_plan_entitlements(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.user_entitlement_providers ADD CONSTRAINT fk_user_entitlement_providers_provider FOREIGN KEY (provider_id) REFERENCES public.providers(id) ON DELETE RESTRICT;
+
+CREATE TABLE IF NOT EXISTS public.billing_request_admissions (
+    request_id character varying(128) NOT NULL,
+    user_id character varying(64),
+    api_key_id character varying(64),
+    wallet_id character varying(64),
+    global_model_id character varying(64),
+    funding_source character varying(32) NOT NULL,
+    wallet_balance_at_admission numeric(20,8),
+    wallet_payment_allowed boolean DEFAULT false NOT NULL,
+    wallet_overage_allowed boolean DEFAULT false NOT NULL,
+    entitlement_ids jsonb NOT NULL,
+    entitlement_provider_scopes jsonb NOT NULL,
+    allowed_provider_ids jsonb NOT NULL,
+    billing_admitted boolean DEFAULT true NOT NULL,
+    status character varying(32) DEFAULT 'admitted' NOT NULL,
+    rejection_reason text,
+    schema_version smallint DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.billing_request_admissions ADD CONSTRAINT billing_request_admissions_pkey PRIMARY KEY (request_id);
+CREATE INDEX IF NOT EXISTS idx_billing_request_admissions_user_created ON public.billing_request_admissions USING btree (user_id, created_at);
+ALTER TABLE ONLY public.billing_request_admissions ADD CONSTRAINT fk_billing_request_admissions_user FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.billing_request_admissions ADD CONSTRAINT fk_billing_request_admissions_api_key FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.billing_request_admissions ADD CONSTRAINT fk_billing_request_admissions_wallet FOREIGN KEY (wallet_id) REFERENCES public.wallets(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS public.entitlement_usage_ledgers (
     id character varying(64) NOT NULL,
@@ -268,23 +318,6 @@ ALTER TABLE ONLY public.entitlement_usage_ledgers ADD CONSTRAINT uq_entitlement_
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_user_date ON public.entitlement_usage_ledgers USING btree (user_id, usage_date);
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_entitlement_date ON public.entitlement_usage_ledgers USING btree (user_entitlement_id, usage_date);
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_request ON public.entitlement_usage_ledgers USING btree (request_id);
-
-CREATE TABLE IF NOT EXISTS public.entitlement_usage_windows (
-    id character varying(64) NOT NULL,
-    user_entitlement_id character varying(64) NOT NULL,
-    user_id character varying(64) NOT NULL,
-    window_scope character varying(32) NOT NULL,
-    window_key character varying(64) NOT NULL,
-    window_started_at bigint NOT NULL,
-    window_ends_at bigint NOT NULL,
-    used_usd double precision DEFAULT 0 NOT NULL,
-    created_at bigint NOT NULL,
-    updated_at bigint NOT NULL
-);
-
-ALTER TABLE ONLY public.entitlement_usage_windows ADD CONSTRAINT entitlement_usage_windows_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.entitlement_usage_windows ADD CONSTRAINT uq_entitlement_usage_window UNIQUE (user_entitlement_id, window_scope);
-CREATE INDEX IF NOT EXISTS idx_entitlement_usage_windows_user_scope ON public.entitlement_usage_windows USING btree (user_id, window_scope, window_ends_at);
 
 CREATE TABLE IF NOT EXISTS public.refund_requests (
     id character varying(64) NOT NULL,
@@ -323,6 +356,23 @@ CREATE INDEX IF NOT EXISTS ix_refund_requests_payment_order_id ON public.refund_
 CREATE INDEX IF NOT EXISTS ix_refund_requests_requested_by ON public.refund_requests USING btree (requested_by);
 CREATE INDEX IF NOT EXISTS ix_refund_requests_approved_by ON public.refund_requests USING btree (approved_by);
 CREATE INDEX IF NOT EXISTS ix_refund_requests_processed_by ON public.refund_requests USING btree (processed_by);
+
+CREATE TABLE IF NOT EXISTS public.entitlement_usage_windows (
+    id character varying(64) NOT NULL,
+    user_entitlement_id character varying(64) NOT NULL,
+    user_id character varying(64) NOT NULL,
+    window_scope character varying(32) NOT NULL,
+    window_key character varying(64) NOT NULL,
+    window_started_at bigint NOT NULL,
+    window_ends_at bigint NOT NULL,
+    used_usd double precision DEFAULT 0 NOT NULL,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL
+);
+
+ALTER TABLE ONLY public.entitlement_usage_windows ADD CONSTRAINT entitlement_usage_windows_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.entitlement_usage_windows ADD CONSTRAINT uq_entitlement_usage_window UNIQUE (user_entitlement_id, window_scope);
+CREATE INDEX IF NOT EXISTS idx_entitlement_usage_windows_user_scope ON public.entitlement_usage_windows USING btree (user_id, window_scope, window_ends_at);
 
 CREATE TABLE IF NOT EXISTS public.redeem_code_batches (
     id character varying(64) NOT NULL,

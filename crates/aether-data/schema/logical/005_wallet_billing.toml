@@ -304,6 +304,11 @@ name = "amount_usd"
 type = "float64"
 
 [[table.payment_orders.columns]]
+name = "debt_repayment_usd"
+type = "decimal_money"
+default = 0
+
+[[table.payment_orders.columns]]
 name = "pay_amount"
 type = "float64"
 nullable = true
@@ -931,9 +936,47 @@ type = "unix_seconds"
 name = "idx_billing_plans_enabled_sort"
 columns = ["enabled", "sort_order"]
 
-[table.user_plan_entitlements]
+[table.billing_plan_providers]
 domain = "wallet_billing"
 order = 56
+primary_key = ["plan_id", "provider_id"]
+
+[[table.billing_plan_providers.columns]]
+name = "plan_id"
+type = "text_id"
+length = 64
+
+[[table.billing_plan_providers.columns]]
+name = "provider_id"
+type = "text_id"
+length = 64
+
+[[table.billing_plan_providers.columns]]
+name = "created_at"
+type = "timestamp"
+driver = { postgres = { default = { raw = "now()" } } }
+
+[[table.billing_plan_providers.indexes]]
+name = "idx_billing_plan_providers_provider"
+columns = ["provider_id", "plan_id"]
+
+[[table.billing_plan_providers.foreign_keys]]
+name = "fk_billing_plan_providers_plan"
+columns = ["plan_id"]
+references_table = "billing_plans"
+references_columns = ["id"]
+on_delete = "cascade"
+
+[[table.billing_plan_providers.foreign_keys]]
+name = "fk_billing_plan_providers_provider"
+columns = ["provider_id"]
+references_table = "providers"
+references_columns = ["id"]
+on_delete = "restrict"
+
+[table.user_plan_entitlements]
+domain = "wallet_billing"
+order = 57
 primary_key = ["id"]
 
 [[table.user_plan_entitlements.columns]]
@@ -990,9 +1033,171 @@ columns = ["user_id", "status", "expires_at"]
 name = "idx_user_plan_entitlements_order"
 columns = ["payment_order_id"]
 
+[table.user_entitlement_providers]
+domain = "wallet_billing"
+order = 58
+primary_key = ["user_entitlement_id", "provider_id"]
+
+[[table.user_entitlement_providers.columns]]
+name = "user_entitlement_id"
+type = "text_id"
+length = 64
+
+[[table.user_entitlement_providers.columns]]
+name = "provider_id"
+type = "text_id"
+length = 64
+
+[[table.user_entitlement_providers.columns]]
+name = "created_at"
+type = "timestamp"
+driver = { postgres = { default = { raw = "now()" } } }
+
+[[table.user_entitlement_providers.indexes]]
+name = "idx_user_entitlement_providers_provider"
+columns = ["provider_id", "user_entitlement_id"]
+
+[[table.user_entitlement_providers.foreign_keys]]
+name = "fk_user_entitlement_providers_entitlement"
+columns = ["user_entitlement_id"]
+references_table = "user_plan_entitlements"
+references_columns = ["id"]
+on_delete = "cascade"
+
+[[table.user_entitlement_providers.foreign_keys]]
+name = "fk_user_entitlement_providers_provider"
+columns = ["provider_id"]
+references_table = "providers"
+references_columns = ["id"]
+on_delete = "restrict"
+
+[table.billing_request_admissions]
+domain = "wallet_billing"
+order = 59
+primary_key = ["request_id"]
+
+[[table.billing_request_admissions.columns]]
+name = "request_id"
+type = "text"
+length = 128
+
+[[table.billing_request_admissions.columns]]
+name = "user_id"
+type = "text_id"
+length = 64
+nullable = true
+
+[[table.billing_request_admissions.columns]]
+name = "api_key_id"
+type = "text_id"
+length = 64
+nullable = true
+
+[[table.billing_request_admissions.columns]]
+name = "wallet_id"
+type = "text_id"
+length = 64
+nullable = true
+
+[[table.billing_request_admissions.columns]]
+name = "global_model_id"
+type = "text_id"
+length = 64
+nullable = true
+
+[[table.billing_request_admissions.columns]]
+name = "funding_source"
+type = "text"
+length = 32
+
+[[table.billing_request_admissions.columns]]
+name = "wallet_balance_at_admission"
+type = "decimal_money"
+nullable = true
+driver = { postgres = { type = "numeric(20,8)" } }
+
+[[table.billing_request_admissions.columns]]
+name = "wallet_payment_allowed"
+type = "bool"
+default = false
+
+[[table.billing_request_admissions.columns]]
+name = "wallet_overage_allowed"
+type = "bool"
+default = false
+
+[[table.billing_request_admissions.columns]]
+name = "entitlement_ids"
+type = "json"
+
+[[table.billing_request_admissions.columns]]
+name = "entitlement_provider_scopes"
+type = "json"
+
+[[table.billing_request_admissions.columns]]
+name = "allowed_provider_ids"
+type = "json"
+
+[[table.billing_request_admissions.columns]]
+name = "billing_admitted"
+type = "bool"
+default = true
+
+[[table.billing_request_admissions.columns]]
+name = "status"
+type = "text"
+length = 32
+default = "admitted"
+
+[[table.billing_request_admissions.columns]]
+name = "rejection_reason"
+type = "long_text"
+nullable = true
+
+[[table.billing_request_admissions.columns]]
+name = "schema_version"
+type = "int32"
+default = 1
+driver = { postgres = { type = "smallint" }, mysql = { type = "SMALLINT" } }
+
+[[table.billing_request_admissions.columns]]
+name = "created_at"
+type = "timestamp"
+driver = { postgres = { default = { raw = "now()" } } }
+
+[[table.billing_request_admissions.columns]]
+name = "updated_at"
+type = "timestamp"
+driver = { postgres = { default = { raw = "now()" } } }
+
+[[table.billing_request_admissions.indexes]]
+name = "idx_billing_request_admissions_user_created"
+columns = ["user_id", "created_at"]
+
+[[table.billing_request_admissions.foreign_keys]]
+name = "fk_billing_request_admissions_user"
+columns = ["user_id"]
+references_table = "users"
+references_columns = ["id"]
+on_delete = "set_null"
+
+[[table.billing_request_admissions.foreign_keys]]
+name = "fk_billing_request_admissions_api_key"
+columns = ["api_key_id"]
+references_table = "api_keys"
+references_columns = ["id"]
+on_delete = "set_null"
+
+[[table.billing_request_admissions.foreign_keys]]
+name = "fk_billing_request_admissions_wallet"
+columns = ["wallet_id"]
+references_table = "wallets"
+references_columns = ["id"]
+on_delete = "set_null"
+
 [table.entitlement_usage_ledgers]
 domain = "wallet_billing"
-order = 57
+order = 60
 primary_key = ["id"]
 
 [[table.entitlement_usage_ledgers.columns]]
@@ -1054,7 +1259,7 @@ columns = ["request_id"]
 
 [table.entitlement_usage_windows]
 domain = "wallet_billing"
-order = 58
+order = 61
 primary_key = ["id"]
 
 [[table.entitlement_usage_windows.columns]]

@@ -567,7 +567,7 @@ fn is_table_constraint_start(line: &str) -> bool {
     let first = first.trim_end_matches(',').to_ascii_uppercase();
     matches!(
         first.as_str(),
-        "CHECK" | "CONSTRAINT" | "FOREIGN" | "KEY" | "PRIMARY" | "UNIQUE"
+        "CHECK" | "CONSTRAINT" | "FOREIGN" | "KEY" | "PRIMARY" | "REFERENCES" | "UNIQUE"
     )
 }
 
@@ -582,7 +582,7 @@ fn parse_create_table_column_name(line: &str) -> Option<String> {
     let upper = column_name.to_ascii_uppercase();
     if matches!(
         upper.as_str(),
-        "CONSTRAINT" | "FOREIGN" | "KEY" | "PRIMARY" | "UNIQUE" | "INDEX" | "CHECK"
+        "CONSTRAINT" | "FOREIGN" | "KEY" | "PRIMARY" | "REFERENCES" | "UNIQUE" | "INDEX" | "CHECK"
     ) {
         None
     } else {
@@ -943,6 +943,28 @@ ALTER TABLE users ADD COLUMN ldap_dn VARCHAR(1024);
                 "email".to_string(),
                 "id".to_string(),
                 "ldap_dn".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn extracts_table_shapes_without_treating_multiline_references_as_columns() {
+        let shapes = extract_table_shapes(
+            r#"
+CREATE TABLE IF NOT EXISTS user_entitlement_providers (
+    user_entitlement_id TEXT NOT NULL
+        REFERENCES user_plan_entitlements(id)
+        ON DELETE CASCADE,
+    provider_id TEXT NOT NULL
+);
+            "#,
+        );
+
+        assert_eq!(
+            shapes.get("user_entitlement_providers"),
+            Some(&BTreeSet::from([
+                "provider_id".to_string(),
+                "user_entitlement_id".to_string()
             ]))
         );
     }
