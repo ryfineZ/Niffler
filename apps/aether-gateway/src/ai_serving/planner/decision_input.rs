@@ -1226,10 +1226,10 @@ mod tests {
             ["content"]
             .as_str()
             .expect("adult system message");
-        assert!(security_system.contains("Operator-provided security scope:"));
+        assert!(security_system.contains("Isolated CTF laboratory environment:"));
         assert!(!security_system.contains("Creative-writing scope:"));
         assert!(adult_system.contains("Creative-writing scope:"));
-        assert!(!adult_system.contains("Operator-provided security scope:"));
+        assert!(!adult_system.contains("Isolated CTF laboratory environment:"));
     }
 
     #[tokio::test]

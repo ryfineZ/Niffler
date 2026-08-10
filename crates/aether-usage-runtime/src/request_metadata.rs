@@ -163,6 +163,7 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
     copy_non_null_value(source, target, "billing_rule_snapshot");
     copy_non_null_value(source, target, "scheduling_audit");
     copy_non_null_value(source, target, "content_moderation");
+    copy_managed_instructions_metadata(source, target);
     copy_non_null_value(source, target, "usage_body_objects");
     copy_number(source, target, "content_moderation_cost_usd");
     copy_number(source, target, "content_moderation_actual_cost_usd");
@@ -225,6 +226,7 @@ fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map
     remove_non_null_value(&mut source, target, "billing_rule_snapshot");
     remove_non_null_value(&mut source, target, "scheduling_audit");
     remove_non_null_value(&mut source, target, "content_moderation");
+    remove_managed_instructions_metadata(&mut source, target);
     remove_non_null_value(&mut source, target, "usage_body_objects");
     remove_number(&mut source, target, "content_moderation_cost_usd");
     remove_number(&mut source, target, "content_moderation_actual_cost_usd");
@@ -328,6 +330,119 @@ fn remove_bool(source: &mut Map<String, Value>, target: &mut Map<String, Value>,
         return;
     };
     target.insert(key.to_string(), value);
+}
+
+pub(crate) fn copy_managed_instructions_metadata(
+    source: &Map<String, Value>,
+    target: &mut Map<String, Value>,
+) {
+    let Some(value) = source
+        .get("managed_instructions")
+        .and_then(sanitize_managed_instructions_metadata)
+    else {
+        return;
+    };
+    target.insert("managed_instructions".to_string(), value);
+}
+
+fn remove_managed_instructions_metadata(
+    source: &mut Map<String, Value>,
+    target: &mut Map<String, Value>,
+) {
+    let Some(value) = source
+        .remove("managed_instructions")
+        .as_ref()
+        .and_then(sanitize_managed_instructions_metadata)
+    else {
+        return;
+    };
+    target.insert("managed_instructions".to_string(), value);
+}
+
+fn sanitize_managed_instructions_metadata(value: &Value) -> Option<Value> {
+    let source = value.as_object()?;
+    let mut result = Map::new();
+
+    for key in ["applied", "deduplicated", "client_marker_present"] {
+        result.insert(key.to_string(), source.get(key)?.as_bool()?.into());
+    }
+
+    let client_instructions_present = match source.get("client_instructions_present")? {
+        Value::Bool(value) => Value::Bool(*value),
+        Value::Null => Value::Null,
+        _ => return None,
+    };
+    result.insert(
+        "client_instructions_present".to_string(),
+        client_instructions_present,
+    );
+
+    for key in ["profile_id", "core_version", "provider_api_format"] {
+        let value = source.get(key)?.as_str()?.trim();
+        if value.is_empty() {
+            return None;
+        }
+        result.insert(
+            key.to_string(),
+            Value::String(truncate_usage_request_metadata_string(value)),
+        );
+    }
+
+    let merge_mode = source.get("merge_mode")?.as_str()?;
+    if !matches!(merge_mode, "prepend" | "if_missing") {
+        return None;
+    }
+    result.insert("merge_mode".to_string(), merge_mode.into());
+
+    let profile_sha256 = source.get("profile_sha256")?.as_str()?;
+    if profile_sha256.len() != 64
+        || !profile_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    result.insert("profile_sha256".to_string(), profile_sha256.into());
+
+    let reason = source.get("reason")?.as_str()?;
+    if !matches!(
+        reason,
+        "applied"
+            | "already_applied"
+            | "client_instructions_present"
+            | "disabled"
+            | "unsupported_provider_api_format"
+    ) {
+        return None;
+    }
+    result.insert("reason".to_string(), reason.into());
+
+    let target_field = match source.get("target_field")? {
+        Value::Null => Value::Null,
+        Value::String(value)
+            if matches!(
+                value.as_str(),
+                "instructions" | "messages[0]" | "system" | "system[0]"
+            ) =>
+        {
+            Value::String(value.clone())
+        }
+        _ => return None,
+    };
+    result.insert("target_field".to_string(), target_field);
+
+    if let Some(user_group_id) = source.get("user_group_id") {
+        let user_group_id = user_group_id.as_str()?.trim();
+        if user_group_id.is_empty() {
+            return None;
+        }
+        result.insert(
+            "user_group_id".to_string(),
+            Value::String(truncate_usage_request_metadata_string(user_group_id)),
+        );
+    }
+
+    Some(Value::Object(result))
 }
 
 fn copy_non_null_value(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
@@ -591,6 +706,136 @@ mod tests {
                 "price_per_request": 0.02
             })
         );
+    }
+
+    #[test]
+    fn preserves_managed_instructions_status_without_prompt_content() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "managed_instructions": {
+                "applied": true,
+                "user_group_id": "security-users",
+                "profile_id": "security_research_v1",
+                "merge_mode": "prepend",
+                "core_version": "core_v2",
+                "profile_sha256": "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
+                "provider_api_format": "openai:responses",
+                "target_field": "instructions",
+                "client_instructions_present": true,
+                "deduplicated": false,
+                "client_marker_present": false,
+                "reason": "applied",
+                "embedded_text": "must not be persisted",
+                "client_instructions": "must not be persisted",
+                "unexpected": {"nested": "value"}
+            }
+        })))
+        .expect("metadata should remain");
+
+        assert_eq!(
+            metadata,
+            json!({
+                "managed_instructions": {
+                    "applied": true,
+                    "user_group_id": "security-users",
+                    "profile_id": "security_research_v1",
+                    "merge_mode": "prepend",
+                    "core_version": "core_v2",
+                    "profile_sha256": "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
+                    "provider_api_format": "openai:responses",
+                    "target_field": "instructions",
+                    "client_instructions_present": true,
+                    "deduplicated": false,
+                    "client_marker_present": false,
+                    "reason": "applied"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_if_missing_skip_reason_and_null_target() {
+        let metadata = build_usage_request_metadata_seed(
+            &sample_plan(),
+            Some(
+                json!({
+                    "managed_instructions": {
+                        "applied": false,
+                        "user_group_id": "security-users",
+                        "profile_id": "security_research_v1",
+                        "merge_mode": "if_missing",
+                        "core_version": "core_v2",
+                        "profile_sha256": "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
+                        "provider_api_format": "openai:chat",
+                        "target_field": null,
+                        "client_instructions_present": true,
+                        "deduplicated": false,
+                        "client_marker_present": false,
+                        "reason": "client_instructions_present"
+                    }
+                })
+                .as_object()
+                .expect("object"),
+            ),
+        )
+        .expect("metadata should remain");
+
+        assert_eq!(
+            metadata["managed_instructions"]["reason"],
+            "client_instructions_present"
+        );
+        assert_eq!(
+            metadata["managed_instructions"]["target_field"],
+            Value::Null
+        );
+        assert_eq!(metadata["managed_instructions"]["applied"], false);
+        assert_eq!(metadata["managed_instructions"]["deduplicated"], false);
+    }
+
+    #[test]
+    fn preserves_unchecked_client_instructions_status() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "managed_instructions": {
+                "applied": false,
+                "user_group_id": "security-users",
+                "profile_id": "security_research_v1",
+                "merge_mode": "prepend",
+                "core_version": "core_v2",
+                "profile_sha256": "3706f70a7c8c3c2efe00343b2fd384d33baaf79b3a34c142f16c7f43e8935947",
+                "provider_api_format": "openai:responses:compact",
+                "target_field": null,
+                "client_instructions_present": null,
+                "deduplicated": false,
+                "client_marker_present": false,
+                "reason": "unsupported_provider_api_format"
+            }
+        })))
+        .expect("unchecked status should remain");
+
+        assert_eq!(
+            metadata["managed_instructions"]["client_instructions_present"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_managed_instructions_status() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "managed_instructions": {
+                "applied": true,
+                "profile_id": "security_research_v1",
+                "merge_mode": "prepend",
+                "core_version": "core_v2",
+                "profile_sha256": "not-a-sha256",
+                "provider_api_format": "openai:responses",
+                "target_field": "instructions",
+                "client_instructions_present": false,
+                "deduplicated": false,
+                "client_marker_present": false,
+                "reason": "applied"
+            }
+        })));
+
+        assert_eq!(metadata, None);
     }
 
     #[test]
