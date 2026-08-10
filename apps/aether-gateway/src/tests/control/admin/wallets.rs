@@ -137,6 +137,7 @@ fn sample_payment_order_record(
         wallet_id: wallet_id.to_string(),
         user_id: user_id.map(ToOwned::to_owned),
         amount_usd,
+        debt_repayment_usd: 0.0,
         pay_amount: None,
         pay_currency: None,
         exchange_rate: None,

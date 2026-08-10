@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Deserialize)]
 struct BillingPlanRequest {
@@ -32,6 +33,8 @@ struct BillingPlanRequest {
     max_active_per_user: i64,
     #[serde(default = "default_purchase_limit_scope")]
     purchase_limit_scope: String,
+    #[serde(default)]
+    allowed_provider_ids: Vec<String>,
     entitlements: serde_json::Value,
 }
 
@@ -184,23 +187,6 @@ fn validate_entitlements(value: &serde_json::Value) -> Result<(), String> {
                 {
                     return Err(format!("{kind}.allow_wallet_overage must be a boolean"));
                 }
-                let allowed_global_model_ids = item
-                    .get("allowed_global_model_ids")
-                    .and_then(|value| value.as_array())
-                    .ok_or_else(|| format!("{kind}.allowed_global_model_ids is required"))?;
-                if allowed_global_model_ids.is_empty() {
-                    return Err(format!("{kind}.allowed_global_model_ids must not be empty"));
-                }
-                for id in allowed_global_model_ids {
-                    let id = id.as_str().ok_or_else(|| {
-                        format!("{kind}.allowed_global_model_ids must contain strings")
-                    })?;
-                    if id.trim().is_empty() {
-                        return Err(format!(
-                            "{kind}.allowed_global_model_ids must not contain empty strings"
-                        ));
-                    }
-                }
                 if let Some(rpm_limit) = item.get("rpm_limit") {
                     let rpm_limit = rpm_limit
                         .as_i64()
@@ -248,6 +234,96 @@ fn entitlements_include_package_rights(items: &[serde_json::Value]) -> bool {
     })
 }
 
+fn entitlements_include_usage_quota(items: &[serde_json::Value]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item.get("type").and_then(|value| value.as_str()),
+            Some("daily_quota" | "usage_quota")
+        )
+    })
+}
+
+fn normalize_provider_ids(values: Vec<String>) -> Result<Vec<String>, String> {
+    if values.len() > 100 {
+        return Err("allowed_provider_ids exceeds maximum length 100".to_string());
+    }
+    let mut unique = BTreeSet::new();
+    for value in values {
+        let provider_id = normalize_text(value, "allowed_provider_ids", 64)?;
+        unique.insert(provider_id);
+    }
+    Ok(unique.into_iter().collect())
+}
+
+fn remove_static_model_scope(entitlements: &mut serde_json::Value) {
+    let Some(items) = entitlements.as_array_mut() else {
+        return;
+    };
+    for item in items {
+        if matches!(
+            item.get("type").and_then(|value| value.as_str()),
+            Some("daily_quota" | "usage_quota")
+        ) {
+            if let Some(item) = item.as_object_mut() {
+                item.remove("allowed_global_model_ids");
+            }
+        }
+    }
+}
+
+fn enforce_wallet_overage_settlement(entitlements: &mut serde_json::Value) {
+    let Some(items) = entitlements.as_array_mut() else {
+        return;
+    };
+    for item in items {
+        if matches!(
+            item.get("type").and_then(|value| value.as_str()),
+            Some("daily_quota" | "usage_quota")
+        ) {
+            if let Some(item) = item.as_object_mut() {
+                item.insert("allow_wallet_overage".to_string(), json!(true));
+            }
+        }
+    }
+}
+
+async fn validate_plan_providers(
+    state: &crate::AppState,
+    provider_ids: &[String],
+) -> Result<Option<String>, GatewayError> {
+    if provider_ids.is_empty() {
+        return Ok(None);
+    }
+    let providers = state
+        .read_provider_catalog_providers_by_ids(provider_ids)
+        .await?;
+    let providers_by_id = providers
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let missing = provider_ids
+        .iter()
+        .filter(|provider_id| !providers_by_id.contains_key(*provider_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Ok(Some(format!("供应商不存在：{}", missing.join(", "))));
+    }
+    let inactive = provider_ids
+        .iter()
+        .filter(|provider_id| {
+            providers_by_id
+                .get(*provider_id)
+                .is_some_and(|provider| !provider.is_active)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !inactive.is_empty() {
+        return Ok(Some(format!("供应商已停用：{}", inactive.join(", "))));
+    }
+    Ok(None)
+}
+
 enum PlanPriceRule {
     Create,
     UpdateExistingZero { existing_price_amount: f64 },
@@ -290,7 +366,7 @@ fn normalize_plan_input_for_update(
 }
 
 fn normalize_plan_input(
-    payload: BillingPlanRequest,
+    mut payload: BillingPlanRequest,
     price_rule: PlanPriceRule,
 ) -> Result<BillingPlanWriteInput, String> {
     validate_plan_price_amount(payload.price_amount, price_rule)?;
@@ -313,6 +389,17 @@ fn normalize_plan_input(
         return Err("purchase_limit_scope must be active_period/lifetime/unlimited".to_string());
     }
     validate_entitlements(&payload.entitlements)?;
+    let allowed_provider_ids = normalize_provider_ids(payload.allowed_provider_ids)?;
+    if payload
+        .entitlements
+        .as_array()
+        .is_some_and(|items| entitlements_include_usage_quota(items))
+        && allowed_provider_ids.is_empty()
+    {
+        return Err("周期额度套餐至少需要选择一个供应商".to_string());
+    }
+    remove_static_model_scope(&mut payload.entitlements);
+    enforce_wallet_overage_settlement(&mut payload.entitlements);
     Ok(BillingPlanWriteInput {
         title: normalize_text(payload.title, "title", 128)?,
         description: normalize_optional_text(payload.description, 2048)?,
@@ -324,6 +411,7 @@ fn normalize_plan_input(
         sort_order: payload.sort_order,
         max_active_per_user: payload.max_active_per_user,
         purchase_limit_scope,
+        allowed_provider_ids,
         entitlements_json: payload.entitlements,
     })
 }
@@ -341,6 +429,7 @@ pub(crate) fn billing_plan_payload(record: &BillingPlanRecord) -> serde_json::Va
         "sort_order": record.sort_order,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
         "created_at": record.created_at_unix_secs,
         "updated_at": record.updated_at_unix_secs,
@@ -398,6 +487,11 @@ pub(super) async fn maybe_build_local_admin_billing_plans_response(
                 Ok(value) => value,
                 Err(detail) => return Ok(Some(build_admin_billing_bad_request_response(detail))),
             };
+            if let Some(detail) =
+                validate_plan_providers(state.app(), &input.allowed_provider_ids).await?
+            {
+                return Ok(Some(build_admin_billing_bad_request_response(detail)));
+            }
             match state.app().create_billing_plan(&input).await? {
                 LocalMutationOutcome::Applied(record) => {
                     Ok(Some(Json(billing_plan_payload(&record)).into_response()))
@@ -431,6 +525,11 @@ pub(super) async fn maybe_build_local_admin_billing_plans_response(
                 Ok(value) => value,
                 Err(detail) => return Ok(Some(build_admin_billing_bad_request_response(detail))),
             };
+            if let Some(detail) =
+                validate_plan_providers(state.app(), &input.allowed_provider_ids).await?
+            {
+                return Ok(Some(build_admin_billing_bad_request_response(detail)));
+            }
             match state.app().update_billing_plan(&plan_id, &input).await? {
                 LocalMutationOutcome::Applied(record) => {
                     Ok(Some(Json(billing_plan_payload(&record)).into_response()))
@@ -459,6 +558,18 @@ pub(super) async fn maybe_build_local_admin_billing_plans_response(
                     )))
                 }
             };
+            if payload.enabled {
+                let Some(existing) = state.app().find_billing_plan(&plan_id).await? else {
+                    return Ok(Some(build_admin_billing_not_found_response(
+                        "Billing plan not found",
+                    )));
+                };
+                if let Some(detail) =
+                    validate_plan_providers(state.app(), &existing.allowed_provider_ids).await?
+                {
+                    return Ok(Some(build_admin_billing_bad_request_response(detail)));
+                }
+            }
             match state
                 .app()
                 .set_billing_plan_enabled(&plan_id, payload.enabled)
@@ -514,6 +625,7 @@ mod tests {
             sort_order: 0,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec!["provider-codex".to_string()],
             entitlements: json!([
                 {
                     "type": "daily_quota",
@@ -548,6 +660,7 @@ mod tests {
             sort_order: 0,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec![],
             entitlements_json: json!([]),
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
@@ -572,6 +685,7 @@ mod tests {
             sort_order: 0,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec![],
             entitlements_json: json!([]),
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
@@ -583,21 +697,22 @@ mod tests {
     }
 
     #[test]
-    fn usage_quota_requires_allowed_global_model_ids() {
+    fn usage_quota_requires_allowed_provider_ids() {
         let mut request = sample_plan_request(9.9);
+        request.allowed_provider_ids.clear();
         request.entitlements = json!([{
             "type": "daily_quota",
             "daily_quota_usd": 100.0,
             "allow_wallet_overage": false
         }]);
-        let error =
-            normalize_plan_input_for_create(request).expect_err("model scope should be required");
+        let error = normalize_plan_input_for_create(request)
+            .expect_err("provider scope should be required");
 
-        assert!(error.contains("allowed_global_model_ids"));
+        assert!(error.contains("供应商"));
     }
 
     #[test]
-    fn usage_quota_accepts_allowed_global_model_ids() {
+    fn usage_quota_saves_providers_and_removes_static_models() {
         let mut request = sample_plan_request(9.9);
         request.entitlements = json!([{
             "type": "daily_quota",
@@ -607,9 +722,13 @@ mod tests {
         }]);
         let input = normalize_plan_input_for_create(request).expect("scoped quota should save");
 
+        assert_eq!(input.allowed_provider_ids, vec!["provider-codex"]);
+        assert!(input.entitlements_json[0]
+            .get("allowed_global_model_ids")
+            .is_none());
         assert_eq!(
-            input.entitlements_json[0]["allowed_global_model_ids"][0],
-            "global-codex"
+            input.entitlements_json[0]["allow_wallet_overage"],
+            json!(true)
         );
     }
 

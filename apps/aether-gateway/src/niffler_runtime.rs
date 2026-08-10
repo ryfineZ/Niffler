@@ -98,7 +98,8 @@ impl NifflerRuntimeRolloutDecision {
             enable_new_routing: setting.enable_new_routing,
             enable_settlement_snapshot: setting.enable_settlement_snapshot,
             enable_error_return_rules: setting.enable_error_return_rules,
-            enable_billing_reservation: setting.enable_billing_reservation,
+            // 金额预占已退出请求准入，保留旧配置字段只为兼容历史数据。
+            enable_billing_reservation: false,
             enable_referral_ledger: setting.enable_referral_ledger,
         }
     }

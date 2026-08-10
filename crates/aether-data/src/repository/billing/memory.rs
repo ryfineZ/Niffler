@@ -100,6 +100,7 @@ fn billing_plan_from_input(
         sort_order: input.sort_order,
         max_active_per_user: input.max_active_per_user,
         purchase_limit_scope: input.purchase_limit_scope.clone(),
+        allowed_provider_ids: input.allowed_provider_ids.clone(),
         entitlements_json: input.entitlements_json.clone(),
         created_at_unix_secs: created_at,
         updated_at_unix_secs: current_unix_secs(),
@@ -117,6 +118,9 @@ fn daily_quota_availability_from_entitlements(
     let mut remaining_usd = 0.0;
     let mut base_remaining_usd = 0.0;
     let mut allow_wallet_overage = true;
+    let mut eligible_entitlement_ids = Vec::new();
+    let mut allowed_provider_ids = std::collections::BTreeSet::new();
+    let mut provider_ids_by_entitlement = std::collections::BTreeMap::new();
     for entitlement in entitlements {
         if entitlement.status != "active"
             || entitlement.starts_at_unix_secs > now
@@ -160,6 +164,14 @@ fn daily_quota_availability_from_entitlements(
                 continue;
             }
             has_active_daily_quota = true;
+            if !eligible_entitlement_ids.contains(&entitlement.id) {
+                eligible_entitlement_ids.push(entitlement.id.clone());
+                allowed_provider_ids.extend(entitlement.allowed_provider_ids.iter().cloned());
+                provider_ids_by_entitlement.insert(
+                    entitlement.id.clone(),
+                    entitlement.allowed_provider_ids.clone(),
+                );
+            }
             total_quota_usd += daily_quota_usd;
             remaining_usd += daily_quota_usd;
             let quota_multiplier = item
@@ -182,6 +194,9 @@ fn daily_quota_availability_from_entitlements(
         remaining_usd,
         base_remaining_usd,
         allow_wallet_overage,
+        eligible_entitlement_ids,
+        allowed_provider_ids: allowed_provider_ids.into_iter().collect(),
+        provider_ids_by_entitlement,
     }
 }
 
@@ -445,15 +460,18 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
             .entitlements_by_id
             .write()
             .expect("billing repository lock");
-        let Some(record) = records.get_mut(entitlement_id) else {
+        let Some(existing) = records.get(entitlement_id) else {
             return Ok(AdminBillingMutationOutcome::NotFound);
         };
-        if record.user_id != user_id
-            || record.status != "active"
-            || record.expires_at_unix_secs <= now
+        if existing.user_id != user_id
+            || existing.status != "active"
+            || existing.expires_at_unix_secs <= now
         {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
+        let record = records
+            .get_mut(entitlement_id)
+            .expect("validated entitlement should still exist");
         record.status = "cancelled".to_string();
         record.expires_at_unix_secs = record.expires_at_unix_secs.min(now);
         record.updated_at_unix_secs = now;
@@ -466,24 +484,46 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
         entitlement_id: &str,
         input: &UserPlanEntitlementUpdateInput,
     ) -> Result<AdminBillingMutationOutcome<UserPlanEntitlementRecord>, DataLayerError> {
+        if input.starts_at_unix_secs >= input.expires_at_unix_secs {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "套餐开始时间必须早于结束时间".to_string(),
+            ));
+        }
         let now = current_unix_secs();
         let mut records = self
             .entitlements_by_id
             .write()
             .expect("billing repository lock");
-        let Some(record) = records.get_mut(entitlement_id) else {
+        let Some(existing) = records.get(entitlement_id) else {
             return Ok(AdminBillingMutationOutcome::NotFound);
         };
-        if record.user_id != user_id
-            || record.status != "active"
-            || record.expires_at_unix_secs <= now
+        if existing.user_id != user_id
+            || existing.status != "active"
+            || existing.expires_at_unix_secs <= now
         {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
+        if records.values().any(|item| {
+            item.id != entitlement_id
+                && item.user_id == user_id
+                && item.status == "active"
+                && item.starts_at_unix_secs < input.expires_at_unix_secs
+                && item.expires_at_unix_secs > input.starts_at_unix_secs
+        }) {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "同一时间只能有一个生效套餐".to_string(),
+            ));
+        }
+        let record = records
+            .get_mut(entitlement_id)
+            .expect("validated entitlement should still exist");
         record.starts_at_unix_secs = input.starts_at_unix_secs;
         record.expires_at_unix_secs = input.expires_at_unix_secs;
         if let Some(entitlements_snapshot) = input.entitlements_snapshot.as_ref() {
             record.entitlements_snapshot = entitlements_snapshot.clone();
+        }
+        if let Some(allowed_provider_ids) = input.allowed_provider_ids.as_ref() {
+            record.allowed_provider_ids = allowed_provider_ids.clone();
         }
         record.updated_at_unix_secs = now;
         Ok(AdminBillingMutationOutcome::Applied(record.clone()))

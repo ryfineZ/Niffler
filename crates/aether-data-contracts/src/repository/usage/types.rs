@@ -1527,6 +1527,11 @@ pub trait UsageReadRepository: Send + Sync {
         ids: &[String],
     ) -> Result<Vec<StoredRequestUsageAudit>, crate::DataLayerError>;
 
+    async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, crate::DataLayerError>;
+
     async fn find_by_request_id(
         &self,
         request_id: &str,

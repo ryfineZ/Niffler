@@ -370,6 +370,13 @@ jobs:
           AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
         run: cargo test -p aether-data postgres_migrations_create_core_config_tables_when_url_is_set --lib -- --nocapture
 
+      - name: Run Postgres billing settlement behavior test
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+          AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
+        run: cargo test -p aether-data postgres_wallet_settlement_requires_admission_and_is_idempotent_when_url_is_set --lib -- --nocapture
+
       - name: Run release migration compatibility smoke test
         env:
           RUSTC_WRAPPER: sccache

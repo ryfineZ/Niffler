@@ -4,7 +4,8 @@ use sqlx::{mysql::MySqlRow, Row};
 use super::{
     finite_wallet_available_usd, plan_finite_wallet_debit,
     settlement_billing_status_for_usage_status, settlement_wallet_charge_multiplier,
-    SettlementWriteRepository, StoredUsageSettlement, UsageSettlementInput, SETTLEMENT_EPSILON_USD,
+    SettlementBillingAdmission, SettlementWriteRepository, StoredUsageSettlement,
+    UsageSettlementInput, SETTLEMENT_EPSILON_USD,
 };
 use crate::driver::mysql::MysqlPool;
 use crate::error::SqlResultExt;
@@ -132,6 +133,73 @@ fn settlement_from_row(row: &MySqlRow) -> Result<StoredUsageSettlement, DataLaye
     })
 }
 
+async fn find_billing_admission_mysql(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    request_id: &str,
+) -> Result<Option<SettlementBillingAdmission>, DataLayerError> {
+    let row = sqlx::query(
+        r#"
+SELECT funding_source, wallet_id, wallet_payment_allowed, wallet_overage_allowed,
+       entitlement_ids, entitlement_provider_scopes, allowed_provider_ids
+FROM billing_request_admissions
+WHERE request_id = ? AND billing_admitted = 1 AND status = 'admitted'
+FOR UPDATE
+        "#,
+    )
+    .bind(request_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_sql_err()?;
+    row.map(|row| {
+        let funding_source: String = row.try_get("funding_source").map_sql_err()?;
+        Ok(SettlementBillingAdmission {
+            funding_source:
+                aether_data_contracts::repository::billing::BillingFundingSource::from_database(
+                    &funding_source,
+                )?,
+            wallet_id: row.try_get("wallet_id").map_sql_err()?,
+            wallet_payment_allowed: row.try_get("wallet_payment_allowed").map_sql_err()?,
+            wallet_overage_allowed: row.try_get("wallet_overage_allowed").map_sql_err()?,
+            entitlement_ids: parse_json_string_vec(
+                row.try_get("entitlement_ids").map_sql_err()?,
+                "billing_request_admissions.entitlement_ids",
+            )?,
+            entitlement_provider_scopes: parse_json_provider_scopes(
+                row.try_get("entitlement_provider_scopes").map_sql_err()?,
+                "billing_request_admissions.entitlement_provider_scopes",
+            )?,
+            allowed_provider_ids: parse_json_string_vec(
+                row.try_get("allowed_provider_ids").map_sql_err()?,
+                "billing_request_admissions.allowed_provider_ids",
+            )?,
+        })
+    })
+    .transpose()
+}
+
+fn parse_json_string_vec(raw: String, field: &str) -> Result<Vec<String>, DataLayerError> {
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        DataLayerError::UnexpectedValue(format!("{field} invalid json: {error}"))
+    })?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn parse_json_provider_scopes(
+    raw: String,
+    field: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, DataLayerError> {
+    serde_json::from_str(&raw)
+        .map_err(|error| DataLayerError::UnexpectedValue(format!("{field} invalid json: {error}")))
+}
+
 fn now_unix_secs() -> Result<i64, DataLayerError> {
     i64::try_from(
         std::time::SystemTime::now()
@@ -157,6 +225,8 @@ struct DailyQuotaDebitInput<'a> {
     wallet_charge_multiplier: f64,
     now_unix_secs: i64,
     request_global_model_id: Option<&'a str>,
+    admitted_entitlement_ids: Option<&'a [String]>,
+    force_wallet_overage: bool,
 }
 
 async fn consume_daily_quota_mysql(
@@ -188,6 +258,12 @@ FOR UPDATE
     let mut grants = Vec::new();
     for row in rows {
         let entitlement_id: String = row.try_get("id").map_sql_err()?;
+        if input
+            .admitted_entitlement_ids
+            .is_some_and(|ids| !ids.iter().any(|admitted_id| admitted_id == &entitlement_id))
+        {
+            continue;
+        }
         let entitlement_started_at =
             chrono::DateTime::from_timestamp(row.try_get::<i64, _>("starts_at").map_sql_err()?, 0)
                 .ok_or_else(|| {
@@ -200,7 +276,8 @@ FOR UPDATE
                     "user_plan_entitlements.entitlements_snapshot invalid json: {err}"
                 ))
             })?;
-        if input.request_global_model_id.is_some()
+        if input.admitted_entitlement_ids.is_none()
+            && input.request_global_model_id.is_some()
             && !entitlements_snapshot_has_usage_quota_for_global_model(
                 &entitlements,
                 input.request_global_model_id,
@@ -218,12 +295,14 @@ FOR UPDATE
             stored_five_hour.as_ref(),
         )?);
     }
-    grants.retain(|grant| {
-        entitlement_allows_global_model(
-            grant.allowed_global_model_ids.as_deref(),
-            input.request_global_model_id,
-        )
-    });
+    if input.admitted_entitlement_ids.is_none() {
+        grants.retain(|grant| {
+            entitlement_allows_global_model(
+                grant.allowed_global_model_ids.as_deref(),
+                input.request_global_model_id,
+            )
+        });
+    }
     if grants.is_empty() {
         return Ok(DailyQuotaDebitResult::default());
     }
@@ -258,6 +337,7 @@ FOR UPDATE
             entitlement_remaining.push((grants, remaining));
         }
     }
+    let allow_wallet_overage = input.force_wallet_overage || allow_wallet_overage;
     if !allow_wallet_overage && total_base_remaining + 0.000_000_01 < input.total_cost_usd {
         return Ok(DailyQuotaDebitResult {
             covered_base_usd: 0.0,
@@ -518,41 +598,33 @@ impl SettlementWriteRepository for MysqlSettlementRepository {
         };
 
         if final_billing_status == "settled" {
-            let api_key_id = input
-                .api_key_id
-                .as_deref()
-                .filter(|value| !value.is_empty());
-            let api_key_is_standalone = if input.api_key_is_standalone {
-                true
-            } else if let Some(api_key_id) = api_key_id {
-                sqlx::query_scalar::<_, bool>(
-                    r#"
-SELECT is_standalone
-FROM api_keys
-WHERE id = ?
-LIMIT 1
-"#,
-                )
-                .bind(api_key_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_sql_err()?
-                .unwrap_or(false)
-            } else {
-                false
-            };
+            let billing_admission = find_billing_admission_mysql(&mut tx, &input.request_id)
+                .await?
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue(format!(
+                        "billing admission missing for request {}",
+                        input.request_id
+                    ))
+                })?;
+            if !billing_admission.plan_allows_provider(input.provider_id.as_deref()) {
+                return Err(DataLayerError::UnexpectedValue(format!(
+                    "billing admission provider mismatch for request {}",
+                    input.request_id
+                )));
+            }
+            let api_key_is_standalone = input.api_key_is_standalone;
 
-            let wallet_row = if let Some(api_key_id) = api_key_id {
+            let wallet_row = if let Some(wallet_id) = billing_admission.wallet_id.as_deref() {
                 sqlx::query(
                     r#"
 SELECT id, balance, gift_balance, limit_mode
 FROM wallets
-WHERE api_key_id = ?
+WHERE id = ?
 LIMIT 1
 FOR UPDATE
 "#,
                 )
-                .bind(api_key_id)
+                .bind(wallet_id)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_sql_err()?
@@ -560,31 +632,7 @@ FOR UPDATE
                 None
             };
 
-            let wallet_row = if wallet_row.is_some() {
-                wallet_row
-            } else if !api_key_is_standalone {
-                if let Some(user_id) = input.user_id.as_deref().filter(|value| !value.is_empty()) {
-                    sqlx::query(
-                        r#"
-SELECT id, balance, gift_balance, limit_mode
-FROM wallets
-WHERE user_id = ?
-LIMIT 1
-FOR UPDATE
-"#,
-                    )
-                    .bind(user_id)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_sql_err()?
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let wallet_can_overdraft = wallet_row.is_some();
+            let wallet_can_overdraft = billing_admission.wallet_can_overdraft();
             let wallet_available_usd = match wallet_row.as_ref() {
                 Some(row) => {
                     let limit_mode: String = row.try_get("limit_mode").map_sql_err()?;
@@ -613,9 +661,28 @@ FOR UPDATE
                 settlement.wallet_gift_balance_after = Some(before_gift);
             }
 
-            let wallet_debit_cost_usd = if !api_key_is_standalone {
+            let admitted_funding_source = Some(billing_admission.funding_source);
+            let wallet_debit_cost_usd = if matches!(
+                admitted_funding_source,
+                Some(
+                    aether_data_contracts::repository::billing::BillingFundingSource::Unlimited
+                        | aether_data_contracts::repository::billing::BillingFundingSource::Free
+                )
+            ) {
+                0.0
+            } else if admitted_funding_source
+                == Some(aether_data_contracts::repository::billing::BillingFundingSource::Wallet)
+            {
+                input.total_cost_usd
+            } else if !api_key_is_standalone {
                 if let Some(user_id) = input.user_id.as_deref().filter(|value| !value.is_empty()) {
                     let sales_multiplier = settlement_wallet_charge_multiplier(&input);
+                    let admitted_entitlement_ids = billing_admission
+                        .uses_plan_for_provider(input.provider_id.as_deref())
+                        .then(|| {
+                            billing_admission
+                                .entitlement_ids_for_provider(input.provider_id.as_deref())
+                        });
                     let quota = consume_daily_quota_mysql(
                         &mut tx,
                         DailyQuotaDebitInput {
@@ -627,6 +694,8 @@ FOR UPDATE
                             wallet_charge_multiplier: sales_multiplier,
                             now_unix_secs: updated_at,
                             request_global_model_id: input.global_model_id.as_deref(),
+                            admitted_entitlement_ids: admitted_entitlement_ids.as_deref(),
+                            force_wallet_overage: admitted_entitlement_ids.is_some(),
                         },
                     )
                     .await?;

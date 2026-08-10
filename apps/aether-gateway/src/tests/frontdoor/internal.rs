@@ -1158,7 +1158,7 @@ async fn gateway_handles_internal_gateway_decision_sync_locally_with_supplied_au
 }
 
 #[tokio::test]
-async fn gateway_internal_decision_sync_revalidates_supplied_auth_context_wallet() {
+async fn gateway_internal_decision_sync_revalidates_zero_wallet() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
     let upstream = Router::new().route(

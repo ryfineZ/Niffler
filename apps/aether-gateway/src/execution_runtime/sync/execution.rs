@@ -1294,7 +1294,7 @@ async fn execute_execution_runtime_sync_impl(
         .map(Some);
     }
 
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await;
+    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await?;
     let plan_request_id = plan.request_id.clone();
     let plan_request_id_for_log = short_request_id(plan_request_id.as_str());
     let plan_candidate_id = plan.candidate_id.clone();
@@ -2557,7 +2557,9 @@ mod tests {
             "mapped_model": "gpt-image-2",
         }));
 
-        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context).await;
+        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context)
+            .await
+            .expect("request candidate slot should seed");
         let started_at = current_request_candidate_unix_ms();
         state.usage_runtime.record_pending(
             state.data.as_ref(),

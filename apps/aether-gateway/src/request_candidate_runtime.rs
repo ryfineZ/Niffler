@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use aether_contracts::ExecutionPlan;
+use aether_data_contracts::repository::billing::BillingRequestAdmissionInput;
 use aether_data_contracts::repository::candidates::{
     RequestCandidateStatus, StoredRequestCandidate, UpsertRequestCandidateRecord,
 };
@@ -71,6 +72,22 @@ pub(crate) trait RequestCandidateRuntimeWriter: Send + Sync {
         &self,
         candidate: UpsertRequestCandidateRecord,
     ) -> Result<Option<StoredRequestCandidate>, GatewayError>;
+
+    async fn resolve_request_billing_admission(
+        &self,
+        _candidate: &UpsertRequestCandidateRecord,
+        _report_context: Option<&Value>,
+    ) -> Result<Option<BillingRequestAdmissionInput>, GatewayError> {
+        Ok(None)
+    }
+
+    async fn upsert_request_candidate_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        _admission: BillingRequestAdmissionInput,
+    ) -> Result<Option<StoredRequestCandidate>, GatewayError> {
+        self.upsert_request_candidate(candidate).await
+    }
 }
 
 struct RequestCandidateStatusWriteJob {
@@ -724,20 +741,7 @@ pub(crate) async fn ensure_execution_request_candidate_slot(
     state: &(impl RequestCandidateRuntimeWriter + ?Sized),
     plan: &mut ExecutionPlan,
     report_context: &mut Option<Value>,
-) {
-    if !state.has_request_candidate_data_writer() {
-        warn!(
-            event_name = "request_candidate_writer_unavailable",
-            log_type = "event",
-            request_id = %short_request_id(plan.request_id.as_str()),
-            provider_id = %plan.provider_id,
-            endpoint_id = %plan.endpoint_id,
-            key_id = %plan.key_id,
-            source = "seed",
-            "gateway skipped request candidate seed because writer is unavailable"
-        );
-        return;
-    }
+) -> Result<(), GatewayError> {
     let generated_candidate_id = plan
         .candidate_id
         .as_deref()
@@ -753,8 +757,38 @@ pub(crate) async fn ensure_execution_request_candidate_slot(
     );
     let generated_candidate_id = seed.upsert_record.id.clone();
     let request_id = short_request_id(plan.request_id.as_str());
+    let admission = state
+        .resolve_request_billing_admission(&seed.upsert_record, Some(&seed.report_context))
+        .await?;
 
-    let candidate_id = match state.upsert_request_candidate(seed.upsert_record).await {
+    if !state.has_request_candidate_data_writer() {
+        if admission.is_some() {
+            return Err(GatewayError::Internal(
+                "计费准入无法保存，请求已停止".to_string(),
+            ));
+        }
+        warn!(
+            event_name = "request_candidate_writer_unavailable",
+            log_type = "event",
+            request_id = %request_id,
+            provider_id = %plan.provider_id,
+            endpoint_id = %plan.endpoint_id,
+            key_id = %plan.key_id,
+            source = "seed",
+            "gateway skipped request candidate seed because writer is unavailable"
+        );
+        return Ok(());
+    }
+
+    let candidate_write = match admission {
+        Some(admission) => {
+            state
+                .upsert_request_candidate_with_billing_admission(seed.upsert_record, admission)
+                .await
+        }
+        None => state.upsert_request_candidate(seed.upsert_record).await,
+    };
+    let candidate_id = match candidate_write {
         Ok(Some(stored)) => {
             info!(
                 event_name = "request_candidate_slot_seeded",
@@ -791,7 +825,7 @@ pub(crate) async fn ensure_execution_request_candidate_slot(
                 error = ?err,
                 "gateway failed to seed execution request candidate slot"
             );
-            return;
+            return Err(err);
         }
     };
 
@@ -800,6 +834,7 @@ pub(crate) async fn ensure_execution_request_candidate_slot(
         seed.report_context,
         &candidate_id,
     ));
+    Ok(())
 }
 
 pub(crate) async fn persist_available_local_candidate(
@@ -1034,6 +1069,7 @@ pub(crate) async fn flush_request_candidate_status_writes(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1043,6 +1079,9 @@ mod tests {
     };
     use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
     use aether_data::repository::usage::InMemoryUsageReadRepository;
+    use aether_data_contracts::repository::billing::{
+        BillingFundingSource, BillingRequestAdmissionInput, BillingRequestAdmissionRecord,
+    };
     use aether_data_contracts::repository::candidates::{
         RequestCandidateReadRepository, RequestCandidateStatus, StoredRequestCandidate,
         UpsertRequestCandidateRecord,
@@ -1138,6 +1177,53 @@ mod tests {
         statuses: Mutex<Vec<RequestCandidateStatus>>,
     }
 
+    #[derive(Debug)]
+    struct ExistingAdmissionWriter {
+        admission: BillingRequestAdmissionRecord,
+        resolution_calls: AtomicUsize,
+        admission_write_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RequestCandidateRuntimeWriter for ExistingAdmissionWriter {
+        fn has_request_candidate_data_writer(&self) -> bool {
+            true
+        }
+
+        async fn upsert_request_candidate(
+            &self,
+            _candidate: UpsertRequestCandidateRecord,
+        ) -> Result<Option<StoredRequestCandidate>, GatewayError> {
+            Ok(None)
+        }
+
+        async fn resolve_request_billing_admission(
+            &self,
+            _candidate: &UpsertRequestCandidateRecord,
+            report_context: Option<&serde_json::Value>,
+        ) -> Result<Option<BillingRequestAdmissionInput>, GatewayError> {
+            self.resolution_calls.fetch_add(1, Ordering::SeqCst);
+            let admission = report_context
+                .and_then(serde_json::Value::as_object)
+                .and_then(|object| object.get("billing_admission"))
+                .cloned()
+                .ok_or_else(|| GatewayError::Internal("缺少请求扣费决定".to_string()))?;
+            serde_json::from_value(admission)
+                .map(Some)
+                .map_err(|error| GatewayError::Internal(error.to_string()))
+        }
+
+        async fn upsert_request_candidate_with_billing_admission(
+            &self,
+            _candidate: UpsertRequestCandidateRecord,
+            admission: BillingRequestAdmissionInput,
+        ) -> Result<Option<StoredRequestCandidate>, GatewayError> {
+            assert_eq!(admission, self.admission.to_input());
+            self.admission_write_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+    }
+
     #[async_trait]
     impl RequestCandidateRuntimeWriter for RecordingRequestCandidateWriter {
         fn has_request_candidate_data_writer(&self) -> bool {
@@ -1224,7 +1310,9 @@ mod tests {
             "client_api_format": "openai:chat"
         }));
 
-        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context).await;
+        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context)
+            .await
+            .expect("request candidate slot should seed");
 
         let candidate_id = plan
             .candidate_id
@@ -1272,6 +1360,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_reuses_report_admission_without_reading_current_balance_again() {
+        let writer = ExistingAdmissionWriter {
+            admission: BillingRequestAdmissionRecord {
+                request_id: "req-request-candidate-seed-123".to_string(),
+                user_id: Some("user-1".to_string()),
+                api_key_id: Some("api-key-1".to_string()),
+                wallet_id: Some("wallet-1".to_string()),
+                global_model_id: Some("global-model-1".to_string()),
+                funding_source: BillingFundingSource::Wallet,
+                wallet_balance_at_admission: Some(1.0),
+                wallet_payment_allowed: true,
+                wallet_overage_allowed: false,
+                entitlement_ids: Vec::new(),
+                entitlement_provider_scopes: std::collections::BTreeMap::new(),
+                allowed_provider_ids: Vec::new(),
+                billing_admitted: true,
+                status: "admitted".to_string(),
+                rejection_reason: None,
+                schema_version: 1,
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 1,
+            },
+            resolution_calls: AtomicUsize::new(0),
+            admission_write_calls: AtomicUsize::new(0),
+        };
+        let mut plan = sample_plan();
+        let mut report_context = Some(json!({
+            "request_id": "req-request-candidate-seed-123",
+            "global_model_id": "global-model-1",
+            "billing_admission": writer.admission.to_input()
+        }));
+
+        ensure_execution_request_candidate_slot(&writer, &mut plan, &mut report_context)
+            .await
+            .expect("retry should reuse the stored admission");
+
+        assert_eq!(writer.resolution_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(writer.admission_write_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn seeds_execution_request_candidate_slot_with_existing_candidate_id() {
         let repository = Arc::new(InMemoryRequestCandidateRepository::default());
         let state = build_test_state(Arc::clone(&repository));
@@ -1283,7 +1412,9 @@ mod tests {
             "client_api_format": "openai:chat"
         }));
 
-        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context).await;
+        ensure_execution_request_candidate_slot(&state, &mut plan, &mut report_context)
+            .await
+            .expect("request candidate slot should seed");
 
         assert_eq!(plan.candidate_id.as_deref(), Some("cand-existing-123"));
         let report_context = report_context.expect("report context should be populated");

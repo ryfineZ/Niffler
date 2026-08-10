@@ -471,6 +471,7 @@ fn stored_admin_payment_order_to_gateway(
         wallet_id: record.wallet_id,
         user_id: record.user_id,
         amount_usd: record.amount_usd,
+        debt_repayment_usd: record.debt_repayment_usd,
         pay_amount: record.pay_amount,
         pay_currency: record.pay_currency,
         exchange_rate: record.exchange_rate,

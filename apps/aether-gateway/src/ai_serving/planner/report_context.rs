@@ -56,6 +56,8 @@ pub(crate) struct LocalExecutionReportContextParts<'a> {
     pub(crate) original_request_body_base64: Option<&'a str>,
     pub(crate) client_session_affinity: Option<&'a ClientSessionAffinity>,
     pub(crate) scheduler_affinity_epoch: Option<u64>,
+    pub(crate) billing_admission:
+        Option<&'a aether_data_contracts::repository::billing::BillingRequestAdmissionInput>,
     pub(crate) client_requested_stream: bool,
     pub(crate) upstream_is_stream: bool,
     pub(crate) has_envelope: bool,
@@ -110,6 +112,13 @@ pub(crate) fn build_local_execution_report_context(
             SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD.to_string(),
             Value::Number(epoch.into()),
         );
+    }
+    if let Some(admission) = parts.billing_admission {
+        let mut admission = admission.clone();
+        admission.request_id = parts.request_id.to_string();
+        let value = serde_json::to_value(admission)
+            .expect("validated billing admission should serialize into report context");
+        extra_fields.insert("billing_admission".to_string(), value);
     }
     insert_request_path_fields(
         &mut extra_fields,
@@ -267,6 +276,23 @@ mod tests {
             Some("codex".to_string()),
             Some("account=account-1;session=session-1".to_string()),
         );
+        let billing_admission =
+            aether_data_contracts::repository::billing::BillingRequestAdmissionInput {
+                request_id: String::new(),
+                user_id: Some("user-1".to_string()),
+                api_key_id: Some("api-key-1".to_string()),
+                wallet_id: Some("wallet-1".to_string()),
+                global_model_id: Some("global-model-1".to_string()),
+                funding_source:
+                    aether_data_contracts::repository::billing::BillingFundingSource::Wallet,
+                wallet_balance_at_admission: Some(3.0),
+                wallet_payment_allowed: true,
+                wallet_overage_allowed: false,
+                entitlement_ids: Vec::new(),
+                entitlement_provider_scopes: std::collections::BTreeMap::new(),
+                allowed_provider_ids: Vec::new(),
+                schema_version: 1,
+            };
 
         let report_context =
             build_local_execution_report_context(LocalExecutionReportContextParts {
@@ -305,6 +331,7 @@ mod tests {
                 original_request_body_base64: None,
                 client_session_affinity: Some(&client_session_affinity),
                 scheduler_affinity_epoch: None,
+                billing_admission: Some(&billing_admission),
                 client_requested_stream: false,
                 upstream_is_stream: false,
                 has_envelope: false,
@@ -327,6 +354,7 @@ mod tests {
                 "session_key": "account=account-1;session=session-1"
             })
         );
+        assert_eq!(report_context["billing_admission"]["request_id"], "trace-1");
         assert_eq!(report_context["request_path"], "/v1/chat/completions");
         assert_eq!(report_context["request_query_string"], "limit=10");
         assert_eq!(
@@ -391,6 +419,7 @@ mod tests {
                 original_request_body_base64: None,
                 client_session_affinity: None,
                 scheduler_affinity_epoch: None,
+                billing_admission: None,
                 client_requested_stream: false,
                 upstream_is_stream: true,
                 has_envelope: false,
@@ -461,6 +490,7 @@ mod tests {
                 original_request_body_base64: None,
                 client_session_affinity: None,
                 scheduler_affinity_epoch: None,
+                billing_admission: None,
                 client_requested_stream: false,
                 upstream_is_stream: false,
                 has_envelope: false,

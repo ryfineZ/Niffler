@@ -24,6 +24,17 @@ macro_rules! impl_materialized_usage_read_repository {
                 <$crate::repository::usage::InMemoryUsageReadRepository as $crate::repository::usage::UsageReadRepository>::list_by_ids(&repository, ids).await
             }
 
+            async fn list_pending_terminal_usage_for_settlement(
+                &self,
+                limit: usize,
+            ) -> Result<
+                Vec<$crate::repository::usage::StoredRequestUsageAudit>,
+                $crate::DataLayerError,
+            > {
+                let repository = self.materialize_read_model().await?;
+                <$crate::repository::usage::InMemoryUsageReadRepository as $crate::repository::usage::UsageReadRepository>::list_pending_terminal_usage_for_settlement(&repository, limit).await
+            }
+
             async fn find_by_request_id(
                 &self,
                 request_id: &str,

@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn data_backed_auth_context_marks_wallet_denial_as_not_allowed() {
+    async fn data_backed_auth_context_marks_empty_wallet_denial_as_not_allowed() {
         let api_key = "sk-test-empty-wallet";
         let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(vec![(
             Some(hash_api_key(api_key)),
@@ -1189,7 +1189,7 @@ mod tests {
         wallet_repository
             .update_auth_user_wallet_snapshot(
                 "user-runtime-wallet-cache",
-                0.0,
+                -1.0,
                 0.0,
                 "finite",
                 "USD",
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(
             second.local_rejection,
             Some(GatewayLocalAuthRejection::BalanceDenied {
-                remaining: Some(0.0),
+                remaining: Some(-1.0),
             })
         );
         assert!(!second.access_allowed);

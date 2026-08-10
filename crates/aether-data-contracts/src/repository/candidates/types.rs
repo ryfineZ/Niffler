@@ -431,6 +431,16 @@ pub struct PublicHealthTimelineBucket {
 
 #[async_trait]
 pub trait RequestCandidateReadRepository: Send + Sync {
+    async fn find_billing_admission(
+        &self,
+        _request_id: &str,
+    ) -> Result<
+        Option<crate::repository::billing::BillingRequestAdmissionRecord>,
+        crate::DataLayerError,
+    > {
+        Ok(None)
+    }
+
     async fn list_by_request_id(
         &self,
         request_id: &str,
@@ -525,6 +535,18 @@ pub trait RequestCandidateWriteRepository: Send + Sync {
         &self,
         candidate: UpsertRequestCandidateRecord,
     ) -> Result<StoredRequestCandidate, crate::DataLayerError>;
+
+    async fn upsert_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: crate::repository::billing::BillingRequestAdmissionInput,
+    ) -> Result<
+        (
+            StoredRequestCandidate,
+            crate::repository::billing::BillingRequestAdmissionRecord,
+        ),
+        crate::DataLayerError,
+    >;
 
     async fn delete_created_before(
         &self,
