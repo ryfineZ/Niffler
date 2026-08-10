@@ -200,6 +200,112 @@
                 </div>
               </Card>
 
+              <Card
+                v-if="managedInstructionsStatus"
+                :class="managedInstructionsStatus.applied ? 'border-primary/30' : 'border-border'"
+              >
+                <div class="p-3 sm:p-4">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <h4 class="text-sm font-semibold">
+                      {{ t('managedInstructionsStatus.title') }}
+                    </h4>
+                    <Badge :variant="managedInstructionsStatus.applied ? 'success' : 'secondary'">
+                      {{ managedInstructionsStatus.applied
+                        ? t('managedInstructionsStatus.applied')
+                        : t('managedInstructionsStatus.notApplied') }}
+                    </Badge>
+                    <span class="text-xs text-muted-foreground">
+                      {{ managedInstructionsReasonLabel }}
+                    </span>
+                  </div>
+
+                  <dl class="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.profile') }}
+                      </dt>
+                      <dd
+                        class="truncate font-mono text-foreground"
+                        :title="managedInstructionsStatus.profileId"
+                      >
+                        {{ managedInstructionsStatus.profileId }}
+                      </dd>
+                    </div>
+                    <div
+                      v-if="managedInstructionsStatus.userGroupId"
+                      class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2"
+                    >
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.userGroup') }}
+                      </dt>
+                      <dd
+                        class="truncate font-mono text-foreground"
+                        :title="managedInstructionsStatus.userGroupId"
+                      >
+                        {{ managedInstructionsStatus.userGroupId }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.mergeMode') }}
+                      </dt>
+                      <dd class="text-foreground">
+                        {{ managedInstructionsMergeModeLabel }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.clientInstructions') }}
+                      </dt>
+                      <dd class="text-foreground">
+                        {{ managedInstructionsClientInstructionsLabel }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.providerFormat') }}
+                      </dt>
+                      <dd
+                        class="truncate font-mono text-foreground"
+                        :title="managedInstructionsStatus.providerApiFormat"
+                      >
+                        {{ managedInstructionsStatus.providerApiFormat }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.targetField') }}
+                      </dt>
+                      <dd
+                        class="truncate font-mono text-foreground"
+                        :title="managedInstructionsStatus.targetField || undefined"
+                      >
+                        {{ managedInstructionsStatus.targetField || t('managedInstructionsStatus.noTarget') }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.coreVersion') }}
+                      </dt>
+                      <dd class="font-mono text-foreground">
+                        {{ managedInstructionsStatus.coreVersion }}
+                      </dd>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2">
+                      <dt class="text-muted-foreground">
+                        {{ t('managedInstructionsStatus.digest') }}
+                      </dt>
+                      <dd
+                        class="truncate font-mono text-foreground"
+                        :title="managedInstructionsStatus.profileSha256"
+                      >
+                        {{ managedInstructionsDigest }}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              </Card>
+
               <!-- 费用与性能概览 -->
               <Card>
                 <div class="p-3 sm:p-4">
@@ -823,6 +929,7 @@ import {
   resolveUsageStreamModes,
 } from '../utils/status'
 import { resolveRequestFailureNotice } from '../utils/errorNotice'
+import { normalizeManagedInstructionsStatus } from '../utils/managedInstructions'
 
 // 子组件
 import RequestHeadersContent from './RequestDetailDrawer/RequestHeadersContent.vue'
@@ -1158,6 +1265,31 @@ const traceRequestMetadata = computed<Record<string, unknown> | null>(() => {
   const meta = detail.value?.metadata
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
   return meta as Record<string, unknown>
+})
+
+const managedInstructionsStatus = computed(() =>
+  normalizeManagedInstructionsStatus(traceRequestMetadata.value?.managed_instructions),
+)
+
+const managedInstructionsReasonLabel = computed(() => {
+  const reason = managedInstructionsStatus.value?.reason
+  return reason ? t(`managedInstructionsStatus.reasons.${reason}`) : ''
+})
+
+const managedInstructionsMergeModeLabel = computed(() => {
+  const mergeMode = managedInstructionsStatus.value?.mergeMode
+  return mergeMode ? t(`managedInstructionsStatus.mergeModes.${mergeMode}`) : ''
+})
+
+const managedInstructionsClientInstructionsLabel = computed(() => {
+  const present = managedInstructionsStatus.value?.clientInstructionsPresent
+  if (present === null || present === undefined) return t('managedInstructionsStatus.notChecked')
+  return present ? t('managedInstructionsStatus.present') : t('managedInstructionsStatus.absent')
+})
+
+const managedInstructionsDigest = computed(() => {
+  const digest = managedInstructionsStatus.value?.profileSha256
+  return digest ? `${digest.slice(0, 12)}…` : ''
 })
 
 function toRecordOrNull(value: unknown): Record<string, unknown> | null {
