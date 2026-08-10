@@ -197,7 +197,7 @@ fn dashboard_wallet_card_value_and_subvalue(
     }
 
     let package_balance = dashboard_json_f64(wallet_payload.get("package_balance")).max(0.0);
-    let wallet_balance = dashboard_json_f64(wallet_payload.get("wallet_balance")).max(0.0);
+    let wallet_balance = dashboard_json_f64(wallet_payload.get("wallet_balance"));
     let total_available =
         dashboard_json_f64(wallet_payload.get("total_available_balance")).max(0.0);
     (

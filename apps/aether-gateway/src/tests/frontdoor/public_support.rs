@@ -4522,6 +4522,64 @@ async fn gateway_handles_wallet_balance_locally_without_proxying_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_wallet_balance_exposes_debt_without_clamping_it_to_zero() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            ("session_id".to_string(), json!("session-wallet-debt-1")),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let mut wallet = sample_auth_wallet("user-auth-1", now);
+    wallet.balance = -10.0;
+    wallet.gift_balance = 0.0;
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_state(
+            user,
+            wallet,
+            [sample_auth_session(
+                "user-auth-1",
+                "session-wallet-debt-1",
+                "device-wallet-debt-1",
+                "refresh-token-placeholder",
+                now,
+            )],
+        )
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/wallet/balance"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-wallet-debt-1")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["balance"], -10.0);
+    assert_eq!(payload["wallet_balance"], -10.0);
+    assert_eq!(payload["actual_wallet_balance"], -10.0);
+    assert_eq!(payload["spendable_wallet_balance"], 0.0);
+    assert_eq!(payload["debt_usd"], 10.0);
+    assert_eq!(payload["billing_state"], "in_debt");
+    assert_eq!(payload["total_available_balance"], 0.0);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
     let auth_now = Utc::now();
     let usage_now = auth_now;

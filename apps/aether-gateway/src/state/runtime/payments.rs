@@ -360,6 +360,7 @@ fn stored_admin_payment_order_to_gateway(
         wallet_id: order.wallet_id,
         user_id: order.user_id,
         amount_usd: order.amount_usd,
+        debt_repayment_usd: order.debt_repayment_usd,
         pay_amount: order.pay_amount,
         pay_currency: order.pay_currency,
         exchange_rate: order.exchange_rate,

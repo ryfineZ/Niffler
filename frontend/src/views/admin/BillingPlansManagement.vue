@@ -743,53 +743,22 @@
               </div>
               <div class="space-y-1.5 md:col-span-2">
                 <Label class="inline-flex items-center gap-1.5">
-                  <span>{{ t('billingPlansManagement.allowedModels') }}</span>
+                  <span>{{ t('billingPlansManagement.allowedProviders') }}</span>
                   <span class="text-destructive">*</span>
                 </Label>
                 <MultiSelect
-                  v-model="form.allowed_global_model_ids"
-                  :options="globalModelOptions"
-                  :placeholder="loadingGlobalModels ? t('billingPlansManagement.loadingModels') : t('billingPlansManagement.chooseModels')"
-                  :empty-text="t('billingPlansManagement.noModels')"
+                  v-model="form.allowed_provider_ids"
+                  :options="providerOptions"
+                  :placeholder="loadingProviders ? t('billingPlansManagement.loadingProviders') : t('billingPlansManagement.chooseProviders')"
+                  :empty-text="t('billingPlansManagement.noProviders')"
                 />
-                <div
-                  v-if="loadingProviders || providerModelSourceOptions.length > 0"
-                  class="rounded-xl border border-border/60 bg-muted/20 p-3"
-                >
-                  <div class="mb-2 text-xs font-medium text-muted-foreground">
-                    {{ t('billingPlansManagement.quickProviderSelect') }}
-                  </div>
-                  <div
-                    v-if="loadingProviders"
-                    class="text-xs text-muted-foreground"
-                  >
-                    {{ t('billingPlansManagement.loadingProviders') }}
-                  </div>
-                  <div
-                    v-else
-                    class="flex flex-wrap gap-2"
-                  >
-                    <button
-                      v-for="provider in providerModelSourceOptions"
-                      :key="provider.id"
-                      type="button"
-                      class="rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
-                      :class="[
-                        provider.allSelected
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : provider.someSelected
-                            ? 'border-primary/60 bg-primary/10 text-primary'
-                            : 'border-border/60 bg-background text-muted-foreground hover:border-border hover:bg-muted/40'
-                      ]"
-                      @click="toggleProviderModels(provider)"
-                    >
-                      {{ provider.name }} · {{ provider.selectedCount }}/{{ provider.modelIds.length }}
-                    </button>
-                  </div>
-                </div>
                 <p class="text-xs leading-5 text-muted-foreground">
-                  {{ t('billingPlansManagement.allowedModelsHint') }}
+                  {{ t('billingPlansManagement.allowedProvidersHint') }}
                 </p>
+                <div class="flex min-h-9 items-center rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  <span class="font-medium text-foreground">{{ t('billingPlansManagement.derivedModels') }}：</span>
+                  <span class="ml-1">{{ derivedModelSummary }}</span>
+                </div>
               </div>
               <div class="space-y-1.5">
                 <Label>{{ t('billingPlansManagement.resetTimezone') }}</Label>
@@ -798,15 +767,6 @@
                   placeholder="Asia/Shanghai"
                   disabled
                 />
-              </div>
-              <div class="flex items-center justify-between rounded-xl border border-border/60 bg-card/50 p-3">
-                <div>
-                  <Label>{{ t('billingPlansManagement.allowWalletOverage') }}</Label>
-                  <p class="mt-1 text-xs text-muted-foreground">
-                    {{ t('billingPlansManagement.allowWalletOverageHint') }}
-                  </p>
-                </div>
-                <Switch v-model="form.allow_wallet_overage" />
               </div>
               <div class="flex items-center justify-between rounded-xl border border-border/60 bg-card/50 p-3 opacity-70">
                 <div>
@@ -986,8 +946,7 @@ interface PlanFormState {
   quota_multiplier: number
   reset_timezone: string
   carry_over: boolean
-  allow_wallet_overage: boolean
-  allowed_global_model_ids: string[]
+  allowed_provider_ids: string[]
   membership_group_enabled: boolean
   grant_user_groups: string[]
 }
@@ -1016,13 +975,17 @@ const userGroupOptions = computed(() =>
   }))
 )
 
-const globalModelOptions = computed(() => {
-  const knownIds = new Set(globalModels.value.map((model) => model.id))
-  const loadedOptions = globalModels.value.map((model) => ({
-    value: model.id,
-    label: model.display_name || model.name || model.id,
-  }))
-  const missingOptions = form.allowed_global_model_ids
+const providerOptions = computed(() => {
+  const knownIds = new Set(providers.value.map((provider) => provider.id))
+  const loadedOptions = providers.value
+    .filter((provider) => provider.is_active || form.allowed_provider_ids.includes(provider.id))
+    .map((provider) => ({
+      value: provider.id,
+      label: provider.is_active
+        ? provider.name
+        : `${provider.name} (${t('billingPlansManagement.providerDisabled')})`,
+    }))
+  const missingOptions = form.allowed_provider_ids
     .filter((id) => id && !knownIds.has(id))
     .map((id) => ({
       value: id,
@@ -1031,24 +994,38 @@ const globalModelOptions = computed(() => {
   return [...loadedOptions, ...missingOptions]
 })
 
-const providerModelSourceOptions = computed(() => {
+const derivedGlobalModels = computed(() => {
   const activeModelIds = new Set(globalModels.value.map((model) => model.id))
-  const selectedModelIds = new Set(form.allowed_global_model_ids)
+  const selectedProviderIds = new Set(form.allowed_provider_ids)
+  const modelIds = new Set(
+    providers.value
+      .filter((provider) => provider.is_active && selectedProviderIds.has(provider.id))
+      .flatMap((provider) => provider.global_model_ids)
+      .filter((modelId) => activeModelIds.has(modelId)),
+  )
+  return globalModels.value.filter((model) => modelIds.has(model.id))
+})
 
-  return providers.value
-    .map((provider) => {
-      const modelIds = provider.global_model_ids.filter((id) => activeModelIds.has(id))
-      const selectedCount = modelIds.filter((id) => selectedModelIds.has(id)).length
-      return {
-        id: provider.id,
-        name: provider.name,
-        modelIds,
-        selectedCount,
-        allSelected: modelIds.length > 0 && selectedCount === modelIds.length,
-        someSelected: selectedCount > 0,
-      }
+const derivedModelSummary = computed(() => {
+  if (loadingProviders.value || loadingGlobalModels.value) {
+    return t('billingPlansManagement.loadingModels')
+  }
+  if (form.allowed_provider_ids.length === 0) {
+    return t('billingPlansManagement.chooseProvidersFirst')
+  }
+  if (derivedGlobalModels.value.length === 0) {
+    return t('billingPlansManagement.noDerivedModels')
+  }
+  const names = derivedGlobalModels.value
+    .slice(0, 3)
+    .map((model) => model.display_name || model.name || model.id)
+    .join('、')
+  return derivedGlobalModels.value.length <= 3
+    ? names
+    : t('billingPlansManagement.derivedModelCount', {
+      names,
+      count: derivedGlobalModels.value.length,
     })
-    .filter((provider) => provider.modelIds.length > 0)
 })
 
 const priceCurrencyOptions = computed(() => {
@@ -1109,7 +1086,7 @@ const isSaveDisabled = computed(() =>
   || (showPurchaseLimitCount.value && !hasValidActiveLimit.value)
   || !hasValidPurchaseLimitScope.value
   || !hasSelectedPackageEntitlement.value
-  || (form.daily_quota_enabled && form.allowed_global_model_ids.length === 0)
+  || (form.daily_quota_enabled && form.allowed_provider_ids.length === 0)
 )
 
 const planMode = computed<PlanMode>(() => {
@@ -1245,9 +1222,7 @@ const dailyQuotaSummaryText = computed(() =>
 )
 
 const dailyQuotaDetailText = computed(() =>
-  form.allow_wallet_overage
-    ? t('billingPlansManagement.walletOverageDetail')
-    : t('billingPlansManagement.strictQuotaDetail')
+  t('billingPlansManagement.walletOverageDetail')
 )
 
 const membershipSummaryText = computed(() =>
@@ -1289,8 +1264,7 @@ function buildDefaultForm(): PlanFormState {
     quota_multiplier: 1,
     reset_timezone: 'Asia/Shanghai',
     carry_over: false,
-    allow_wallet_overage: false,
-    allowed_global_model_ids: [],
+    allowed_provider_ids: [],
     membership_group_enabled: false,
     grant_user_groups: [],
   }
@@ -1353,20 +1327,6 @@ async function loadProviders() {
   }
 }
 
-function toggleProviderModels(provider: { modelIds: string[], allSelected: boolean }) {
-  const nextIds = new Set(form.allowed_global_model_ids)
-  if (provider.allSelected) {
-    for (const modelId of provider.modelIds) {
-      nextIds.delete(modelId)
-    }
-  } else {
-    for (const modelId of provider.modelIds) {
-      nextIds.add(modelId)
-    }
-  }
-  form.allowed_global_model_ids = Array.from(nextIds)
-}
-
 function openCreateDialog() {
   editingPlan.value = null
   assignForm(buildDefaultForm())
@@ -1393,6 +1353,9 @@ function formFromPlan(plan: BillingPlan): PlanFormState {
   next.sort_order = plan.sort_order
   next.max_active_per_user = plan.max_active_per_user
   next.purchase_limit_scope = plan.purchase_limit_scope || 'active_period'
+  next.allowed_provider_ids = Array.isArray(plan.allowed_provider_ids)
+    ? [...plan.allowed_provider_ids]
+    : []
 
   for (const entitlement of normalizeBillingEntitlements(plan.entitlements)) {
     if (entitlement.type === 'wallet_credit') {
@@ -1411,10 +1374,6 @@ function formFromPlan(plan: BillingPlan): PlanFormState {
       next.quota_multiplier = Number(quota.quota_multiplier ?? 1)
       next.reset_timezone = quota.reset_timezone || 'Asia/Shanghai'
       next.carry_over = Boolean(quota.carry_over)
-      next.allow_wallet_overage = Boolean(quota.allow_wallet_overage)
-      next.allowed_global_model_ids = Array.isArray(quota.allowed_global_model_ids)
-        ? [...quota.allowed_global_model_ids]
-        : []
     } else if (entitlement.type === 'membership_group') {
       const membership = entitlement as MembershipGroupEntitlement
       next.membership_group_enabled = true
@@ -1475,10 +1434,7 @@ function buildEntitlements(): BillingEntitlement[] {
       quota_multiplier: Number(form.quota_multiplier),
       reset_timezone: form.reset_timezone.trim() || 'Asia/Shanghai',
       carry_over: false,
-      allow_wallet_overage: Boolean(form.allow_wallet_overage),
-      allowed_global_model_ids: form.allowed_global_model_ids
-        .map((value) => value.trim())
-        .filter(Boolean),
+      allow_wallet_overage: true,
     }
     entitlements.push(quota)
   }
@@ -1527,7 +1483,7 @@ function validatePlan(entitlements: BillingEntitlement[]): string | null {
   if (form.daily_quota_enabled && (!Number.isFinite(Number(form.quota_multiplier)) || Number(form.quota_multiplier) <= 0)) {
     return t('billingPlansManagement.multiplierPositive')
   }
-  if (form.daily_quota_enabled && form.allowed_global_model_ids.length === 0) return t('billingPlansManagement.modelsRequired')
+  if (form.daily_quota_enabled && form.allowed_provider_ids.length === 0) return t('billingPlansManagement.providersRequired')
   if (form.membership_group_enabled && form.grant_user_groups.length === 0) return t('billingPlansManagement.groupRequired')
   return null
 }
@@ -1559,6 +1515,9 @@ function buildPlanPayload(): BillingPlanWriteRequest | null {
     sort_order: Number(form.sort_order),
     max_active_per_user: showPurchaseLimitCount.value ? Number(form.max_active_per_user) : 1,
     purchase_limit_scope: form.purchase_limit_scope,
+    allowed_provider_ids: form.allowed_provider_ids
+      .map((value) => value.trim())
+      .filter(Boolean),
     entitlements,
   }
 }
@@ -1695,6 +1654,23 @@ function formatAllowedGlobalModels(modelIds?: string[]): string {
     : t('billingPlansManagement.modelListSummary', { names: names.slice(0, 2).join('、'), count: names.length })
 }
 
+function providerName(providerId: string): string {
+  return providers.value.find((provider) => provider.id === providerId)?.name || providerId
+}
+
+function formatAllowedProviders(plan: BillingPlan, legacyModelIds?: string[]): string {
+  if (Array.isArray(plan.allowed_provider_ids) && plan.allowed_provider_ids.length > 0) {
+    const names = plan.allowed_provider_ids.map(providerName)
+    return names.length <= 2
+      ? names.join('、')
+      : t('billingPlansManagement.providerListSummary', {
+        names: names.slice(0, 2).join('、'),
+        count: names.length,
+      })
+  }
+  return formatAllowedGlobalModels(legacyModelIds)
+}
+
 function entitlementBadges(plan: BillingPlan): string[] {
   return normalizeBillingEntitlements(plan.entitlements).map((entitlement) => {
     if (entitlement.type === 'wallet_credit') {
@@ -1715,7 +1691,7 @@ function entitlementBadges(plan: BillingPlan): string[] {
         parts.push(t('billingPlansManagement.quota30dAmount', { amount: Number(entitlement.monthly_quota_usd || 0).toFixed(2) }))
       }
       const quotaText = parts.join(' / ') || t('billingPlansManagement.usageQuota')
-      const labels = [formatAllowedGlobalModels(entitlement.allowed_global_model_ids)]
+      const labels = [formatAllowedProviders(plan, entitlement.allowed_global_model_ids)]
       const multiplierLabel = quotaConsumptionMultiplierLabel(entitlement)
       if (multiplierLabel) labels.push(multiplierLabel)
       return `${quotaText} · ${labels.join(' · ')}`

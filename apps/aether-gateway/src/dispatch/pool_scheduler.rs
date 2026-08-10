@@ -1011,6 +1011,7 @@ impl<'a> PoolKeyCursor<'a> {
             transport: std::sync::Arc::new(transport),
             orchestration: LocalExecutionCandidateMetadata::default(),
             ranking: self.group.ranking.clone(),
+            billing_admission: self.group.billing_admission.clone(),
         })
     }
 
@@ -3732,6 +3733,7 @@ mod tests {
             provider_api_format: "openai:chat".to_string(),
             orchestration: LocalExecutionCandidateMetadata::default(),
             ranking: None,
+            billing_admission: None,
             transport: Arc::new(crate::ai_serving::GatewayProviderTransportSnapshot {
                 provider: GatewayProviderTransportProvider {
                     id: provider_id.to_string(),

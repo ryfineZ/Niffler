@@ -297,6 +297,27 @@ impl RequestCandidateRuntimeWriter for AppState {
     ) -> Result<Option<StoredRequestCandidate>, GatewayError> {
         AppState::upsert_request_candidate(self, candidate).await
     }
+
+    async fn resolve_request_billing_admission(
+        &self,
+        candidate: &UpsertRequestCandidateRecord,
+        report_context: Option<&Value>,
+    ) -> Result<
+        Option<aether_data_contracts::repository::billing::BillingRequestAdmissionInput>,
+        GatewayError,
+    > {
+        AppState::resolve_request_billing_admission(self, candidate, report_context).await
+    }
+
+    async fn upsert_request_candidate_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: aether_data_contracts::repository::billing::BillingRequestAdmissionInput,
+    ) -> Result<Option<StoredRequestCandidate>, GatewayError> {
+        AppState::upsert_request_candidate_with_billing_admission(self, candidate, admission)
+            .await
+            .map(|stored| stored.map(|(candidate, _)| candidate))
+    }
 }
 
 #[async_trait]

@@ -47,7 +47,7 @@
               {{ t('wallet.used') }} {{ formatCurrency(dailyQuotaUsed) }} / {{ t('wallet.daily') }} {{ formatCurrency(dailyQuotaTotal) }}
             </div>
             <div class="text-xs text-muted-foreground">
-              {{ dailyQuota?.allow_wallet_overage ? t('wallet.overage') : t('wallet.reject') }}
+              {{ t('wallet.overage') }}
             </div>
           </div>
           <div
@@ -62,8 +62,17 @@
           <div class="text-xs uppercase tracking-wider text-muted-foreground">
             {{ t('wallet.balance') }}
           </div>
-          <div class="text-2xl font-semibold tabular-nums">
+          <div
+            class="text-2xl font-semibold tabular-nums"
+            :class="walletOnlyBalance < 0 ? 'text-rose-600' : undefined"
+          >
             {{ formatCurrency(walletOnlyBalance) }}
+          </div>
+          <div
+            v-if="walletOnlyBalance < 0"
+            class="text-xs font-medium text-rose-600"
+          >
+            {{ t(hasUsablePlanBalance ? 'wallet.inDebtPlanStillUsable' : 'wallet.inDebtNoUsablePlan') }}
           </div>
           <div class="text-xs text-muted-foreground">
             {{ t('wallet.rechargeBalance') }}: {{ formatCurrency(walletBalance?.wallet?.recharge_balance) }} · {{ t('wallet.giftBalance') }}: {{ formatCurrency(walletBalance?.wallet?.gift_balance) }}
@@ -821,7 +830,8 @@ const rechargeAmountUsdText = computed(() => Number(rechargeForm.amount_usd || 0
 const dailyQuota = computed(() => walletBalance.value?.daily_quota ?? null)
 const hasActiveDailyQuota = computed(() => Boolean(dailyQuota.value?.has_active))
 const walletOnlyBalance = computed(() => {
-  const explicitBalance = walletBalance.value?.wallet_balance
+  const explicitBalance = walletBalance.value?.actual_wallet_balance
+    ?? walletBalance.value?.wallet_balance
   if (typeof explicitBalance === 'number' && Number.isFinite(explicitBalance)) {
     return explicitBalance
   }
@@ -838,6 +848,9 @@ const packageBalance = computed(() => {
   }
   return 0
 })
+const hasUsablePlanBalance = computed(() =>
+  hasActiveDailyQuota.value && packageBalance.value > 0.000_000_01
+)
 const totalAvailableBalance = computed(() => {
   const explicitBalance = walletBalance.value?.total_available_balance
   if (typeof explicitBalance === 'number' && Number.isFinite(explicitBalance)) {

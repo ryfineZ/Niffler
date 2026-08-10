@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS payment_orders (
     wallet_id TEXT NOT NULL,
     user_id TEXT,
     amount_usd REAL NOT NULL,
+    debt_repayment_usd REAL NOT NULL DEFAULT 0,
     pay_amount REAL,
     pay_currency TEXT,
     exchange_rate REAL,
@@ -214,6 +215,16 @@ CREATE TABLE IF NOT EXISTS billing_plans (
 );
 CREATE INDEX IF NOT EXISTS idx_billing_plans_enabled_sort ON billing_plans (enabled, sort_order);
 
+CREATE TABLE IF NOT EXISTS billing_plan_providers (
+    plan_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (plan_id, provider_id),
+    CONSTRAINT fk_billing_plan_providers_plan FOREIGN KEY (plan_id) REFERENCES billing_plans (id) ON DELETE CASCADE,
+    CONSTRAINT fk_billing_plan_providers_provider FOREIGN KEY (provider_id) REFERENCES providers (id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_billing_plan_providers_provider ON billing_plan_providers (provider_id, plan_id);
+
 CREATE TABLE IF NOT EXISTS user_plan_entitlements (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL,
@@ -228,6 +239,41 @@ CREATE TABLE IF NOT EXISTS user_plan_entitlements (
 );
 CREATE INDEX IF NOT EXISTS idx_user_plan_entitlements_user_active ON user_plan_entitlements (user_id, status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_user_plan_entitlements_order ON user_plan_entitlements (payment_order_id);
+
+CREATE TABLE IF NOT EXISTS user_entitlement_providers (
+    user_entitlement_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_entitlement_id, provider_id),
+    CONSTRAINT fk_user_entitlement_providers_entitlement FOREIGN KEY (user_entitlement_id) REFERENCES user_plan_entitlements (id) ON DELETE CASCADE,
+    CONSTRAINT fk_user_entitlement_providers_provider FOREIGN KEY (provider_id) REFERENCES providers (id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_user_entitlement_providers_provider ON user_entitlement_providers (provider_id, user_entitlement_id);
+
+CREATE TABLE IF NOT EXISTS billing_request_admissions (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT,
+    api_key_id TEXT,
+    wallet_id TEXT,
+    global_model_id TEXT,
+    funding_source TEXT NOT NULL,
+    wallet_balance_at_admission REAL,
+    wallet_payment_allowed INTEGER NOT NULL DEFAULT 0,
+    wallet_overage_allowed INTEGER NOT NULL DEFAULT 0,
+    entitlement_ids TEXT NOT NULL,
+    entitlement_provider_scopes TEXT NOT NULL,
+    allowed_provider_ids TEXT NOT NULL,
+    billing_admitted INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'admitted',
+    rejection_reason TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CONSTRAINT fk_billing_request_admissions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
+    CONSTRAINT fk_billing_request_admissions_api_key FOREIGN KEY (api_key_id) REFERENCES api_keys (id) ON DELETE SET NULL,
+    CONSTRAINT fk_billing_request_admissions_wallet FOREIGN KEY (wallet_id) REFERENCES wallets (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_billing_request_admissions_user_created ON billing_request_admissions (user_id, created_at);
 
 CREATE TABLE IF NOT EXISTS entitlement_usage_ledgers (
     id TEXT PRIMARY KEY NOT NULL,
@@ -244,21 +290,6 @@ CREATE TABLE IF NOT EXISTS entitlement_usage_ledgers (
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_user_date ON entitlement_usage_ledgers (user_id, usage_date);
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_entitlement_date ON entitlement_usage_ledgers (user_entitlement_id, usage_date);
 CREATE INDEX IF NOT EXISTS idx_entitlement_usage_request ON entitlement_usage_ledgers (request_id);
-
-CREATE TABLE IF NOT EXISTS entitlement_usage_windows (
-    id TEXT PRIMARY KEY NOT NULL,
-    user_entitlement_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    window_scope TEXT NOT NULL,
-    window_key TEXT NOT NULL,
-    window_started_at INTEGER NOT NULL,
-    window_ends_at INTEGER NOT NULL,
-    used_usd REAL NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE (user_entitlement_id, window_scope)
-);
-CREATE INDEX IF NOT EXISTS idx_entitlement_usage_windows_user_scope ON entitlement_usage_windows (user_id, window_scope, window_ends_at);
 
 CREATE TABLE IF NOT EXISTS refund_requests (
     id TEXT PRIMARY KEY NOT NULL,
@@ -295,6 +326,21 @@ CREATE INDEX IF NOT EXISTS ix_refund_requests_payment_order_id ON refund_request
 CREATE INDEX IF NOT EXISTS ix_refund_requests_requested_by ON refund_requests (requested_by);
 CREATE INDEX IF NOT EXISTS ix_refund_requests_approved_by ON refund_requests (approved_by);
 CREATE INDEX IF NOT EXISTS ix_refund_requests_processed_by ON refund_requests (processed_by);
+
+CREATE TABLE IF NOT EXISTS entitlement_usage_windows (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_entitlement_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    window_scope TEXT NOT NULL,
+    window_key TEXT NOT NULL,
+    window_started_at INTEGER NOT NULL,
+    window_ends_at INTEGER NOT NULL,
+    used_usd REAL NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (user_entitlement_id, window_scope)
+);
+CREATE INDEX IF NOT EXISTS idx_entitlement_usage_windows_user_scope ON entitlement_usage_windows (user_id, window_scope, window_ends_at);
 
 CREATE TABLE IF NOT EXISTS redeem_code_batches (
     id TEXT PRIMARY KEY NOT NULL,

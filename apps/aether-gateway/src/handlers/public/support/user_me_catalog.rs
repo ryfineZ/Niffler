@@ -23,6 +23,105 @@ const USERS_ME_MODEL_CATALOG_UNAVAILABLE_DETAIL: &str = "用户模型目录暂�
 const USERS_ME_PROVIDER_CATALOG_UNAVAILABLE_DETAIL: &str = "用户提供商目录暂不可用";
 const USERS_ME_ENDPOINT_STATUS_UNAVAILABLE_DETAIL: &str = "用户端点健康数据暂不可用";
 
+#[derive(Debug, Default)]
+struct UsersMePlanCatalogScope {
+    provider_ids: BTreeSet<String>,
+    legacy_global_model_ids: BTreeSet<String>,
+}
+
+async fn resolve_users_me_plan_catalog_scope(
+    state: &AppState,
+    user_id: &str,
+) -> Result<UsersMePlanCatalogScope, Response<Body>> {
+    let entitlements = match state.list_user_plan_entitlements(user_id).await {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(UsersMePlanCatalogScope::default()),
+        Err(err) => {
+            return Err(build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user plan lookup failed: {err:?}"),
+                false,
+            ))
+        }
+    };
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    let mut scope = UsersMePlanCatalogScope::default();
+    for entitlement in entitlements.into_iter().filter(|entitlement| {
+        entitlement.status.eq_ignore_ascii_case("active")
+            && entitlement.starts_at_unix_secs <= now
+            && entitlement.expires_at_unix_secs > now
+    }) {
+        if entitlement.allowed_provider_ids.is_empty() {
+            collect_legacy_plan_global_model_ids(
+                &entitlement.entitlements_snapshot,
+                &mut scope.legacy_global_model_ids,
+            );
+        } else {
+            scope.provider_ids.extend(
+                entitlement
+                    .allowed_provider_ids
+                    .into_iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            );
+        }
+    }
+    Ok(scope)
+}
+
+fn collect_legacy_plan_global_model_ids(value: &serde_json::Value, output: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_legacy_plan_global_model_ids(item, output);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(model_ids) = map
+                .get("allowed_global_model_ids")
+                .and_then(serde_json::Value::as_array)
+            {
+                output.extend(
+                    model_ids
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned),
+                );
+            }
+            for child in map.values() {
+                collect_legacy_plan_global_model_ids(child, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn resolve_plan_provider_global_model_ids(
+    state: &AppState,
+    provider_ids: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, Response<Body>> {
+    if provider_ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let provider_ids = provider_ids.iter().cloned().collect::<Vec<_>>();
+    let refs = state
+        .list_active_global_model_ids_by_provider_ids(&provider_ids)
+        .await
+        .map_err(|err| {
+            build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user plan provider model lookup failed: {err:?}"),
+                false,
+            )
+        })?;
+    Ok(refs
+        .into_iter()
+        .map(|entry| entry.global_model_id)
+        .collect())
+}
+
 fn build_users_me_available_model_payload(
     model: StoredPublicGlobalModel,
     hide_mapping_config: bool,
@@ -155,6 +254,21 @@ pub(super) async fn handle_users_me_available_models(
     };
     let (skip, limit, search) =
         parse_users_me_available_models_query(request_context.request_query_string.as_deref());
+    let plan_scope = if auth.user.role.eq_ignore_ascii_case("admin") {
+        UsersMePlanCatalogScope::default()
+    } else {
+        match resolve_users_me_plan_catalog_scope(state, &auth.user.id).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        }
+    };
+    let plan_provider_model_ids =
+        match resolve_plan_provider_global_model_ids(state, &plan_scope.provider_ids).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let mut plan_model_ids = plan_scope.legacy_global_model_ids;
+    plan_model_ids.extend(plan_provider_model_ids);
 
     let effective_policies = if auth.user.role.eq_ignore_ascii_case("admin") {
         None
@@ -257,16 +371,18 @@ pub(super) async fn handle_users_me_available_models(
             .items
             .into_iter()
             .filter(|model| {
-                allowed_models
-                    .as_ref()
-                    .is_none_or(|allowed: &BTreeSet<String>| {
-                        allowed.contains(&model.name.to_ascii_lowercase())
-                    })
-            })
-            .filter(|model| {
-                provider_model_ids
-                    .as_ref()
-                    .is_none_or(|allowed: &BTreeSet<String>| allowed.contains(&model.id))
+                let allowed_by_base_policy =
+                    allowed_models
+                        .as_ref()
+                        .is_none_or(|allowed: &BTreeSet<String>| {
+                            allowed.contains(&model.name.to_ascii_lowercase())
+                        })
+                        && provider_model_ids
+                            .as_ref()
+                            .is_none_or(|allowed: &BTreeSet<String>| allowed.contains(&model.id));
+                allowed_by_base_policy
+                    || plan_model_ids.contains(&model.id)
+                    || plan_model_ids.contains(&model.name)
             })
             .collect::<Vec<_>>();
         let total = filtered.len();
@@ -307,6 +423,14 @@ pub(super) async fn handle_users_me_providers_get(
         Err(response) => return response,
     };
     let expose_provider_details = auth.user.role.eq_ignore_ascii_case("admin");
+    let plan_provider_ids = if expose_provider_details {
+        BTreeSet::new()
+    } else {
+        match resolve_users_me_plan_catalog_scope(state, &auth.user.id).await {
+            Ok(value) => value.provider_ids,
+            Err(response) => return response,
+        }
+    };
     let allowed_provider_names = if expose_provider_details {
         None
     } else {
@@ -339,7 +463,8 @@ pub(super) async fn handle_users_me_providers_get(
     };
     if let Some(allowed_provider_names) = allowed_provider_names.as_ref() {
         providers.retain(|provider| {
-            allowed_provider_names.contains(&provider.id.to_ascii_lowercase())
+            plan_provider_ids.contains(&provider.id)
+                || allowed_provider_names.contains(&provider.id.to_ascii_lowercase())
                 || allowed_provider_names.contains(&provider.name.to_ascii_lowercase())
                 || allowed_provider_names.contains(&provider.provider_type.to_ascii_lowercase())
         });

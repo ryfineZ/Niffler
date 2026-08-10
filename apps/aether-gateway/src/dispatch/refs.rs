@@ -208,6 +208,7 @@ mod tests {
                 scheduler_affinity_epoch: None,
             },
             ranking: None,
+            billing_admission: None,
         }
     }
 }

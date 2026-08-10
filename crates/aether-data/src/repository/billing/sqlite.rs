@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use sqlx::{sqlite::SqliteRow, Row};
@@ -51,6 +51,98 @@ impl SqliteBillingReadRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
+
+    async fn load_all_plan_provider_ids(
+        &self,
+    ) -> Result<BTreeMap<String, Vec<String>>, DataLayerError> {
+        let rows = sqlx::query(
+            "SELECT plan_id, provider_id FROM billing_plan_providers ORDER BY plan_id, provider_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_sql_err()?;
+        let mut scopes = BTreeMap::<String, Vec<String>>::new();
+        for row in rows {
+            scopes
+                .entry(row.try_get("plan_id").map_sql_err()?)
+                .or_default()
+                .push(row.try_get("provider_id").map_sql_err()?);
+        }
+        Ok(scopes)
+    }
+
+    async fn load_plan_provider_ids(&self, plan_id: &str) -> Result<Vec<String>, DataLayerError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT provider_id FROM billing_plan_providers WHERE plan_id = ? ORDER BY provider_id",
+        )
+        .bind(plan_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_sql_err()
+    }
+
+    async fn load_entitlement_provider_ids(
+        &self,
+        entitlement_id: &str,
+    ) -> Result<Vec<String>, DataLayerError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = ? ORDER BY provider_id",
+        )
+        .bind(entitlement_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_sql_err()
+    }
+}
+
+async fn replace_plan_provider_ids_sqlite(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    plan_id: &str,
+    provider_ids: &[String],
+    now: i64,
+) -> Result<(), DataLayerError> {
+    sqlx::query("DELETE FROM billing_plan_providers WHERE plan_id = ?")
+        .bind(plan_id)
+        .execute(&mut **transaction)
+        .await
+        .map_sql_err()?;
+    for provider_id in provider_ids {
+        sqlx::query(
+            "INSERT INTO billing_plan_providers (plan_id, provider_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(plan_id)
+        .bind(provider_id)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_sql_err()?;
+    }
+    Ok(())
+}
+
+async fn replace_entitlement_provider_ids_sqlite(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    entitlement_id: &str,
+    provider_ids: &[String],
+    now: i64,
+) -> Result<(), DataLayerError> {
+    sqlx::query("DELETE FROM user_entitlement_providers WHERE user_entitlement_id = ?")
+        .bind(entitlement_id)
+        .execute(&mut **transaction)
+        .await
+        .map_sql_err()?;
+    for provider_id in provider_ids {
+        sqlx::query(
+            "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(entitlement_id)
+        .bind(provider_id)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_sql_err()?;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -749,11 +841,15 @@ ORDER BY sort_order ASC, price_amount ASC, id ASC
         .fetch_all(&self.pool)
         .await
         .map_sql_err()?;
-        Ok(Some(
-            rows.iter()
-                .map(map_billing_plan_sqlite)
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
+        let mut plans = rows
+            .iter()
+            .map(map_billing_plan_sqlite)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut scopes = self.load_all_plan_provider_ids().await?;
+        for plan in &mut plans {
+            plan.allowed_provider_ids = scopes.remove(&plan.id).unwrap_or_default();
+        }
+        Ok(Some(plans))
     }
 
     async fn find_billing_plan(
@@ -776,7 +872,12 @@ LIMIT 1
         .fetch_optional(&self.pool)
         .await
         .map_sql_err()?;
-        row.as_ref().map(map_billing_plan_sqlite).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut plan = map_billing_plan_sqlite(&row)?;
+        plan.allowed_provider_ids = self.load_plan_provider_ids(plan_id).await?;
+        Ok(Some(plan))
     }
 
     async fn create_billing_plan(
@@ -785,6 +886,7 @@ LIMIT 1
     ) -> Result<AdminBillingMutationOutcome<BillingPlanRecord>, DataLayerError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = current_unix_secs_i64();
+        let mut transaction = self.pool.begin().await.map_sql_err()?;
         sqlx::query(BILLING_PLAN_INSERT_SQLITE)
             .bind(&id)
             .bind(&input.title)
@@ -800,9 +902,12 @@ LIMIT 1
             .bind(json_to_string(&input.entitlements_json)?)
             .bind(now)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await
             .map_sql_err()?;
+        replace_plan_provider_ids_sqlite(&mut transaction, &id, &input.allowed_provider_ids, now)
+            .await?;
+        transaction.commit().await.map_sql_err()?;
         match self.find_billing_plan(&id).await? {
             Some(record) => Ok(AdminBillingMutationOutcome::Applied(record)),
             None => Err(DataLayerError::UnexpectedValue(
@@ -816,6 +921,8 @@ LIMIT 1
         plan_id: &str,
         input: &BillingPlanWriteInput,
     ) -> Result<AdminBillingMutationOutcome<BillingPlanRecord>, DataLayerError> {
+        let now = current_unix_secs_i64();
+        let mut transaction = self.pool.begin().await.map_sql_err()?;
         let result = sqlx::query(BILLING_PLAN_UPDATE_SQLITE)
             .bind(&input.title)
             .bind(input.description.as_deref())
@@ -828,14 +935,22 @@ LIMIT 1
             .bind(input.max_active_per_user)
             .bind(&input.purchase_limit_scope)
             .bind(json_to_string(&input.entitlements_json)?)
-            .bind(current_unix_secs_i64())
+            .bind(now)
             .bind(plan_id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await
             .map_sql_err()?;
         if result.rows_affected() == 0 {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
+        replace_plan_provider_ids_sqlite(
+            &mut transaction,
+            plan_id,
+            &input.allowed_provider_ids,
+            now,
+        )
+        .await?;
+        transaction.commit().await.map_sql_err()?;
         match self.find_billing_plan(plan_id).await? {
             Some(record) => Ok(AdminBillingMutationOutcome::Applied(record)),
             None => Ok(AdminBillingMutationOutcome::NotFound),
@@ -935,11 +1050,15 @@ ORDER BY created_at DESC, expires_at DESC
         .fetch_all(&self.pool)
         .await
         .map_sql_err()?;
-        Ok(Some(
-            rows.iter()
-                .map(map_user_plan_entitlement_sqlite)
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
+        let mut entitlements = rows
+            .iter()
+            .map(map_user_plan_entitlement_sqlite)
+            .collect::<Result<Vec<_>, _>>()?;
+        for entitlement in &mut entitlements {
+            entitlement.allowed_provider_ids =
+                self.load_entitlement_provider_ids(&entitlement.id).await?;
+        }
+        Ok(Some(entitlements))
     }
 
     async fn cancel_user_plan_entitlement(
@@ -986,9 +1105,12 @@ WHERE id = ? AND user_id = ?
         .await
         .map_sql_err()?;
         match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(
-                map_user_plan_entitlement_sqlite(&row)?,
-            )),
+            Some(row) => {
+                let mut entitlement = map_user_plan_entitlement_sqlite(&row)?;
+                entitlement.allowed_provider_ids =
+                    self.load_entitlement_provider_ids(entitlement_id).await?;
+                Ok(AdminBillingMutationOutcome::Applied(entitlement))
+            }
             None => Ok(AdminBillingMutationOutcome::NotFound),
         }
     }
@@ -999,12 +1121,64 @@ WHERE id = ? AND user_id = ?
         entitlement_id: &str,
         input: &UserPlanEntitlementUpdateInput,
     ) -> Result<AdminBillingMutationOutcome<UserPlanEntitlementRecord>, DataLayerError> {
+        if input.starts_at_unix_secs >= input.expires_at_unix_secs {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "套餐开始时间必须早于结束时间".to_string(),
+            ));
+        }
         let now = current_unix_secs_i64();
         let entitlements_snapshot = input
             .entitlements_snapshot
             .as_ref()
             .map(json_to_string)
             .transpose()?;
+        let mut transaction = self.pool.begin().await.map_sql_err()?;
+        sqlx::query("UPDATE wallets SET updated_at = updated_at WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_sql_err()?;
+        let target_exists = sqlx::query_scalar::<_, String>(
+            r#"
+SELECT id
+FROM user_plan_entitlements
+WHERE id = ? AND user_id = ? AND status = 'active' AND expires_at > ?
+LIMIT 1
+            "#,
+        )
+        .bind(entitlement_id)
+        .bind(user_id)
+        .bind(now)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_sql_err()?
+        .is_some();
+        if !target_exists {
+            return Ok(AdminBillingMutationOutcome::NotFound);
+        }
+        let overlap = sqlx::query_scalar::<_, i64>(
+            r#"
+SELECT COUNT(*)
+FROM user_plan_entitlements
+WHERE user_id = ?
+  AND id <> ?
+  AND status = 'active'
+  AND starts_at < ?
+  AND expires_at > ?
+            "#,
+        )
+        .bind(user_id)
+        .bind(entitlement_id)
+        .bind(input.expires_at_unix_secs as i64)
+        .bind(input.starts_at_unix_secs as i64)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_sql_err()?;
+        if overlap > 0 {
+            return Ok(AdminBillingMutationOutcome::Invalid(
+                "同一时间只能有一个生效套餐".to_string(),
+            ));
+        }
         let result = sqlx::query(
             r#"
 UPDATE user_plan_entitlements
@@ -1022,34 +1196,33 @@ WHERE id = ?
         .bind(entitlement_id)
         .bind(user_id)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_sql_err()?;
         if result.rows_affected() == 0 {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
-        let row = sqlx::query(
-            r#"
-SELECT
-  id, user_id, plan_id, payment_order_id, status,
-  starts_at AS starts_at_unix_secs, expires_at AS expires_at_unix_secs,
-  entitlements_snapshot, created_at AS created_at_unix_secs,
-  updated_at AS updated_at_unix_secs
-FROM user_plan_entitlements
-WHERE id = ? AND user_id = ?
-            "#,
-        )
-        .bind(entitlement_id)
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_sql_err()?;
-        match row {
-            Some(row) => Ok(AdminBillingMutationOutcome::Applied(
-                map_user_plan_entitlement_sqlite(&row)?,
-            )),
-            None => Ok(AdminBillingMutationOutcome::NotFound),
+        if let Some(provider_ids) = input.allowed_provider_ids.as_deref() {
+            replace_entitlement_provider_ids_sqlite(
+                &mut transaction,
+                entitlement_id,
+                provider_ids,
+                now,
+            )
+            .await?;
         }
+        transaction.commit().await.map_sql_err()?;
+        let entitlements = self
+            .list_user_plan_entitlements(user_id)
+            .await?
+            .unwrap_or_default();
+        entitlements
+            .into_iter()
+            .find(|entitlement| entitlement.id == entitlement_id)
+            .map(AdminBillingMutationOutcome::Applied)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("updated user entitlement missing".to_string())
+            })
     }
 
     async fn find_user_daily_quota_availability(
@@ -1068,15 +1241,40 @@ WHERE id = ? AND user_id = ?
         let now_unix_secs = current_unix_secs_i64();
         let rows = sqlx::query(
             r#"
-SELECT id, starts_at, entitlements_snapshot
-FROM user_plan_entitlements
-WHERE user_id = ?
-  AND status = 'active'
-  AND starts_at <= ?
-  AND expires_at > ?
-ORDER BY expires_at ASC, created_at ASC, id ASC
+SELECT
+  upe.id,
+  upe.starts_at,
+  upe.entitlements_snapshot,
+  COALESCE((
+    SELECT json_group_array(uep.provider_id)
+    FROM user_entitlement_providers uep
+    WHERE uep.user_entitlement_id = upe.id
+  ), '[]') AS provider_ids,
+  EXISTS (
+    SELECT 1 FROM user_entitlement_providers uep
+    WHERE uep.user_entitlement_id = upe.id
+  ) AS has_provider_scope,
+  (
+    ? IS NULL OR EXISTS (
+      SELECT 1
+      FROM user_entitlement_providers uep
+      JOIN providers p ON p.id = uep.provider_id AND p.is_active = 1
+      JOIN models m ON m.provider_id = uep.provider_id
+        AND m.global_model_id = ?
+        AND m.is_active = 1
+      WHERE uep.user_entitlement_id = upe.id
+    )
+  ) AS provider_scope_allows_model
+FROM user_plan_entitlements upe
+WHERE upe.user_id = ?
+  AND upe.status = 'active'
+  AND upe.starts_at <= ?
+  AND upe.expires_at > ?
+ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             "#,
         )
+        .bind(global_model_id)
+        .bind(global_model_id)
         .bind(user_id)
         .bind(now_unix_secs)
         .bind(now_unix_secs)
@@ -1085,6 +1283,8 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
         .map_sql_err()?;
         let now = chrono::Utc::now();
         let mut grants = Vec::new();
+        let mut provider_scoped_entitlement_ids = BTreeSet::new();
+        let mut provider_ids_by_entitlement = BTreeMap::<String, Vec<String>>::new();
         for row in rows {
             let entitlement_id: String = row.try_get("id").map_sql_err()?;
             let entitlement_started_at = chrono::DateTime::from_timestamp(
@@ -1096,13 +1296,26 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
             })?;
             let entitlements = parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
                 .unwrap_or_else(|| serde_json::json!([]));
+            let has_provider_scope: bool = row.try_get("has_provider_scope").map_sql_err()?;
+            let provider_ids = parse_string_vec_json(
+                row.try_get::<Option<String>, _>("provider_ids")
+                    .map_sql_err()?,
+            )?;
+            provider_ids_by_entitlement.insert(entitlement_id.clone(), provider_ids);
+            let provider_scope_allows_model: bool =
+                row.try_get("provider_scope_allows_model").map_sql_err()?;
             if global_model_id.is_some()
-                && !entitlements_snapshot_has_usage_quota_for_global_model(
-                    &entitlements,
-                    global_model_id,
-                )
+                && ((has_provider_scope && !provider_scope_allows_model)
+                    || (!has_provider_scope
+                        && !entitlements_snapshot_has_usage_quota_for_global_model(
+                            &entitlements,
+                            global_model_id,
+                        )))
             {
                 continue;
+            }
+            if has_provider_scope {
+                provider_scoped_entitlement_ids.insert(entitlement_id.clone());
             }
             let stored_five_hour =
                 find_usage_quota_window_sqlite(&self.pool, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR)
@@ -1117,10 +1330,11 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
         }
         if global_model_id.is_some() {
             grants.retain(|grant| {
-                entitlement_allows_global_model(
-                    grant.allowed_global_model_ids.as_deref(),
-                    global_model_id,
-                )
+                provider_scoped_entitlement_ids.contains(&grant.entitlement_id)
+                    || entitlement_allows_global_model(
+                        grant.allowed_global_model_ids.as_deref(),
+                        global_model_id,
+                    )
             });
         }
 
@@ -1171,13 +1385,24 @@ SELECT COALESCE(
         let mut used_usd = 0.0;
         let mut remaining_usd = 0.0;
         let mut base_remaining_usd = 0.0;
-        for (limit, remaining, quota_multiplier) in grouped_limits.values() {
+        let mut eligible_entitlement_ids = Vec::new();
+        let mut allowed_provider_ids = BTreeSet::new();
+        let mut eligible_provider_ids_by_entitlement = BTreeMap::new();
+        for (entitlement_id, (limit, remaining, quota_multiplier)) in &grouped_limits {
             let limit = limit.unwrap_or(0.0);
             let remaining = remaining.unwrap_or(0.0);
             total_quota_usd += limit;
             used_usd += (limit - remaining).max(0.0);
             remaining_usd += remaining;
             base_remaining_usd += super::quota::quota_base_amount(remaining, *quota_multiplier);
+            if remaining > 0.000_000_01 {
+                eligible_entitlement_ids.push(entitlement_id.clone());
+                if let Some(provider_ids) = provider_ids_by_entitlement.get(entitlement_id) {
+                    allowed_provider_ids.extend(provider_ids.iter().cloned());
+                    eligible_provider_ids_by_entitlement
+                        .insert(entitlement_id.clone(), provider_ids.clone());
+                }
+            }
         }
         let has_active_daily_quota = !grants.is_empty();
         Ok(Some(UserDailyQuotaAvailabilityRecord {
@@ -1187,6 +1412,9 @@ SELECT COALESCE(
             remaining_usd,
             base_remaining_usd,
             allow_wallet_overage: has_active_daily_quota && allow_wallet_overage,
+            eligible_entitlement_ids,
+            allowed_provider_ids: allowed_provider_ids.into_iter().collect(),
+            provider_ids_by_entitlement: eligible_provider_ids_by_entitlement,
         }))
     }
 }
@@ -1340,6 +1568,16 @@ fn parse_json(value: Option<String>) -> Result<Option<serde_json::Value>, DataLa
         .transpose()
 }
 
+fn parse_string_vec_json(value: Option<String>) -> Result<Vec<String>, DataLayerError> {
+    Ok(parse_json(value)?
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
+        .filter(|value| !value.is_empty())
+        .collect())
+}
+
 fn current_unix_secs_i64() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1441,6 +1679,7 @@ fn map_billing_plan_sqlite(row: &SqliteRow) -> Result<BillingPlanRecord, DataLay
             .try_get::<Option<String>, _>("purchase_limit_scope")
             .map_sql_err()?
             .unwrap_or_else(|| "active_period".to_string()),
+        allowed_provider_ids: Vec::new(),
         entitlements_json: parse_json(row.try_get("entitlements_json").ok().flatten())?
             .unwrap_or_else(|| serde_json::json!([])),
         created_at_unix_secs: row
@@ -1471,6 +1710,7 @@ fn map_user_plan_entitlement_sqlite(
             .try_get::<i64, _>("expires_at_unix_secs")
             .map_sql_err()?
             .max(0) as u64,
+        allowed_provider_ids: Vec::new(),
         entitlements_snapshot: parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
             .unwrap_or_else(|| serde_json::json!([])),
         created_at_unix_secs: row
@@ -1623,6 +1863,96 @@ mod tests {
             .expect("model lookup should run")
             .expect("context should exist");
         assert_eq!(by_model_id.global_model_name, "gpt-5");
+    }
+
+    #[tokio::test]
+    async fn sqlite_provider_scoped_plan_uses_current_provider_models() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        seed_billing_context(&pool).await;
+        sqlx::query(
+            r#"
+INSERT INTO users (
+  id, username, email, role, auth_source, password_hash, is_active,
+  is_deleted, created_at, updated_at
+) VALUES (
+  'user-provider-plan', 'provider-plan-user', 'provider-plan@example.com',
+  'user', 'local', 'hash', 1, 0, 1, 1
+);
+
+INSERT INTO wallets (
+  id, user_id, balance, gift_balance, limit_mode, created_at, updated_at
+) VALUES (
+  'wallet-provider-plan', 'user-provider-plan', 0.0, 0.0, 'finite', 1, 1
+);
+
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit,
+  duration_value, entitlements_json, created_at, updated_at
+) VALUES (
+  'plan-provider', 'Provider Plan', 0.0, 'USD', 'month', 1,
+  '[{"type":"daily_quota","daily_quota_usd":10.0,"allowed_global_model_ids":["legacy-global-model"]}]',
+  1, 1
+);
+
+INSERT INTO payment_orders (
+  id, order_no, wallet_id, user_id, amount_usd, payment_method,
+  gateway_response, status, created_at
+) VALUES (
+  'order-provider-plan', 'order-provider-plan', 'wallet-provider-plan',
+  'user-provider-plan', 0.0, 'admin_manual', '{}', 'credited', 1
+);
+
+INSERT INTO user_plan_entitlements (
+  id, user_id, plan_id, payment_order_id, status, starts_at, expires_at,
+  entitlements_snapshot, created_at, updated_at
+) VALUES (
+  'entitlement-provider', 'user-provider-plan', 'plan-provider',
+  'order-provider-plan', 'active', 1, 9999999999,
+  '[{"type":"daily_quota","daily_quota_usd":10.0,"allowed_global_model_ids":["legacy-global-model"]}]',
+  1, 1
+);
+
+INSERT INTO user_entitlement_providers (
+  user_entitlement_id, provider_id, created_at
+) VALUES ('entitlement-provider', 'provider-1', 1);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("provider plan should seed");
+
+        let repository = SqliteBillingReadRepository::new(pool.clone());
+        let current_model = repository
+            .find_user_daily_quota_availability_for_global_model(
+                "user-provider-plan",
+                Some("global-1"),
+            )
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert!(current_model.has_active_daily_quota);
+        assert_eq!(current_model.remaining_usd, 10.0);
+
+        sqlx::query("UPDATE models SET is_active = 0 WHERE id = 'model-1'")
+            .execute(&pool)
+            .await
+            .expect("provider model should deactivate");
+        let unavailable = repository
+            .find_user_daily_quota_availability_for_global_model(
+                "user-provider-plan",
+                Some("global-1"),
+            )
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert!(!unavailable.has_active_daily_quota);
     }
 
     #[tokio::test]
@@ -1833,6 +2163,7 @@ mod tests {
             sort_order: 10,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: Vec::new(),
             entitlements_json: json!([{
                 "type": "daily_quota",
                 "daily_quota_usd": 50.0,

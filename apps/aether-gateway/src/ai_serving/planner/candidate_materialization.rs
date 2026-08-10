@@ -26,10 +26,12 @@ use uuid::Uuid;
 use crate::ai_serving::planner::candidate_affinity_cache::remember_scheduler_affinity_for_candidate_at_epoch;
 use crate::ai_serving::planner::candidate_ranking::scheduler_ordering_config_for_routing_policy;
 use crate::ai_serving::planner::candidate_resolution::{
-    resolve_and_rank_logical_local_execution_candidates, EligibleLocalExecutionCandidate,
-    LocalExecutionCandidateKind, SkippedLocalExecutionCandidate,
+    resolve_and_rank_logical_local_execution_candidates,
+    resolve_and_rank_logical_local_execution_candidates_with_billing_scope,
+    EligibleLocalExecutionCandidate, LocalExecutionCandidateKind, SkippedLocalExecutionCandidate,
 };
 use crate::ai_serving::planner::candidate_source::{
+    resolve_billing_provider_routing_scope, BillingProviderRoutingScope,
     LocalCandidatePreselectionKeyMode, LocalCandidatePreselectionPageCursor,
 };
 use crate::ai_serving::planner::materialization_policy::LocalCandidatePersistencePolicy;
@@ -706,6 +708,7 @@ where
         resolution_mode,
         decorate_skipped_candidate,
         page_cursor,
+        billing_provider_scope: None,
         pending_items: VecDeque::new(),
         candidate_count: 0,
         next_candidate_index: 0,
@@ -749,6 +752,7 @@ struct RequestedModelAttemptPageCursor<'a> {
     resolution_mode: LocalCandidateResolutionMode,
     decorate_skipped_candidate: DecorateSkippedCandidateFn<'a>,
     page_cursor: LocalCandidatePreselectionPageCursor<'a>,
+    billing_provider_scope: Option<(String, BillingProviderRoutingScope)>,
     pending_items: VecDeque<LocalExecutionCandidateAttemptSourceItem<'a>>,
     candidate_count: usize,
     next_candidate_index: u32,
@@ -794,21 +798,70 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 return false;
             }
 
+            let billing_global_model_id = page
+                .candidates
+                .first()
+                .map(|candidate| candidate.global_model_id.clone());
+            if let Some(global_model_id) = billing_global_model_id.as_deref() {
+                let scope_matches_model = self.billing_provider_scope.as_ref().is_some_and(
+                    |(stored_global_model_id, _)| stored_global_model_id == global_model_id,
+                );
+                if !scope_matches_model {
+                    let scope = match resolve_billing_provider_routing_scope(
+                        self.state,
+                        &self.auth_snapshot,
+                        Some(global_model_id),
+                    )
+                    .await
+                    {
+                        Ok(scope) => scope,
+                        Err(error) => {
+                            warn!(
+                                trace_id = %self.trace_id,
+                                user_id = %self.auth_snapshot.user_id,
+                                api_key_id = %self.auth_snapshot.api_key_id,
+                                error = ?error,
+                                "gateway stopped paged candidate resolution because billing scope could not be read"
+                            );
+                            return false;
+                        }
+                    };
+                    self.billing_provider_scope = Some((global_model_id.to_string(), scope));
+                }
+            }
             let (candidates, resolved_skipped) =
-                resolve_and_rank_logical_local_execution_candidates(
-                    self.state,
-                    page.candidates,
-                    &self.client_api_format,
-                    Some(&self.requested_model),
-                    Some(&self.auth_snapshot),
-                    self.client_session_affinity.as_ref(),
-                    self.required_capabilities.as_ref(),
-                    self.routing_policy.as_ref(),
-                    self.sticky_session_token.as_deref(),
-                    self.request_auth_channel.as_deref(),
-                    self.resolution_mode,
-                )
-                .await;
+                if let Some((_, scope)) = self.billing_provider_scope.as_ref() {
+                    resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
+                        self.state,
+                        page.candidates,
+                        &self.client_api_format,
+                        Some(&self.requested_model),
+                        Some(&self.auth_snapshot),
+                        self.client_session_affinity.as_ref(),
+                        self.required_capabilities.as_ref(),
+                        self.routing_policy.as_ref(),
+                        self.sticky_session_token.as_deref(),
+                        self.request_auth_channel.as_deref(),
+                        self.resolution_mode,
+                        scope,
+                    )
+                    .await
+                } else {
+                    resolve_and_rank_logical_local_execution_candidates(
+                        self.state,
+                        page.candidates,
+                        &self.client_api_format,
+                        Some(&self.requested_model),
+                        Some(&self.auth_snapshot),
+                        self.client_session_affinity.as_ref(),
+                        self.required_capabilities.as_ref(),
+                        self.routing_policy.as_ref(),
+                        self.sticky_session_token.as_deref(),
+                        self.request_auth_channel.as_deref(),
+                        self.resolution_mode,
+                    )
+                    .await
+                };
             let skipped_candidates = page
                 .skipped_candidates
                 .into_iter()
@@ -1775,6 +1828,7 @@ mod tests {
                 scheduler_affinity_epoch: None,
             },
             ranking: None,
+            billing_admission: None,
         }
     }
 

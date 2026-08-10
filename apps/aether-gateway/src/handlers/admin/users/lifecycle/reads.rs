@@ -4,7 +4,9 @@ use super::support::{
     build_admin_user_payload_with_groups, find_admin_export_user,
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
-use crate::handlers::admin::shared::{query_param_optional_bool, query_param_value};
+use crate::handlers::admin::shared::{
+    query_param_optional_bool, query_param_value, unix_secs_to_rfc3339,
+};
 use crate::GatewayError;
 use axum::{
     body::Body,
@@ -105,7 +107,7 @@ pub(in super::super) async fn build_admin_list_users_response(
             .flatten()
             .filter_map(|group_id| groups_by_id.get(group_id).cloned())
             .collect::<Vec<_>>();
-        payload.push(build_admin_user_export_payload(
+        let mut user_payload = build_admin_user_export_payload(
             &row,
             unlimited,
             auth.as_ref().and_then(|user| user.created_at),
@@ -117,7 +119,49 @@ pub(in super::super) async fn build_admin_list_users_response(
                 .map(|item| item.total_tokens)
                 .unwrap_or_default(),
             &groups,
-        ));
+        );
+        user_payload["wallet"] = wallet_by_user_id
+            .get(&row.id)
+            .map(|wallet| {
+                let actual_wallet_balance = wallet.balance + wallet.gift_balance;
+                let spendable_wallet_balance = actual_wallet_balance.max(0.0);
+                let debt_usd = (-actual_wallet_balance).max(0.0);
+                let billing_state = if unlimited {
+                    "unlimited"
+                } else if actual_wallet_balance < 0.0 {
+                    "in_debt"
+                } else {
+                    "active"
+                };
+                json!({
+                    "id": wallet.id,
+                    "user_id": wallet.user_id,
+                    "api_key_id": wallet.api_key_id,
+                    "owner_type": "user",
+                    "owner_name": row.username,
+                    "balance": actual_wallet_balance,
+                    "wallet_balance": actual_wallet_balance,
+                    "actual_wallet_balance": actual_wallet_balance,
+                    "spendable_wallet_balance": spendable_wallet_balance,
+                    "debt_usd": debt_usd,
+                    "billing_state": billing_state,
+                    "recharge_balance": wallet.balance,
+                    "gift_balance": wallet.gift_balance,
+                    "refundable_balance": wallet.balance.max(0.0),
+                    "currency": wallet.currency,
+                    "status": wallet.status,
+                    "limit_mode": wallet.limit_mode,
+                    "unlimited": unlimited,
+                    "total_recharged": wallet.total_recharged,
+                    "total_consumed": wallet.total_consumed,
+                    "total_refunded": wallet.total_refunded,
+                    "total_adjusted": wallet.total_adjusted,
+                    "created_at": serde_json::Value::Null,
+                    "updated_at": unix_secs_to_rfc3339(wallet.updated_at_unix_secs),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+        payload.push(user_payload);
     }
 
     Ok(Json(payload).into_response())

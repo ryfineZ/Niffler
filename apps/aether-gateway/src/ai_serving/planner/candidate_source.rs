@@ -1,6 +1,9 @@
 use aether_ai_serving::{
     run_ai_candidate_preselection, AiCandidatePreselectionOutcome, AiCandidatePreselectionPort,
 };
+use aether_data_contracts::repository::billing::{
+    BillingFundingSource, BillingRequestAdmissionInput, UserDailyQuotaAvailabilityRecord,
+};
 use aether_data_contracts::repository::candidate_selection::StoredMinimalCandidateSelectionRow;
 use aether_routing_core::ResolvedRoutingPolicy;
 use aether_scheduler_core::{
@@ -46,6 +49,183 @@ struct GatewayLocalCandidatePreselectionPort<'a> {
     key_mode: LocalCandidatePreselectionKeyMode,
     candidate_api_formats: Vec<String>,
     model_directive_enabled_api_formats: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BillingProviderRoutingScope {
+    wallet_payment_allowed: bool,
+    legacy_plan_available: bool,
+    plan_provider_ids: BTreeSet<String>,
+    enforce: bool,
+    wallet: Option<aether_data::repository::wallet::StoredWalletSnapshot>,
+    quota: Option<UserDailyQuotaAvailabilityRecord>,
+}
+
+impl BillingProviderRoutingScope {
+    pub(crate) fn plan_applies(&self) -> bool {
+        self.legacy_plan_available || !self.plan_provider_ids.is_empty()
+    }
+
+    pub(crate) fn allows(&self, provider_id: &str, plan_applies: bool) -> bool {
+        !self.enforce
+            || if plan_applies {
+                self.legacy_plan_available || self.plan_provider_ids.contains(provider_id)
+            } else {
+                self.wallet_payment_allowed
+            }
+    }
+
+    pub(crate) fn prefers(&self, provider_id: &str) -> bool {
+        self.plan_provider_ids.contains(provider_id)
+    }
+
+    pub(crate) fn admission_for_candidate(
+        &self,
+        auth_snapshot: &GatewayAuthApiKeySnapshot,
+        candidate: &SchedulerMinimalCandidateSelectionCandidate,
+    ) -> Option<BillingRequestAdmissionInput> {
+        let wallet = self.wallet.as_ref()?;
+        let actual_wallet_balance = wallet.balance + wallet.gift_balance;
+        let entitlement_provider_scopes = self
+            .quota
+            .as_ref()
+            .map(|quota| {
+                quota
+                    .eligible_entitlement_ids
+                    .iter()
+                    .filter_map(|entitlement_id| {
+                        quota
+                            .provider_ids_by_entitlement
+                            .get(entitlement_id)
+                            .filter(|provider_ids| !provider_ids.is_empty())
+                            .map(|provider_ids| (entitlement_id.clone(), provider_ids.clone()))
+                            .or_else(|| {
+                                self.legacy_plan_available
+                                    .then(|| (entitlement_id.clone(), Vec::new()))
+                            })
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let selected_provider_has_plan = self.legacy_plan_available
+            || entitlement_provider_scopes.values().any(|provider_ids| {
+                provider_ids
+                    .iter()
+                    .any(|provider_id| provider_id == &candidate.provider_id)
+            });
+        let funding_source = if wallet.limit_mode.eq_ignore_ascii_case("unlimited") {
+            BillingFundingSource::Unlimited
+        } else if selected_provider_has_plan {
+            BillingFundingSource::Plan
+        } else if actual_wallet_balance > 0.0 {
+            BillingFundingSource::Wallet
+        } else {
+            return None;
+        };
+
+        let (entitlement_ids, allowed_provider_ids, entitlement_provider_scopes) =
+            if funding_source == BillingFundingSource::Plan {
+                let entitlement_ids = entitlement_provider_scopes.keys().cloned().collect();
+                let allowed_provider_ids = entitlement_provider_scopes
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                (
+                    entitlement_ids,
+                    allowed_provider_ids,
+                    entitlement_provider_scopes,
+                )
+            } else {
+                Default::default()
+            };
+
+        Some(BillingRequestAdmissionInput {
+            request_id: String::new(),
+            user_id: Some(auth_snapshot.user_id.clone()),
+            api_key_id: Some(auth_snapshot.api_key_id.clone()),
+            wallet_id: Some(wallet.id.clone()),
+            global_model_id: Some(candidate.global_model_id.clone()),
+            funding_source,
+            wallet_balance_at_admission: Some(actual_wallet_balance),
+            wallet_payment_allowed: !wallet.limit_mode.eq_ignore_ascii_case("unlimited")
+                && actual_wallet_balance > 0.0,
+            wallet_overage_allowed: funding_source == BillingFundingSource::Plan,
+            entitlement_ids,
+            entitlement_provider_scopes,
+            allowed_provider_ids,
+            schema_version: 1,
+        })
+    }
+}
+
+pub(crate) async fn resolve_billing_provider_routing_scope(
+    state: PlannerAppState<'_>,
+    auth_snapshot: &GatewayAuthApiKeySnapshot,
+    global_model_id: Option<&str>,
+) -> Result<BillingProviderRoutingScope, GatewayError> {
+    if !state.app().has_wallet_data_reader() {
+        return Ok(BillingProviderRoutingScope::default());
+    }
+    let wallet_future = state.app().read_wallet_snapshot_for_auth(
+        &auth_snapshot.user_id,
+        &auth_snapshot.api_key_id,
+        auth_snapshot.api_key_is_standalone,
+    );
+    let quota_future = async {
+        if auth_snapshot.api_key_is_standalone {
+            Ok(None)
+        } else {
+            state
+                .app()
+                .find_user_daily_quota_availability_for_global_model(
+                    &auth_snapshot.user_id,
+                    global_model_id,
+                )
+                .await
+        }
+    };
+    let (wallet, quota) = tokio::try_join!(wallet_future, quota_future)?;
+    let Some(wallet) = wallet else {
+        return Ok(BillingProviderRoutingScope {
+            enforce: true,
+            ..BillingProviderRoutingScope::default()
+        });
+    };
+    if !wallet.status.eq_ignore_ascii_case("active") {
+        return Ok(BillingProviderRoutingScope {
+            enforce: true,
+            ..BillingProviderRoutingScope::default()
+        });
+    }
+    if wallet.limit_mode.eq_ignore_ascii_case("unlimited") {
+        return Ok(BillingProviderRoutingScope {
+            wallet_payment_allowed: true,
+            enforce: true,
+            wallet: Some(wallet),
+            quota,
+            ..BillingProviderRoutingScope::default()
+        });
+    }
+    let plan_available = quota
+        .as_ref()
+        .is_some_and(|quota| quota.base_remaining_usd > 0.000_000_01);
+    Ok(BillingProviderRoutingScope {
+        wallet_payment_allowed: wallet.balance + wallet.gift_balance > 0.0,
+        legacy_plan_available: plan_available
+            && quota
+                .as_ref()
+                .is_some_and(UserDailyQuotaAvailabilityRecord::has_legacy_eligible_entitlements),
+        plan_provider_ids: quota
+            .as_ref()
+            .map(|quota| quota.allowed_provider_ids.iter().cloned().collect())
+            .unwrap_or_default(),
+        enforce: true,
+        wallet: Some(wallet),
+        quota,
+    })
 }
 
 #[async_trait]
@@ -324,7 +504,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                 Ok(snapshot) => (snapshot, None),
                 Err(err) => (None, Some(format!("{err:?}"))),
             };
-
         Self {
             state,
             client_api_format: client_api_format.to_string(),
@@ -898,6 +1077,108 @@ mod tests {
             Some(&snapshot),
             &scheduler_candidate("service-other", "account-allowed")
         ));
+    }
+
+    #[test]
+    fn applicable_provider_plan_excludes_wallet_only_provider() {
+        let scope = BillingProviderRoutingScope {
+            wallet_payment_allowed: true,
+            plan_provider_ids: BTreeSet::from(["provider-plan".to_string()]),
+            enforce: true,
+            ..BillingProviderRoutingScope::default()
+        };
+        let candidates = [
+            scheduler_candidate("provider-plan", "key-plan"),
+            scheduler_candidate("provider-wallet", "key-wallet"),
+        ];
+
+        let plan_applies = scope.plan_applies();
+
+        assert!(plan_applies);
+        assert!(scope.allows("provider-plan", plan_applies));
+        assert!(!scope.allows("provider-wallet", plan_applies));
+    }
+
+    #[test]
+    fn plan_outside_requested_model_allows_positive_wallet_provider() {
+        let scope = BillingProviderRoutingScope {
+            wallet_payment_allowed: true,
+            enforce: true,
+            ..BillingProviderRoutingScope::default()
+        };
+        let candidates = [scheduler_candidate("provider-claude-wallet", "key-wallet")];
+
+        let plan_applies = scope.plan_applies();
+
+        assert!(!plan_applies);
+        assert!(scope.allows("provider-claude-wallet", plan_applies));
+    }
+
+    #[test]
+    fn applicable_plan_does_not_fall_back_to_wallet_when_current_page_has_no_plan_provider() {
+        let scope = BillingProviderRoutingScope {
+            wallet_payment_allowed: true,
+            plan_provider_ids: BTreeSet::from(["provider-plan-on-later-page".to_string()]),
+            enforce: true,
+            ..BillingProviderRoutingScope::default()
+        };
+        let current_page = [scheduler_candidate("provider-wallet", "key-wallet")];
+
+        let plan_applies = scope.plan_applies();
+
+        assert!(plan_applies);
+        assert!(current_page
+            .iter()
+            .all(|candidate| !scope.allows(&candidate.provider_id, plan_applies)));
+    }
+
+    #[test]
+    fn legacy_plan_creates_stable_provider_wildcard_admission() {
+        let wallet = aether_data::repository::wallet::StoredWalletSnapshot::new(
+            "wallet-1".to_string(),
+            Some("user-1".to_string()),
+            None,
+            -1.0,
+            0.0,
+            "finite".to_string(),
+            "USD".to_string(),
+            "active".to_string(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1,
+        )
+        .expect("wallet should build");
+        let scope = BillingProviderRoutingScope {
+            legacy_plan_available: true,
+            enforce: true,
+            wallet: Some(wallet),
+            quota: Some(UserDailyQuotaAvailabilityRecord {
+                has_active_daily_quota: true,
+                total_quota_usd: 5.0,
+                used_usd: 0.0,
+                remaining_usd: 5.0,
+                base_remaining_usd: 5.0,
+                allow_wallet_overage: true,
+                eligible_entitlement_ids: vec!["legacy-entitlement".to_string()],
+                allowed_provider_ids: Vec::new(),
+                provider_ids_by_entitlement: BTreeMap::new(),
+            }),
+            ..BillingProviderRoutingScope::default()
+        };
+        let candidate = scheduler_candidate("provider-legacy-selected", "key-legacy");
+
+        let admission = scope
+            .admission_for_candidate(&unrestricted_auth_snapshot(), &candidate)
+            .expect("legacy plan should create billing admission");
+
+        assert_eq!(admission.funding_source, BillingFundingSource::Plan);
+        assert_eq!(
+            admission.entitlement_provider_scopes,
+            BTreeMap::from([("legacy-entitlement".to_string(), Vec::new())])
+        );
+        assert!(admission.allowed_provider_ids.is_empty());
     }
 
     fn unrestricted_auth_snapshot() -> GatewayAuthApiKeySnapshot {

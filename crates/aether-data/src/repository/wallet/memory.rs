@@ -4,11 +4,11 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 
 use super::types::{
-    redeem_code_credits_recharge_balance, redeem_code_payment_method,
-    redeem_code_refundable_amount, AdjustWalletBalanceInput, AdminPaymentOrderListQuery,
-    AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery, AdminWalletLedgerQuery,
-    AdminWalletListQuery, AdminWalletRefundRequestListQuery, CancelPaymentOrderInput,
-    CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
+    plan_purchase_payment_amounts, redeem_code_credits_recharge_balance,
+    redeem_code_payment_method, redeem_code_refundable_amount, AdjustWalletBalanceInput,
+    AdminPaymentOrderListQuery, AdminRedeemCodeBatchListQuery, AdminRedeemCodeListQuery,
+    AdminWalletLedgerQuery, AdminWalletListQuery, AdminWalletRefundRequestListQuery,
+    CancelPaymentOrderInput, CompleteAdminWalletRefundInput, CreateAdminRedeemCodeBatchInput,
     CreateAdminRedeemCodeBatchResult, CreateManualWalletRechargeInput,
     CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome, CreateWalletRechargeOrderInput,
     CreateWalletRechargeOrderOutcome, CreateWalletRefundRequestInput,
@@ -978,6 +978,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             wallet_id,
             user_id: Some(input.user_id),
             amount_usd: input.amount_usd,
+            debt_repayment_usd: 0.0,
             pay_amount: input.pay_amount,
             pay_currency: input.pay_currency,
             exchange_rate: input.exchange_rate,
@@ -1010,7 +1011,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
         &self,
         input: CreatePlanPurchaseOrderInput,
     ) -> Result<CreatePlanPurchaseOrderOutcome, DataLayerError> {
-        let wallet_id = {
+        let (wallet_id, payment_amounts) = {
             let wallets = self.wallets_by_id.read().expect("wallet repo lock");
             let Some(wallet) = wallets
                 .values()
@@ -1021,8 +1022,35 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             if wallet.status != "active" {
                 return Ok(CreatePlanPurchaseOrderOutcome::WalletInactive);
             }
-            wallet.id.clone()
+            let payment_amounts =
+                plan_purchase_payment_amounts(&input, wallet.balance + wallet.gift_balance)?;
+            (wallet.id.clone(), payment_amounts)
         };
+        let now_secs = current_unix_secs();
+        let has_pending_other_plan = self
+            .payment_orders_by_id
+            .read()
+            .expect("wallet repo lock")
+            .values()
+            .filter(|order| order.user_id.as_deref() == Some(input.user_id.as_str()))
+            .any(|order| {
+                let gateway_response = order.gateway_response.as_ref();
+                order.status == "pending"
+                    && order
+                        .expires_at_unix_secs
+                        .is_some_and(|expires_at| expires_at > now_secs)
+                    && gateway_response
+                        .and_then(|value| value.get("order_kind"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("plan_purchase")
+                    && gateway_response
+                        .and_then(|value| value.get("product_id"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|product_id| product_id != input.product_id)
+            });
+        if has_pending_other_plan {
+            return Ok(CreatePlanPurchaseOrderOutcome::OverlappingPlanExists);
+        }
         let max_active_per_user = input
             .product_snapshot
             .get("max_active_per_user")
@@ -1035,7 +1063,6 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("active_period");
         if purchase_limit_scope != "unlimited" {
-            let now_secs = current_unix_secs();
             let existing_count = self
                 .payment_orders_by_id
                 .read()
@@ -1096,8 +1123,9 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             order_no: input.order_no,
             wallet_id,
             user_id: Some(input.user_id),
-            amount_usd: input.amount_usd,
-            pay_amount: Some(input.pay_amount),
+            amount_usd: payment_amounts.amount_usd,
+            debt_repayment_usd: payment_amounts.debt_repayment_usd,
+            pay_amount: Some(payment_amounts.pay_amount),
             pay_currency: Some(input.pay_currency),
             exchange_rate: Some(input.exchange_rate),
             refunded_amount_usd: 0.0,
@@ -1711,6 +1739,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
             wallet_id: wallet.id.clone(),
             user_id: Some(input.user_id.clone()),
             amount_usd,
+            debt_repayment_usd: 0.0,
             pay_amount: None,
             pay_currency: None,
             exchange_rate: None,
@@ -1902,6 +1931,7 @@ mod tests {
             wallet_id: "wallet-1".to_string(),
             user_id: user_id.map(str::to_string),
             amount_usd: 10.0,
+            debt_repayment_usd: 0.0,
             pay_amount: None,
             pay_currency: None,
             exchange_rate: None,
@@ -2115,8 +2145,9 @@ mod tests {
                 }
             ]
         });
+        let unlimited_repository = InMemoryWalletRepository::seed(vec![sample_wallet()]);
         for index in 1..=2 {
-            let order = repository
+            let order = unlimited_repository
                 .create_plan_purchase_order(CreatePlanPurchaseOrderInput {
                     preferred_wallet_id: None,
                     user_id: "user-1".to_string(),
@@ -2138,6 +2169,67 @@ mod tests {
                 .expect("unlimited plan purchase should resolve");
             assert!(matches!(order, CreatePlanPurchaseOrderOutcome::Created(_)));
         }
+    }
+
+    #[tokio::test]
+    async fn negative_wallet_plan_purchase_includes_debt_but_admin_grant_does_not() {
+        let negative_wallet = StoredWalletSnapshot::new(
+            "wallet-debt".to_string(),
+            Some("user-debt".to_string()),
+            None,
+            -3.0,
+            0.0,
+            "finite".to_string(),
+            "USD".to_string(),
+            "active".to_string(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            100,
+        )
+        .expect("negative wallet should build");
+        let repository = InMemoryWalletRepository::seed(vec![negative_wallet]);
+        let build_input = |payment_method: &str, order_no: &str| CreatePlanPurchaseOrderInput {
+            preferred_wallet_id: None,
+            user_id: "user-debt".to_string(),
+            amount_usd: 1.0,
+            pay_amount: 7.2,
+            pay_currency: "CNY".to_string(),
+            exchange_rate: 7.2,
+            payment_method: payment_method.to_string(),
+            payment_provider: Some("epay".to_string()),
+            payment_channel: Some("alipay".to_string()),
+            gateway_order_id: format!("gateway-{order_no}"),
+            gateway_response: json!({"checkout": true}),
+            order_no: order_no.to_string(),
+            product_id: "plan-1".to_string(),
+            product_snapshot: json!({
+                "id": "plan-1",
+                "purchase_limit_scope": "unlimited",
+                "entitlements": [{"type": "daily_quota", "daily_quota_usd": 10.0}]
+            }),
+            expires_at_unix_secs: 4_102_444_800,
+        };
+
+        let purchase = repository
+            .create_plan_purchase_order(build_input("alipay", "purchase"))
+            .await
+            .expect("purchase should resolve");
+        let CreatePlanPurchaseOrderOutcome::Created(purchase_order) = purchase else {
+            panic!("debt should be included in the purchase order");
+        };
+        assert_eq!(purchase_order.amount_usd, 4.0);
+        assert_eq!(purchase_order.pay_amount, Some(28.8));
+
+        let admin_grant = repository
+            .create_plan_purchase_order(build_input("admin_grant", "admin-grant"))
+            .await
+            .expect("admin grant should resolve");
+        assert!(matches!(
+            admin_grant,
+            CreatePlanPurchaseOrderOutcome::Created(_)
+        ));
     }
 
     #[tokio::test]

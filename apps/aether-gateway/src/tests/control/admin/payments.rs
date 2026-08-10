@@ -79,6 +79,7 @@ fn sample_payment_order(
         wallet_id: wallet_id.to_string(),
         user_id: Some(user_id.to_string()),
         amount_usd,
+        debt_repayment_usd: 0.0,
         pay_amount: None,
         pay_currency: None,
         exchange_rate: None,
