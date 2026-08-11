@@ -10,6 +10,9 @@ use super::{
     WalletLookupKey, WalletReadRepository, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
 use aether_data::repository::settlement::InMemorySettlementRepository;
+use aether_data_contracts::repository::billing::{
+    BillingFundingSource, BillingRequestAdmissionInput,
+};
 
 #[tokio::test]
 async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
@@ -114,7 +117,24 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
         DEVELOPMENT_ENCRYPTION_KEY,
     )
     .with_settlement_writer_for_tests(Arc::new(
-        InMemorySettlementRepository::from_wallet_repository(wallet_repository.clone()),
+        InMemorySettlementRepository::from_wallet_repository_with_admissions(
+            wallet_repository.clone(),
+            vec![BillingRequestAdmissionInput {
+                request_id: "req-usage-wallet-sync-123".to_string(),
+                user_id: Some("user-usage-sync-123".to_string()),
+                api_key_id: Some("api-key-usage-sync-123".to_string()),
+                wallet_id: Some("wallet-usage-sync-123".to_string()),
+                global_model_id: Some("global-model-openai-usage-local-1".to_string()),
+                funding_source: BillingFundingSource::Wallet,
+                wallet_balance_at_admission: Some(12.0),
+                wallet_payment_allowed: true,
+                wallet_overage_allowed: false,
+                entitlement_ids: Vec::new(),
+                entitlement_provider_scopes: std::collections::BTreeMap::new(),
+                allowed_provider_ids: Vec::new(),
+                schema_version: 1,
+            }],
+        ),
     ));
     let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
         .with_data_state_for_tests(data_state)

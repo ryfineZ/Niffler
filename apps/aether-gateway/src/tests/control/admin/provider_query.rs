@@ -3620,6 +3620,136 @@ async fn gateway_handles_openai_image_test_model_locally() {
 }
 
 #[tokio::test]
+async fn gateway_handles_openai_image_passthrough_test_model_failover_locally() {
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |Json(plan): Json<ExecutionPlan>| async move {
+            assert_eq!(plan.provider_id, "provider-openai");
+            assert_eq!(plan.endpoint_id, "endpoint-openai-image");
+            assert_eq!(plan.key_id, "key-openai-image");
+            assert_eq!(plan.client_api_format, "openai:image");
+            assert_eq!(plan.provider_api_format, "openai:image");
+            assert_eq!(plan.model_name.as_deref(), Some("gpt-image-2"));
+            assert_eq!(plan.url, "https://niffler.org/v1/images/generations");
+            assert_eq!(
+                plan.headers.get("authorization").map(String::as_str),
+                Some("Bearer sk-test-image")
+            );
+            let request_body = plan
+                .body
+                .json_body
+                .as_ref()
+                .expect("JSON body should exist");
+            assert_eq!(request_body["model"], json!("gpt-image-2"));
+            assert_eq!(request_body["prompt"], json!("Draw a small blue square"));
+            assert!(request_body.get("input").is_none());
+            assert!(request_body.get("tools").is_none());
+            Json(json!({
+                "request_id": plan.request_id,
+                "candidate_id": plan.candidate_id,
+                "status_code": 200,
+                "headers": {
+                    "content-type": "text/event-stream"
+                },
+                "body": {
+                    "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(
+                        "event: image_generation.completed\ndata: {\"type\":\"image_generation.completed\"}\n\n"
+                    )
+                },
+                "telemetry": {
+                    "elapsed_ms": 12
+                }
+            }))
+        }),
+    );
+
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let provider = sample_provider("provider-openai", "OpenAI", 10);
+    let mut endpoint = sample_endpoint(
+        "endpoint-openai-image",
+        "provider-openai",
+        "openai:image",
+        "https://niffler.org",
+    );
+    endpoint.custom_path = Some("/v1/images/generations".to_string());
+    endpoint.config = Some(json!({
+        "openai_image_transport_mode": "images_passthrough"
+    }));
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![endpoint],
+        vec![sample_key(
+            "key-openai-image",
+            "provider-openai",
+            "openai:image",
+            "sk-test-image",
+        )],
+    ));
+
+    let gateway = build_router_with_state(
+        build_state_with_execution_runtime_override(execution_runtime_url)
+            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
+                provider_catalog_repository,
+                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{gateway_url}/api/admin/provider-query/test-model-failover"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "provider_id": "provider-openai",
+            "mode": "direct",
+            "model_name": "gpt-image-2",
+            "failover_models": ["gpt-image-2"],
+            "api_format": "openai:image",
+            "endpoint_id": "endpoint-openai-image",
+            "request_body": {
+                "model": "ignored-model",
+                "prompt": "Draw a small blue square",
+                "n": 1,
+                "size": "1024x1024",
+                "stream": true
+            },
+            "request_id": "provider-test-openai-image-passthrough"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(
+        payload["attempts"][0]["request_url"],
+        json!("https://niffler.org/v1/images/generations")
+    );
+    assert_eq!(
+        payload["attempts"][0]["request_body"]["model"],
+        json!("gpt-image-2")
+    );
+    assert_eq!(
+        payload["attempts"][0]["request_body"]["prompt"],
+        json!("Draw a small blue square")
+    );
+    assert!(payload["attempts"][0]["request_body"]
+        .get("input")
+        .is_none());
+    assert!(payload["attempts"][0]["request_body"]
+        .get("tools")
+        .is_none());
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_reports_transport_unsupported_reason_for_non_kiro_provider() {
     let mut provider = sample_provider("provider-antigravity", "Antigravity", 10);
     provider.provider_type = "antigravity".to_string();

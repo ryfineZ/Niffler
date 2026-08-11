@@ -15,7 +15,9 @@ use crate::{
     append_execution_contract_fields_to_value, AiExecutionDecision, AppState, GatewayError,
 };
 
-use super::request::resolve_local_openai_image_candidate_payload_parts;
+use super::request::{
+    openai_image_uses_images_passthrough, resolve_local_openai_image_candidate_payload_parts,
+};
 use super::support::{LocalOpenAiImageCandidateAttempt, LocalOpenAiImageDecisionInput};
 use super::LocalOpenAiImageSpec;
 
@@ -72,6 +74,12 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
         extra_fields.insert("proxy".to_string(), proxy_value);
     }
     extra_fields.insert("image_request".to_string(), resolved.input_summary.clone());
+    if openai_image_uses_images_passthrough(&transport) {
+        extra_fields.insert(
+            "openai_image_transport_mode".to_string(),
+            serde_json::Value::String("images_passthrough".to_string()),
+        );
+    }
     if transport
         .provider
         .provider_type
@@ -94,7 +102,8 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
     }
     let upstream_is_stream = resolved
         .provider_request_body
-        .get("stream")
+        .as_ref()
+        .and_then(|body| body.get("stream"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(spec_metadata.require_streaming);
     let effective_headers = input.effective_headers(&parts.headers);
@@ -132,6 +141,7 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
             original_request_body_base64: body_base64,
             client_session_affinity: input.client_session_affinity.as_ref(),
             scheduler_affinity_epoch: eligible.orchestration.scheduler_affinity_epoch,
+            billing_admission: eligible.billing_admission.as_ref(),
             client_requested_stream: spec_metadata.require_streaming,
             upstream_is_stream,
             has_envelope: false,
@@ -166,9 +176,9 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
         mapped_model: resolved.mapped_model,
         prompt_cache_key: None,
         provider_request_headers: resolved.provider_request_headers,
-        provider_request_body: Some(resolved.provider_request_body),
-        provider_request_body_base64: None,
-        content_type: Some("application/json".to_string()),
+        provider_request_body: resolved.provider_request_body,
+        provider_request_body_base64: resolved.provider_request_body_base64,
+        content_type: resolved.content_type,
         proxy,
         transport_profile,
         timeouts: resolve_transport_execution_timeouts(&transport),

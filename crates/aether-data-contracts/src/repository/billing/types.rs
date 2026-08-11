@@ -200,6 +200,8 @@ pub struct BillingPlanRecord {
     pub sort_order: i64,
     pub max_active_per_user: i64,
     pub purchase_limit_scope: String,
+    #[serde(default)]
+    pub allowed_provider_ids: Vec<String>,
     pub entitlements_json: Value,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
@@ -217,6 +219,7 @@ pub struct BillingPlanWriteInput {
     pub sort_order: i64,
     pub max_active_per_user: i64,
     pub purchase_limit_scope: String,
+    pub allowed_provider_ids: Vec<String>,
     pub entitlements_json: Value,
 }
 
@@ -229,6 +232,8 @@ pub struct UserPlanEntitlementRecord {
     pub status: String,
     pub starts_at_unix_secs: u64,
     pub expires_at_unix_secs: u64,
+    #[serde(default)]
+    pub allowed_provider_ids: Vec<String>,
     pub entitlements_snapshot: Value,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
@@ -238,7 +243,175 @@ pub struct UserPlanEntitlementRecord {
 pub struct UserPlanEntitlementUpdateInput {
     pub starts_at_unix_secs: u64,
     pub expires_at_unix_secs: u64,
+    pub allowed_provider_ids: Option<Vec<String>>,
     pub entitlements_snapshot: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingFundingSource {
+    Wallet,
+    Plan,
+    Unlimited,
+    Free,
+}
+
+impl BillingFundingSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wallet => "wallet",
+            Self::Plan => "plan",
+            Self::Unlimited => "unlimited",
+            Self::Free => "free",
+        }
+    }
+
+    pub fn from_database(value: &str) -> Result<Self, crate::DataLayerError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "wallet" => Ok(Self::Wallet),
+            "plan" => Ok(Self::Plan),
+            "unlimited" => Ok(Self::Unlimited),
+            "free" => Ok(Self::Free),
+            other => Err(crate::DataLayerError::UnexpectedValue(format!(
+                "unsupported billing funding source: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BillingRequestAdmissionInput {
+    pub request_id: String,
+    pub user_id: Option<String>,
+    pub api_key_id: Option<String>,
+    pub wallet_id: Option<String>,
+    pub global_model_id: Option<String>,
+    pub funding_source: BillingFundingSource,
+    pub wallet_balance_at_admission: Option<f64>,
+    pub wallet_payment_allowed: bool,
+    pub wallet_overage_allowed: bool,
+    pub entitlement_ids: Vec<String>,
+    #[serde(default)]
+    pub entitlement_provider_scopes: std::collections::BTreeMap<String, Vec<String>>,
+    pub allowed_provider_ids: Vec<String>,
+    pub schema_version: u16,
+}
+
+impl BillingRequestAdmissionInput {
+    pub fn validate(&self) -> Result<(), crate::DataLayerError> {
+        if self.request_id.trim().is_empty() {
+            return Err(crate::DataLayerError::InvalidInput(
+                "billing admission request_id cannot be empty".to_string(),
+            ));
+        }
+        if self
+            .wallet_balance_at_admission
+            .is_some_and(|value| !value.is_finite())
+        {
+            return Err(crate::DataLayerError::InvalidInput(
+                "billing admission wallet balance must be finite".to_string(),
+            ));
+        }
+        if self.schema_version == 0 {
+            return Err(crate::DataLayerError::InvalidInput(
+                "billing admission schema_version must be positive".to_string(),
+            ));
+        }
+        if self.funding_source == BillingFundingSource::Plan {
+            if self.entitlement_ids.is_empty() {
+                return Err(crate::DataLayerError::InvalidInput(
+                    "plan billing admission requires entitlements".to_string(),
+                ));
+            }
+            if self.entitlement_provider_scopes.len() != self.entitlement_ids.len()
+                || self.entitlement_ids.iter().any(|entitlement_id| {
+                    !self
+                        .entitlement_provider_scopes
+                        .contains_key(entitlement_id)
+                })
+            {
+                return Err(crate::DataLayerError::InvalidInput(
+                    "plan billing admission requires one provider scope per entitlement"
+                        .to_string(),
+                ));
+            }
+            if self
+                .entitlement_provider_scopes
+                .values()
+                .any(|provider_ids| {
+                    provider_ids.iter().any(|provider_id| {
+                        !self
+                            .allowed_provider_ids
+                            .iter()
+                            .any(|allowed| allowed == provider_id)
+                    })
+                })
+            {
+                return Err(crate::DataLayerError::InvalidInput(
+                    "entitlement provider scope is outside plan billing admission".to_string(),
+                ));
+            }
+            let scoped_provider_ids = self
+                .entitlement_provider_scopes
+                .values()
+                .flatten()
+                .collect::<std::collections::BTreeSet<_>>();
+            let allowed_provider_ids = self
+                .allowed_provider_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if scoped_provider_ids != allowed_provider_ids {
+                return Err(crate::DataLayerError::InvalidInput(
+                    "plan billing admission provider list must match entitlement scopes"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BillingRequestAdmissionRecord {
+    pub request_id: String,
+    pub user_id: Option<String>,
+    pub api_key_id: Option<String>,
+    pub wallet_id: Option<String>,
+    pub global_model_id: Option<String>,
+    pub funding_source: BillingFundingSource,
+    pub wallet_balance_at_admission: Option<f64>,
+    pub wallet_payment_allowed: bool,
+    pub wallet_overage_allowed: bool,
+    pub entitlement_ids: Vec<String>,
+    #[serde(default)]
+    pub entitlement_provider_scopes: std::collections::BTreeMap<String, Vec<String>>,
+    pub allowed_provider_ids: Vec<String>,
+    pub billing_admitted: bool,
+    pub status: String,
+    pub rejection_reason: Option<String>,
+    pub schema_version: u16,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+impl BillingRequestAdmissionRecord {
+    pub fn to_input(&self) -> BillingRequestAdmissionInput {
+        BillingRequestAdmissionInput {
+            request_id: self.request_id.clone(),
+            user_id: self.user_id.clone(),
+            api_key_id: self.api_key_id.clone(),
+            wallet_id: self.wallet_id.clone(),
+            global_model_id: self.global_model_id.clone(),
+            funding_source: self.funding_source,
+            wallet_balance_at_admission: self.wallet_balance_at_admission,
+            wallet_payment_allowed: self.wallet_payment_allowed,
+            wallet_overage_allowed: self.wallet_overage_allowed,
+            entitlement_ids: self.entitlement_ids.clone(),
+            entitlement_provider_scopes: self.entitlement_provider_scopes.clone(),
+            allowed_provider_ids: self.allowed_provider_ids.clone(),
+            schema_version: self.schema_version,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -250,6 +423,65 @@ pub struct UserDailyQuotaAvailabilityRecord {
     #[serde(default)]
     pub base_remaining_usd: f64,
     pub allow_wallet_overage: bool,
+    #[serde(default)]
+    pub eligible_entitlement_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_provider_ids: Vec<String>,
+    #[serde(default)]
+    pub provider_ids_by_entitlement: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl UserDailyQuotaAvailabilityRecord {
+    pub fn has_legacy_eligible_entitlements(&self) -> bool {
+        self.eligible_entitlement_ids.iter().any(|entitlement_id| {
+            self.provider_ids_by_entitlement
+                .get(entitlement_id)
+                .is_none_or(Vec::is_empty)
+        })
+    }
+
+    pub fn provider_scoped_entitlement_ids_for_provider(&self, provider_id: &str) -> Vec<String> {
+        self.eligible_entitlement_ids
+            .iter()
+            .filter(|entitlement_id| {
+                self.provider_ids_by_entitlement
+                    .get(*entitlement_id)
+                    .is_some_and(|provider_ids| {
+                        !provider_ids.is_empty()
+                            && provider_ids.iter().any(|allowed| allowed == provider_id)
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn eligible_entitlement_ids_for_provider(&self, provider_id: &str) -> Vec<String> {
+        if self.provider_ids_by_entitlement.is_empty() {
+            return if self.allowed_provider_ids.is_empty()
+                || self
+                    .allowed_provider_ids
+                    .iter()
+                    .any(|allowed| allowed == provider_id)
+            {
+                self.eligible_entitlement_ids.clone()
+            } else {
+                Vec::new()
+            };
+        }
+
+        self.eligible_entitlement_ids
+            .iter()
+            .filter(|entitlement_id| {
+                self.provider_ids_by_entitlement
+                    .get(*entitlement_id)
+                    .is_none_or(|provider_ids| {
+                        provider_ids.is_empty()
+                            || provider_ids.iter().any(|allowed| allowed == provider_id)
+                    })
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -485,5 +717,99 @@ pub trait BillingReadRepository: Send + Sync {
     ) -> Result<Option<UserDailyQuotaAvailabilityRecord>, crate::DataLayerError> {
         let _ = global_model_id;
         self.find_user_daily_quota_availability(user_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BillingFundingSource, BillingRequestAdmissionInput, UserDailyQuotaAvailabilityRecord,
+    };
+
+    fn plan_admission() -> BillingRequestAdmissionInput {
+        BillingRequestAdmissionInput {
+            request_id: "request-1".to_string(),
+            user_id: Some("user-1".to_string()),
+            api_key_id: Some("key-1".to_string()),
+            wallet_id: Some("wallet-1".to_string()),
+            global_model_id: Some("global-model-1".to_string()),
+            funding_source: BillingFundingSource::Plan,
+            wallet_balance_at_admission: Some(-1.0),
+            wallet_payment_allowed: false,
+            wallet_overage_allowed: true,
+            entitlement_ids: vec!["entitlement-1".to_string()],
+            entitlement_provider_scopes: std::collections::BTreeMap::from([(
+                "entitlement-1".to_string(),
+                vec!["provider-1".to_string()],
+            )]),
+            allowed_provider_ids: vec!["provider-1".to_string()],
+            schema_version: 1,
+        }
+    }
+
+    #[test]
+    fn plan_admission_accepts_negative_wallet_with_matching_provider() {
+        plan_admission().validate().expect("admission should pass");
+    }
+
+    #[test]
+    fn plan_admission_rejects_provider_scope_outside_allowed_set() {
+        let mut admission = plan_admission();
+        admission
+            .entitlement_provider_scopes
+            .insert("entitlement-1".to_string(), vec!["provider-2".to_string()]);
+        assert!(admission.validate().is_err());
+    }
+
+    #[test]
+    fn plan_admission_rejects_extra_provider_without_entitlement_scope() {
+        let mut admission = plan_admission();
+        admission
+            .allowed_provider_ids
+            .push("provider-wallet".to_string());
+
+        assert!(admission.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_plan_admission_accepts_empty_provider_scope() {
+        let mut admission = plan_admission();
+        admission
+            .entitlement_provider_scopes
+            .insert("entitlement-1".to_string(), Vec::new());
+        admission.allowed_provider_ids.clear();
+
+        admission.validate().expect("legacy admission should pass");
+    }
+
+    #[test]
+    fn quota_selects_only_entitlements_that_cover_the_actual_provider() {
+        let quota = UserDailyQuotaAvailabilityRecord {
+            has_active_daily_quota: true,
+            total_quota_usd: 20.0,
+            used_usd: 0.0,
+            remaining_usd: 20.0,
+            base_remaining_usd: 20.0,
+            allow_wallet_overage: true,
+            eligible_entitlement_ids: vec![
+                "entitlement-a".to_string(),
+                "entitlement-b".to_string(),
+                "legacy-entitlement".to_string(),
+            ],
+            allowed_provider_ids: vec!["provider-a".to_string(), "provider-b".to_string()],
+            provider_ids_by_entitlement: std::collections::BTreeMap::from([
+                ("entitlement-a".to_string(), vec!["provider-a".to_string()]),
+                ("entitlement-b".to_string(), vec!["provider-b".to_string()]),
+                ("legacy-entitlement".to_string(), Vec::new()),
+            ]),
+        };
+
+        assert_eq!(
+            quota.eligible_entitlement_ids_for_provider("provider-a"),
+            vec![
+                "entitlement-a".to_string(),
+                "legacy-entitlement".to_string()
+            ]
+        );
     }
 }

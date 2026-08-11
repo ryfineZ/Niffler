@@ -114,6 +114,7 @@ fn billing_plan_payload(
         "sort_order": record.sort_order,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
         "created_at": record.created_at_unix_secs,
         "updated_at": record.updated_at_unix_secs,
@@ -133,6 +134,7 @@ fn billing_plan_snapshot(
         "duration_value": record.duration_value,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
     })
 }
@@ -154,12 +156,17 @@ fn payment_order_payload(
     record: &aether_data::repository::wallet::StoredAdminPaymentOrder,
     plan: &aether_data_contracts::repository::billing::BillingPlanRecord,
 ) -> serde_json::Value {
+    let debt_repayment_usd = record.debt_repayment_usd.max(0.0);
+    let plan_amount_usd =
+        ((record.amount_usd - debt_repayment_usd).max(0.0) * 100_000_000.0).round() / 100_000_000.0;
     json!({
         "id": record.id,
         "order_no": record.order_no,
         "wallet_id": record.wallet_id,
         "user_id": record.user_id,
         "amount_usd": record.amount_usd,
+        "plan_amount_usd": plan_amount_usd,
+        "debt_repayment_usd": debt_repayment_usd,
         "pay_amount": record.pay_amount,
         "pay_currency": record.pay_currency,
         "exchange_rate": record.exchange_rate,
@@ -193,6 +200,7 @@ fn entitlement_payload(
         "status": record.status,
         "starts_at": unix_secs_to_rfc3339(record.starts_at_unix_secs),
         "expires_at": unix_secs_to_rfc3339(record.expires_at_unix_secs),
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_snapshot,
         "created_at": unix_secs_to_rfc3339(record.created_at_unix_secs),
         "updated_at": unix_secs_to_rfc3339(record.updated_at_unix_secs),
@@ -354,7 +362,7 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
             }
         };
-        let (amount_usd, pay_amount) = match compute_dodopay_plan_payment_amounts(
+        let (plan_amount_usd, plan_pay_amount) = match compute_dodopay_plan_payment_amounts(
             &plan,
             &config.pay_currency,
             config.usd_exchange_rate,
@@ -392,8 +400,8 @@ pub(super) async fn handle_billing_plan_checkout(
                 aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
                     preferred_wallet_id: None,
                     user_id: auth.user.id.clone(),
-                    amount_usd,
-                    pay_amount,
+                    amount_usd: plan_amount_usd,
+                    pay_amount: plan_pay_amount,
                     pay_currency: config.pay_currency.clone(),
                     exchange_rate: config.usd_exchange_rate,
                     payment_method: checkout_request.payment_method.clone(),
@@ -428,6 +436,13 @@ pub(super) async fn handle_billing_plan_checkout(
                     false,
                 )
             }
+            aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {
+                return build_auth_error_response(
+                    http::StatusCode::CONFLICT,
+                    "当前已有生效套餐，只能续费原套餐",
+                    false,
+                )
+            }
             aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached => {
                 return build_auth_error_response(
                     http::StatusCode::CONFLICT,
@@ -435,6 +450,24 @@ pub(super) async fn handle_billing_plan_checkout(
                     false,
                 )
             }
+        };
+        let Some(pay_amount) = pending_order
+            .pay_amount
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            let _ = state
+                .cancel_payment_order(CancelPaymentOrderInput {
+                    order_no: pending_order.order_no.clone(),
+                    expected_payment_provider: None,
+                    cancel_reason: "invalid_plan_payment_amount".to_string(),
+                    cancel_source: "server".to_string(),
+                })
+                .await;
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                "套餐订单实付金额无效",
+                false,
+            );
         };
         let checkout = match create_dodopay_checkout(
             &config,
@@ -557,7 +590,7 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
             }
         };
-    let (amount_usd, pay_amount) =
+    let (plan_amount_usd, plan_pay_amount) =
         match compute_plan_payment_amounts(&plan, &config.pay_currency, config.usd_exchange_rate) {
             Ok(value) => value,
             Err(detail) => {
@@ -575,36 +608,28 @@ pub(super) async fn handle_billing_plan_checkout(
             false,
         );
     };
-    let checkout = build_epay_checkout_url(
-        &config,
-        &EpayCheckoutInput {
-            order_no: order_no.clone(),
-            channel: payment_channel.clone(),
-            subject: plan.title.clone(),
-            pay_amount,
-            notify_url: format!("{callback_base_url}/api/payment/epay/notify"),
-            return_url: format!("{callback_base_url}/api/payment/epay/return"),
-        },
-    );
-    let pay_currency = config.pay_currency;
+    let pay_currency = config.pay_currency.clone();
     let exchange_rate = config.usd_exchange_rate;
     let gateway_order_id = order_no.clone();
-    let payment_channel = Some(payment_channel);
+    let pending_gateway_response = json!({
+        "gateway": "epay",
+        "provider_order_status": "pending_checkout",
+    });
     let outcome = match state
         .create_plan_purchase_order(
             aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
                 preferred_wallet_id: None,
                 user_id: auth.user.id.clone(),
-                amount_usd,
-                pay_amount,
+                amount_usd: plan_amount_usd,
+                pay_amount: plan_pay_amount,
                 pay_currency,
                 exchange_rate,
-                payment_method: checkout_request.payment_method,
-                payment_provider: Some(checkout_request.payment_provider),
-                payment_channel,
+                payment_method: checkout_request.payment_method.clone(),
+                payment_provider: Some(checkout_request.payment_provider.clone()),
+                payment_channel: Some(payment_channel.clone()),
                 gateway_order_id,
-                gateway_response: checkout.clone(),
-                order_no,
+                gateway_response: pending_gateway_response,
+                order_no: order_no.clone(),
                 product_id: plan.id.clone(),
                 product_snapshot: billing_plan_snapshot(&plan),
                 expires_at_unix_secs: expires_at.timestamp().max(0) as u64,
@@ -623,13 +648,18 @@ pub(super) async fn handle_billing_plan_checkout(
         }
     };
     let order = match outcome {
-        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::Created(order) => {
-            payment_order_payload(&order, &plan)
-        }
+        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::Created(order) => order,
         aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::WalletInactive => {
             return build_auth_error_response(
                 http::StatusCode::BAD_REQUEST,
                 "wallet is not active",
+                false,
+            )
+        }
+        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {
+            return build_auth_error_response(
+                http::StatusCode::CONFLICT,
+                "当前已有生效套餐，只能续费原套餐",
                 false,
             )
         }
@@ -641,10 +671,86 @@ pub(super) async fn handle_billing_plan_checkout(
             )
         }
     };
+    let Some(pay_amount) = order
+        .pay_amount
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        let _ = state
+            .cancel_payment_order(CancelPaymentOrderInput {
+                order_no: order.order_no.clone(),
+                expected_payment_provider: None,
+                cancel_reason: "invalid_plan_payment_amount".to_string(),
+                cancel_source: "server".to_string(),
+            })
+            .await;
+        return build_auth_error_response(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "套餐订单实付金额无效",
+            false,
+        );
+    };
+    let checkout = build_epay_checkout_url(
+        &config,
+        &EpayCheckoutInput {
+            order_no: order_no.clone(),
+            channel: payment_channel,
+            subject: plan.title.clone(),
+            pay_amount,
+            notify_url: format!("{callback_base_url}/api/payment/epay/notify"),
+            return_url: format!("{callback_base_url}/api/payment/epay/return"),
+        },
+    );
+    let updated_order = match state
+        .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
+            order_id: order.id.clone(),
+            gateway_order_id: order_no,
+            gateway_response: checkout.clone(),
+        })
+        .await
+    {
+        Ok(Some(WalletMutationOutcome::Applied(order))) => order,
+        Ok(Some(WalletMutationOutcome::NotFound)) | Ok(None) => {
+            let _ = state
+                .cancel_payment_order(CancelPaymentOrderInput {
+                    order_no: order.order_no.clone(),
+                    expected_payment_provider: None,
+                    cancel_reason: "epay_checkout_attach_failed".to_string(),
+                    cancel_source: "server".to_string(),
+                })
+                .await;
+            return billing_storage_unavailable_response();
+        }
+        Ok(Some(WalletMutationOutcome::Invalid(detail))) => {
+            let _ = state
+                .cancel_payment_order(CancelPaymentOrderInput {
+                    order_no: order.order_no.clone(),
+                    expected_payment_provider: None,
+                    cancel_reason: "epay_checkout_attach_failed".to_string(),
+                    cancel_source: "server".to_string(),
+                })
+                .await;
+            return build_auth_error_response(http::StatusCode::CONFLICT, detail, false);
+        }
+        Err(err) => {
+            let _ = state
+                .cancel_payment_order(CancelPaymentOrderInput {
+                    order_no: order.order_no.clone(),
+                    expected_payment_provider: None,
+                    cancel_reason: "epay_checkout_attach_failed".to_string(),
+                    cancel_source: "server".to_string(),
+                })
+                .await;
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("billing checkout attach failed: {err:?}"),
+                false,
+            );
+        }
+    };
     build_auth_json_response(
         http::StatusCode::OK,
         json!({
-            "order": order,
+            "order": payment_order_payload(&updated_order, &plan),
             "payment_instructions": sanitize_wallet_gateway_response(Some(checkout)),
         }),
         None,
@@ -693,6 +799,7 @@ mod tests {
             sort_order: 0,
             max_active_per_user: 1,
             purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec!["provider-test".to_string()],
             entitlements_json: json!([
                 {
                     "type": "daily_quota",

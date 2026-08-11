@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS payment_orders (
     `wallet_id` VARCHAR(64) NOT NULL,
     `user_id` VARCHAR(64),
     `amount_usd` DOUBLE NOT NULL,
+    `debt_repayment_usd` DECIMAL(20,8) NOT NULL DEFAULT 0,
     `pay_amount` DOUBLE,
     `pay_currency` VARCHAR(16),
     `exchange_rate` DOUBLE,
@@ -224,6 +225,16 @@ CREATE TABLE IF NOT EXISTS billing_plans (
     KEY idx_billing_plans_enabled_sort (`enabled`, `sort_order`)
 );
 
+CREATE TABLE IF NOT EXISTS billing_plan_providers (
+    `plan_id` VARCHAR(64) NOT NULL,
+    `provider_id` VARCHAR(64) NOT NULL,
+    `created_at` BIGINT NOT NULL,
+    PRIMARY KEY (`plan_id`, `provider_id`),
+    KEY idx_billing_plan_providers_provider (`provider_id`, `plan_id`),
+    CONSTRAINT fk_billing_plan_providers_plan FOREIGN KEY (`plan_id`) REFERENCES billing_plans (`id`) ON DELETE CASCADE,
+    CONSTRAINT fk_billing_plan_providers_provider FOREIGN KEY (`provider_id`) REFERENCES providers (`id`) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS user_plan_entitlements (
     `id` VARCHAR(64) NOT NULL,
     `user_id` VARCHAR(64) NOT NULL,
@@ -238,6 +249,42 @@ CREATE TABLE IF NOT EXISTS user_plan_entitlements (
     PRIMARY KEY (`id`),
     KEY idx_user_plan_entitlements_user_active (`user_id`, `status`, `expires_at`),
     KEY idx_user_plan_entitlements_order (`payment_order_id`)
+);
+
+CREATE TABLE IF NOT EXISTS user_entitlement_providers (
+    `user_entitlement_id` VARCHAR(64) NOT NULL,
+    `provider_id` VARCHAR(64) NOT NULL,
+    `created_at` BIGINT NOT NULL,
+    PRIMARY KEY (`user_entitlement_id`, `provider_id`),
+    KEY idx_user_entitlement_providers_provider (`provider_id`, `user_entitlement_id`),
+    CONSTRAINT fk_user_entitlement_providers_entitlement FOREIGN KEY (`user_entitlement_id`) REFERENCES user_plan_entitlements (`id`) ON DELETE CASCADE,
+    CONSTRAINT fk_user_entitlement_providers_provider FOREIGN KEY (`provider_id`) REFERENCES providers (`id`) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS billing_request_admissions (
+    `request_id` VARCHAR(128) NOT NULL,
+    `user_id` VARCHAR(64),
+    `api_key_id` VARCHAR(64),
+    `wallet_id` VARCHAR(64),
+    `global_model_id` VARCHAR(64),
+    `funding_source` VARCHAR(32) NOT NULL,
+    `wallet_balance_at_admission` DECIMAL(20,8),
+    `wallet_payment_allowed` TINYINT(1) NOT NULL DEFAULT 0,
+    `wallet_overage_allowed` TINYINT(1) NOT NULL DEFAULT 0,
+    `entitlement_ids` JSON NOT NULL,
+    `entitlement_provider_scopes` JSON NOT NULL,
+    `allowed_provider_ids` JSON NOT NULL,
+    `billing_admitted` TINYINT(1) NOT NULL DEFAULT 1,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'admitted',
+    `rejection_reason` LONGTEXT,
+    `schema_version` SMALLINT NOT NULL DEFAULT 1,
+    `created_at` BIGINT NOT NULL,
+    `updated_at` BIGINT NOT NULL,
+    PRIMARY KEY (`request_id`),
+    KEY idx_billing_request_admissions_user_created (`user_id`, `created_at`),
+    CONSTRAINT fk_billing_request_admissions_user FOREIGN KEY (`user_id`) REFERENCES users (`id`) ON DELETE SET NULL,
+    CONSTRAINT fk_billing_request_admissions_api_key FOREIGN KEY (`api_key_id`) REFERENCES api_keys (`id`) ON DELETE SET NULL,
+    CONSTRAINT fk_billing_request_admissions_wallet FOREIGN KEY (`wallet_id`) REFERENCES wallets (`id`) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS entitlement_usage_ledgers (
@@ -255,22 +302,6 @@ CREATE TABLE IF NOT EXISTS entitlement_usage_ledgers (
     KEY idx_entitlement_usage_user_date (`user_id`, `usage_date`),
     KEY idx_entitlement_usage_entitlement_date (`user_entitlement_id`, `usage_date`),
     KEY idx_entitlement_usage_request (`request_id`)
-);
-
-CREATE TABLE IF NOT EXISTS entitlement_usage_windows (
-    `id` VARCHAR(64) NOT NULL,
-    `user_entitlement_id` VARCHAR(64) NOT NULL,
-    `user_id` VARCHAR(64) NOT NULL,
-    `window_scope` VARCHAR(32) NOT NULL,
-    `window_key` VARCHAR(64) NOT NULL,
-    `window_started_at` BIGINT NOT NULL,
-    `window_ends_at` BIGINT NOT NULL,
-    `used_usd` DOUBLE NOT NULL DEFAULT 0,
-    `created_at` BIGINT NOT NULL,
-    `updated_at` BIGINT NOT NULL,
-    PRIMARY KEY (`id`),
-    UNIQUE KEY uq_entitlement_usage_window (`user_entitlement_id`, `window_scope`),
-    KEY idx_entitlement_usage_windows_user_scope (`user_id`, `window_scope`, `window_ends_at`)
 );
 
 CREATE TABLE IF NOT EXISTS refund_requests (
@@ -308,6 +339,22 @@ CREATE TABLE IF NOT EXISTS refund_requests (
     KEY ix_refund_requests_requested_by (`requested_by`),
     KEY ix_refund_requests_approved_by (`approved_by`),
     KEY ix_refund_requests_processed_by (`processed_by`)
+);
+
+CREATE TABLE IF NOT EXISTS entitlement_usage_windows (
+    `id` VARCHAR(64) NOT NULL,
+    `user_entitlement_id` VARCHAR(64) NOT NULL,
+    `user_id` VARCHAR(64) NOT NULL,
+    `window_scope` VARCHAR(32) NOT NULL,
+    `window_key` VARCHAR(64) NOT NULL,
+    `window_started_at` BIGINT NOT NULL,
+    `window_ends_at` BIGINT NOT NULL,
+    `used_usd` DOUBLE NOT NULL DEFAULT 0,
+    `created_at` BIGINT NOT NULL,
+    `updated_at` BIGINT NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY uq_entitlement_usage_window (`user_entitlement_id`, `window_scope`),
+    KEY idx_entitlement_usage_windows_user_scope (`user_id`, `window_scope`, `window_ends_at`)
 );
 
 CREATE TABLE IF NOT EXISTS redeem_code_batches (

@@ -39,6 +39,8 @@ struct AdminUpdateUserPlanEntitlementRequest {
     expires_at: Option<String>,
     #[serde(default)]
     initial_remaining_quota_usd: Option<f64>,
+    #[serde(default)]
+    allowed_provider_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -186,6 +188,7 @@ fn billing_plan_payload(record: &BillingPlanRecord) -> serde_json::Value {
         "sort_order": record.sort_order,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
         "created_at": record.created_at_unix_secs,
         "updated_at": record.updated_at_unix_secs,
@@ -203,6 +206,7 @@ fn billing_plan_snapshot(record: &BillingPlanRecord) -> serde_json::Value {
         "duration_value": record.duration_value,
         "max_active_per_user": record.max_active_per_user,
         "purchase_limit_scope": record.purchase_limit_scope,
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_json,
     })
 }
@@ -342,11 +346,68 @@ fn normalize_admin_update_entitlement_input(
         None => None,
     };
 
+    let allowed_provider_ids = payload
+        .allowed_provider_ids
+        .as_ref()
+        .map(|provider_ids| {
+            if provider_ids.is_empty() {
+                return Err("至少选择一个套餐供应商".to_string());
+            }
+            if provider_ids.len() > 100 {
+                return Err("套餐供应商数量不能超过 100 个".to_string());
+            }
+            let mut normalized = std::collections::BTreeSet::new();
+            for provider_id in provider_ids {
+                let provider_id = provider_id.trim();
+                if provider_id.is_empty() || provider_id.chars().count() > 64 {
+                    return Err("套餐供应商 ID 不正确".to_string());
+                }
+                normalized.insert(provider_id.to_string());
+            }
+            Ok(normalized.into_iter().collect::<Vec<_>>())
+        })
+        .transpose()?;
+
     Ok(UserPlanEntitlementUpdateInput {
         starts_at_unix_secs: starts_at.timestamp().max(0) as u64,
         expires_at_unix_secs: expires_at.timestamp().max(0) as u64,
+        allowed_provider_ids,
         entitlements_snapshot,
     })
+}
+
+async fn validate_admin_entitlement_providers(
+    state: &crate::AppState,
+    provider_ids: &[String],
+) -> Result<Option<String>, GatewayError> {
+    let providers = state
+        .read_provider_catalog_providers_by_ids(provider_ids)
+        .await?;
+    let providers_by_id = providers
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect::<BTreeMap<_, _>>();
+    let missing = provider_ids
+        .iter()
+        .filter(|provider_id| !providers_by_id.contains_key(*provider_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Ok(Some(format!("供应商不存在：{}", missing.join(", "))));
+    }
+    let inactive = provider_ids
+        .iter()
+        .filter(|provider_id| {
+            providers_by_id
+                .get(*provider_id)
+                .is_some_and(|provider| !provider.is_active)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !inactive.is_empty() {
+        return Ok(Some(format!("供应商已停用：{}", inactive.join(", "))));
+    }
+    Ok(None)
 }
 
 fn plan_has_package_rights(record: &BillingPlanRecord) -> bool {
@@ -367,6 +428,7 @@ fn admin_payment_order_payload(record: &crate::AdminWalletPaymentOrderRecord) ->
         "wallet_id": record.wallet_id,
         "user_id": record.user_id,
         "amount_usd": record.amount_usd,
+        "debt_repayment_usd": record.debt_repayment_usd,
         "pay_amount": record.pay_amount,
         "pay_currency": record.pay_currency,
         "exchange_rate": record.exchange_rate,
@@ -403,6 +465,7 @@ fn entitlement_payload(
         "status": record.status,
         "starts_at": unix_secs_to_rfc3339(record.starts_at_unix_secs),
         "expires_at": unix_secs_to_rfc3339(record.expires_at_unix_secs),
+        "allowed_provider_ids": record.allowed_provider_ids,
         "entitlements": record.entitlements_snapshot,
         "active": record.status == "active"
             && record.starts_at_unix_secs <= now_unix_secs
@@ -570,6 +633,13 @@ pub(in super::super) async fn build_admin_update_user_billing_entitlement_respon
         Ok(value) => value,
         Err(detail) => return Ok(build_admin_users_bad_request_response(detail)),
     };
+    if let Some(provider_ids) = update_input.allowed_provider_ids.as_deref() {
+        if let Some(detail) =
+            validate_admin_entitlement_providers(state.app(), provider_ids).await?
+        {
+            return Ok(build_admin_users_bad_request_response(detail));
+        }
+    }
     let outcome = state
         .app()
         .update_user_plan_entitlement(&user_id, &entitlement_id, &update_input)
@@ -711,6 +781,13 @@ pub(in super::super) async fn build_admin_grant_user_billing_plan_response(
             return Ok(build_admin_users_bad_request_response(
                 "wallet is not active",
             ));
+        }
+        aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::OverlappingPlanExists => {
+            return Ok((
+                http::StatusCode::CONFLICT,
+                Json(json!({ "detail": "用户已有生效套餐，只能续费原套餐" })),
+            )
+                .into_response());
         }
         aether_data::repository::wallet::CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached => {
             return Ok((

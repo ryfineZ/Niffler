@@ -1509,6 +1509,23 @@ impl UsageReadRepository for SqliteUsageReadRepository {
         self.fetch_usage_items(builder).await
     }
 
+    async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut builder = QueryBuilder::<Sqlite>::new(USAGE_COLUMNS);
+        builder.push(
+            " WHERE billing_status = 'pending' \
+AND status IN ('completed', 'failed', 'cancelled') \
+ORDER BY created_at_unix_ms ASC, request_id ASC LIMIT ",
+        );
+        builder.push_bind(limit as i64);
+        self.fetch_usage_items(builder).await
+    }
+
     async fn find_by_request_id(
         &self,
         request_id: &str,

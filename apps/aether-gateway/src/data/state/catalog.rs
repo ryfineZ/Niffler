@@ -8,6 +8,19 @@ use super::{
 };
 
 impl GatewayDataState {
+    pub(crate) async fn find_request_billing_admission(
+        &self,
+        request_id: &str,
+    ) -> Result<
+        Option<aether_data_contracts::repository::billing::BillingRequestAdmissionRecord>,
+        DataLayerError,
+    > {
+        match &self.request_candidate_reader {
+            Some(repository) => repository.find_billing_admission(request_id).await,
+            None => Ok(None),
+        }
+    }
+
     pub(crate) async fn list_request_candidates_by_request_id(
         &self,
         request_id: &str,
@@ -116,6 +129,26 @@ impl GatewayDataState {
     ) -> Result<Option<StoredRequestCandidate>, DataLayerError> {
         match &self.request_candidate_writer {
             Some(repository) => repository.upsert(candidate).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn upsert_request_candidate_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: aether_data_contracts::repository::billing::BillingRequestAdmissionInput,
+    ) -> Result<
+        Option<(
+            StoredRequestCandidate,
+            aether_data_contracts::repository::billing::BillingRequestAdmissionRecord,
+        )>,
+        DataLayerError,
+    > {
+        match &self.request_candidate_writer {
+            Some(repository) => repository
+                .upsert_with_billing_admission(candidate, admission)
+                .await
+                .map(Some),
             None => Ok(None),
         }
     }

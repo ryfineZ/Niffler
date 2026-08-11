@@ -80,6 +80,13 @@ pub fn resolve_finalize_stream_rewrite_mode(
     }
 
     if provider_api_format == "openai:image" && client_api_format == "openai:image" {
+        if report_context
+            .get("openai_image_transport_mode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("images_passthrough"))
+        {
+            return None;
+        }
         return Some(FinalizeStreamRewriteMode::OpenAiImage);
     }
 
@@ -752,6 +759,19 @@ data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"thinki
             resolve_finalize_stream_rewrite_mode(&report_context),
             Some(FinalizeStreamRewriteMode::OpenAiImage)
         );
+    }
+
+    #[test]
+    fn same_format_openai_image_passthrough_skips_response_rewrite() {
+        let report_context = json!({
+            "provider_api_format": "openai:image",
+            "client_api_format": "openai:image",
+            "needs_conversion": false,
+            "openai_image_transport_mode": "images_passthrough",
+        });
+
+        assert_eq!(resolve_finalize_stream_rewrite_mode(&report_context), None);
+        assert!(maybe_build_ai_surface_stream_rewriter(Some(&report_context)).is_none());
     }
 
     #[test]

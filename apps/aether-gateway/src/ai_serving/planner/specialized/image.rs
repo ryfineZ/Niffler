@@ -27,7 +27,11 @@ use self::support::{
     LocalOpenAiImageCandidateAttemptSource, LocalOpenAiImageDecisionInput,
 };
 
-pub(crate) use self::request::apply_openai_image_tool_model;
+pub(crate) use self::request::{
+    apply_openai_image_tool_model, build_openai_image_passthrough_headers,
+    build_openai_image_passthrough_json_body, build_openai_image_upstream_url_for_request,
+    openai_image_uses_images_passthrough,
+};
 pub(super) use crate::ai_serving::LocalOpenAiImageSpec;
 
 pub(crate) struct LocalOpenAiImageSyncAttemptSource<'a> {

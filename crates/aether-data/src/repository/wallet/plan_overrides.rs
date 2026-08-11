@@ -5,6 +5,21 @@ const STARTS_AT_UNIX_SECS: &str = "starts_at_unix_secs";
 const EXPIRES_AT_UNIX_SECS: &str = "expires_at_unix_secs";
 const INITIAL_REMAINING_QUOTA_USD: &str = "initial_remaining_quota_usd";
 
+pub(super) fn plan_provider_ids_snapshot(snapshot: &Value) -> Vec<String> {
+    snapshot
+        .get("allowed_provider_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub(super) fn admin_grant_starts_at_unix_secs(snapshot: &Value) -> Option<i64> {
     admin_grant_override_i64(snapshot, STARTS_AT_UNIX_SECS)
 }
@@ -110,7 +125,19 @@ fn cap_quota_field(map: &mut Map<String, Value>, key: &str, cap: f64) {
 mod tests {
     use serde_json::json;
 
-    use super::entitlements_with_admin_grant_overrides;
+    use super::{entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot};
+
+    #[test]
+    fn provider_snapshot_is_trimmed_deduplicated_and_sorted() {
+        let snapshot = json!({
+            "allowed_provider_ids": ["provider-b", " provider-a ", "", "provider-b", 1]
+        });
+
+        assert_eq!(
+            plan_provider_ids_snapshot(&snapshot),
+            vec!["provider-a".to_string(), "provider-b".to_string()]
+        );
+    }
 
     #[test]
     fn quota_cap_lowers_positive_limits_without_raising_smaller_limits() {

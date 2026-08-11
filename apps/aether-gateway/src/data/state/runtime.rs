@@ -1258,6 +1258,20 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
+        match &self.usage_reader {
+            Some(repository) => {
+                repository
+                    .list_pending_terminal_usage_for_settlement(limit)
+                    .await
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub(crate) fn has_usage_audit_reader(&self) -> bool {
         self.usage_reader.is_some()
     }

@@ -532,3 +532,73 @@ describe('provider key concurrent_limit form behavior', () => {
     expect(payload.rpm_limit).toBe(11)
   })
 })
+
+describe('custom provider key authentication type', () => {
+  it('shows API Key and Bearer Token options for custom providers', async () => {
+    const root = mountDialog(KeyFormDialog, {
+      open: true,
+      endpoint: null,
+      editingKey: null,
+      providerId: 'provider-custom',
+      providerType: 'custom',
+      availableApiFormats: ['openai:embedding'],
+    })
+    await settle()
+
+    expect(root.textContent).toContain('认证类型')
+    expect(root.querySelector('[data-select-item="api_key"]')).not.toBeNull()
+    expect(root.querySelector('[data-select-item="bearer"]')).not.toBeNull()
+  })
+
+  it('submits bearer authentication for a new custom provider key', async () => {
+    const root = mountDialog(KeyFormDialog, {
+      open: true,
+      endpoint: null,
+      editingKey: null,
+      providerId: 'provider-custom',
+      providerType: 'custom',
+      availableApiFormats: ['openai:embedding'],
+    })
+    await settle()
+
+    const nameInput = root.querySelector<HTMLInputElement>('input[placeholder="例如：主 Key、备用 Key 1"]')
+    const apiKeyInput = root.querySelector<HTMLInputElement>('input[placeholder="sk-..."]')
+    expect(nameInput).not.toBeNull()
+    expect(apiKeyInput).not.toBeNull()
+    updateInput(nameInput as HTMLInputElement, 'DashScope embedding')
+    updateInput(apiKeyInput as HTMLInputElement, 'sk-dashscope')
+    root.querySelector<HTMLButtonElement>('[data-select-item="bearer"]')?.click()
+    await settle()
+
+    await submit(root)
+
+    expect(endpointMocks.addProviderKey).toHaveBeenCalledWith('provider-custom', expect.objectContaining({
+      auth_type: 'bearer',
+      api_key: 'sk-dashscope',
+      api_formats: ['openai:embedding'],
+    }))
+  })
+
+  it('switches an existing custom key to bearer without resubmitting the secret', async () => {
+    const root = mountDialog(KeyFormDialog, {
+      open: true,
+      endpoint: null,
+      editingKey: createProviderKey({
+        api_formats: ['openai:embedding'],
+        auth_type: 'api_key',
+      }),
+      providerId: 'provider-custom',
+      providerType: 'custom',
+      availableApiFormats: ['openai:embedding'],
+    })
+    await settle()
+
+    root.querySelector<HTMLButtonElement>('[data-select-item="bearer"]')?.click()
+    await settle()
+    await submit(root)
+
+    const payload = lastUpdatePayload()
+    expect(payload.auth_type).toBe('bearer')
+    expect(payload).not.toHaveProperty('api_key')
+  })
+})

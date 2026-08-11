@@ -482,7 +482,7 @@
               <TableCell class="px-3 py-3">
                 <div class="space-y-1.5">
                   <div class="flex items-center gap-1 text-[11px] text-muted-foreground">
-                    <span>{{ t('userManagement.totalAvailable') }}</span>
+                    <span>{{ t('userManagement.walletBalance') }}</span>
                     <Badge
                       v-if="isUserUnlimited(user)"
                       variant="secondary"
@@ -493,17 +493,20 @@
                     <span
                       v-else
                       class="text-sm font-semibold tabular-nums"
-                      :class="isNegativeWalletValue(getUserWalletTotalBalance(user)) ? 'text-rose-600' : 'text-foreground'"
+                      :class="isNegativeWalletValue(getUserWalletBalance(user)) ? 'text-rose-600' : 'text-foreground'"
                     >
-                      {{ formatCurrencyValue(getUserWalletTotalBalance(user), '-') }}
+                      {{ formatCurrencyValue(getUserWalletBalance(user), '-') }}
                     </span>
                   </div>
                   <div
-                    v-if="!isUserUnlimited(user) && getUserWallet(user.id)"
+                    v-if="!isUserUnlimited(user) && getUserWallet(user.id) && isNegativeWalletValue(getUserWalletBalance(user))"
                     class="text-[11px] text-muted-foreground"
                   >
-                    {{ t('userManagement.package') }} {{ formatCurrencyValue(getUserPackageBalance(user), '$0.00') }}
-                    · {{ t('userManagement.wallet') }} {{ formatCurrencyValue(getUserWalletBalance(user), '$0.00') }}
+                    <span
+                      class="font-medium text-rose-600"
+                    >
+                      {{ t('userManagement.inDebt') }}
+                    </span>
                   </div>
                   <div class="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
                     <span>
@@ -749,7 +752,7 @@
                 <div class="flex items-start justify-between gap-3">
                   <div class="space-y-1">
                     <p class="text-[11px] text-muted-foreground">
-                      {{ t('userManagement.totalAvailable') }}
+                      {{ t('userManagement.walletBalance') }}
                     </p>
                     <Badge
                       v-if="isUserUnlimited(user)"
@@ -761,16 +764,19 @@
                     <p
                       v-else
                       class="text-base font-semibold tabular-nums leading-none"
-                      :class="isNegativeWalletValue(getUserWalletTotalBalance(user)) ? 'text-rose-600' : 'text-foreground'"
+                      :class="isNegativeWalletValue(getUserWalletBalance(user)) ? 'text-rose-600' : 'text-foreground'"
                     >
-                      {{ formatCurrencyValue(getUserWalletTotalBalance(user), '-') }}
+                      {{ formatCurrencyValue(getUserWalletBalance(user), '-') }}
                     </p>
                     <p
-                      v-if="!isUserUnlimited(user) && getUserWallet(user.id)"
+                      v-if="!isUserUnlimited(user) && getUserWallet(user.id) && isNegativeWalletValue(getUserWalletBalance(user))"
                       class="text-[11px] text-muted-foreground"
                     >
-                      {{ t('userManagement.package') }} {{ formatCurrencyValue(getUserPackageBalance(user), '$0.00') }}
-                      · {{ t('userManagement.wallet') }} {{ formatCurrencyValue(getUserWalletBalance(user), '$0.00') }}
+                      <span
+                        class="font-medium text-rose-600"
+                      >
+                        {{ t('userManagement.inDebt') }}
+                      </span>
                     </p>
                   </div>
                   <div class="text-right">
@@ -1228,6 +1234,21 @@
           />
           <p class="text-[11px] text-muted-foreground">
             {{ t('userPlans.quotaLimitHint') }}
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs font-medium text-muted-foreground">
+            {{ t('userPlans.allowedProviders') }}
+          </Label>
+          <MultiSelect
+            v-model="editUserPlanProviderIds"
+            :options="editUserPlanProviderOptions"
+            :placeholder="loadingBillingProviders ? t('userPlans.loadingProviders') : t('userPlans.chooseProviders')"
+            :empty-text="t('userPlans.noProviders')"
+          />
+          <p class="text-[11px] text-muted-foreground">
+            {{ t('userPlans.allowedProvidersHint') }}
           </p>
         </div>
       </div>
@@ -1744,6 +1765,7 @@ import { usersApi, type User, type ApiKey, type UserSession, type UserBatchActio
 import { formatSessionMeta } from '@/types/session'
 import { adminWalletApi, type AdminWallet } from '@/api/admin-wallets'
 import { adminBillingPlansApi, type BillingPlan, type DailyQuotaEntitlement } from '@/api/billing'
+import { getProvidersSummary, type ProviderWithEndpointsSummary } from '@/api/endpoints/providers'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
@@ -1786,6 +1808,7 @@ import {
   Checkbox,
   Switch
 } from '@/components/ui'
+import { MultiSelect } from '@/components/common'
 
 import {
   Plus,
@@ -1850,6 +1873,7 @@ const userApiKeys = ref<ApiKey[]>([])
 const userSessions = ref<UserSession[]>([])
 const userPlanEntitlements = ref<AdminUserPlanEntitlement[]>([])
 const availableBillingPlans = ref<BillingPlan[]>([])
+const billingProviders = ref<ProviderWithEndpointsSummary[]>([])
 const selectedGrantPlanId = ref('')
 const grantReason = ref('')
 const grantStartsAt = ref('')
@@ -1861,6 +1885,7 @@ const creatingApiKey = ref(false)
 const loadingUserSessions = ref(false)
 const loadingUserPlans = ref(false)
 const loadingBillingPlans = ref(false)
+const loadingBillingProviders = ref(false)
 const grantingUserPlan = ref(false)
 const cancellingUserPlanEntitlementId = ref<string | null>(null)
 const showEditUserPlanDialog = ref(false)
@@ -1868,6 +1893,7 @@ const editingUserPlanEntitlement = ref<AdminUserPlanEntitlement | null>(null)
 const editUserPlanStartsAt = ref('')
 const editUserPlanExpiresAt = ref('')
 const editUserPlanQuotaUsd = ref('')
+const editUserPlanProviderIds = ref<string[]>([])
 const updatingUserPlanEntitlement = ref(false)
 const sessionDialogActionLoading = ref<string | null>(null)
 const apiKeyInput = ref<HTMLInputElement>()
@@ -1953,8 +1979,6 @@ const hasActiveUserFilter = computed(() =>
 const currentPage = ref(1)
 const pageSize = ref(20)
 const USERS_PAGE_CACHE_TTL_MS = 10 * 1000
-const USER_WALLETS_CACHE_TTL_MS = 10 * 1000
-let userWalletsRequestId = 0
 
 const filteredUsers = computed(() => {
   let filtered = [...usersStore.users]
@@ -2046,6 +2070,21 @@ const selectedGrantPlan = computed(() =>
 const activeUserPlanEntitlements = computed(() =>
   userPlanEntitlements.value.filter((item) => item.active)
 )
+const editUserPlanProviderOptions = computed(() => {
+  const knownIds = new Set(billingProviders.value.map((provider) => provider.id))
+  const loaded = billingProviders.value
+    .filter((provider) => provider.is_active || editUserPlanProviderIds.value.includes(provider.id))
+    .map((provider) => ({
+      value: provider.id,
+      label: provider.is_active
+        ? provider.name
+        : `${provider.name} (${t('billingPlansManagement.providerDisabled')})`,
+    }))
+  const missing = editUserPlanProviderIds.value
+    .filter((providerId) => providerId && !knownIds.has(providerId))
+    .map((providerId) => ({ value: providerId, label: providerId }))
+  return [...loaded, ...missing]
+})
 const selectedUserGroupIds = computed(() =>
   new Set((selectedUser.value?.groups || []).map((group) => group.id))
 )
@@ -2097,9 +2136,7 @@ async function refreshUsers(options: { preferCache?: boolean } = {}) {
     }),
     loadUserGroups(),
   ])
-  void loadUserWallets({
-    cacheTtlMs: options.preferCache ? USER_WALLETS_CACHE_TTL_MS : 0,
-  })
+  syncUserWalletsFromUsers()
 }
 
 async function loadUserGroups(): Promise<void> {
@@ -2233,24 +2270,13 @@ function planModelScopeLabel(plan: BillingPlan): string {
   return modelIds.size > 0 ? t('userManagement.modelCount', { count: modelIds.size }) : t('userManagement.allModels')
 }
 
-async function loadUserWallets(options: { cacheTtlMs?: number } = {}) {
-  const requestId = ++userWalletsRequestId
-  try {
-    const wallets = await adminWalletApi.listAllWallets(
-      { owner_type: 'user' },
-      { cacheTtlMs: options.cacheTtlMs ?? 0 },
-    )
-    if (requestId !== userWalletsRequestId) return
-    userWalletMap.value = wallets
-      .filter((wallet) => !!wallet.user_id)
-      .reduce<Record<string, AdminWallet>>((acc, wallet) => {
-        acc[wallet.user_id as string] = wallet
-        return acc
-      }, {})
-  } catch (err) {
-    if (requestId !== userWalletsRequestId) return
-    log.error(t('userManagement.loadWalletsFailed'), err)
-  }
+function syncUserWalletsFromUsers() {
+  userWalletMap.value = usersStore.users.reduce<Record<string, AdminWallet>>((acc, user) => {
+    if (user.wallet?.user_id) {
+      acc[user.wallet.user_id] = user.wallet
+    }
+    return acc
+  }, {})
 }
 
 function formatNumber(value?: number | null): string {
@@ -2270,28 +2296,9 @@ function isUserUnlimited(user: User): boolean {
   return Boolean(user.unlimited)
 }
 
-function getUserWalletTotalBalance(user: User): number | null {
-  if (isUserUnlimited(user)) {
-    return null
-  }
-  const wallet = getUserWallet(user.id)
-  if (!wallet) {
-    return null
-  }
-  if (typeof wallet.total_available_balance === 'number' && Number.isFinite(wallet.total_available_balance)) {
-    return wallet.total_available_balance
-  }
-  return getUserWalletBalance(user) + getUserPackageBalance(user)
-}
-
 function getUserWalletBalance(user: User): number {
   const wallet = getUserWallet(user.id)
-  const value = wallet?.wallet_balance ?? wallet?.balance ?? 0
-  return Number.isFinite(value) ? value : 0
-}
-
-function getUserPackageBalance(user: User): number {
-  const value = getUserWallet(user.id)?.package_balance ?? 0
+  const value = wallet?.actual_wallet_balance ?? wallet?.wallet_balance ?? wallet?.balance ?? 0
   return Number.isFinite(value) ? value : 0
 }
 
@@ -2412,7 +2419,7 @@ async function handleUserFormSubmit(data: UserFormData & { password?: string; un
         updateData.password = data.password
       }
       await usersStore.updateUser(data.id, updateData)
-      await loadUserWallets()
+      await refreshUsers()
        success(t('userManagement.userUpdated'))
     } else {
       // 创建用户
@@ -2430,7 +2437,7 @@ async function handleUserFormSubmit(data: UserFormData & { password?: string; un
       if (data.is_active === false && newUser) {
         await usersStore.updateUser(newUser.id, { is_active: false })
       }
-      await loadUserWallets()
+      await refreshUsers()
        success(t('userManagement.userCreated'))
     }
     closeUserFormDialog()
@@ -2476,6 +2483,7 @@ async function manageUserPlans(user: User) {
   await Promise.all([
     loadUserPlanEntitlements(user.id),
     loadAvailableBillingPlans(),
+    loadBillingProviders(),
   ])
   if (!selectedGrantPlanId.value && grantableBillingPlans.value.length > 0) {
     selectedGrantPlanId.value = grantableBillingPlans.value[0].id
@@ -2512,6 +2520,22 @@ async function loadAvailableBillingPlans() {
     availableBillingPlans.value = []
   } finally {
     loadingBillingPlans.value = false
+  }
+}
+
+async function loadBillingProviders() {
+  loadingBillingProviders.value = true
+  try {
+    const response = await getProvidersSummary(
+      { page: 1, page_size: 500 },
+      { cacheTtlMs: 10 * 1000 },
+    )
+    billingProviders.value = response.items
+  } catch (err) {
+    error(parseApiError(err, t('billingPlansManagement.loadProvidersFailed')))
+    billingProviders.value = []
+  } finally {
+    loadingBillingProviders.value = false
   }
 }
 
@@ -2616,6 +2640,7 @@ function openEditUserPlanEntitlement(item: AdminUserPlanEntitlement): void {
   editUserPlanStartsAt.value = isoToDatetimeLocal(item.starts_at)
   editUserPlanExpiresAt.value = isoToDatetimeLocal(item.expires_at)
   editUserPlanQuotaUsd.value = ''
+  editUserPlanProviderIds.value = [...(item.allowed_provider_ids || [])]
   showEditUserPlanDialog.value = true
 }
 
@@ -2634,6 +2659,13 @@ async function updateUserPlanEntitlement(): Promise<void> {
   }
   if (quotaUsd === undefined) {
     error(t('userManagement.quotaLimitInvalid'))
+    return
+  }
+  const hasUsageQuota = normalizeBillingEntitlements(
+    editingUserPlanEntitlement.value.entitlements,
+  ).some((item) => item.type === 'daily_quota' || item.type === 'usage_quota')
+  if (hasUsageQuota && editUserPlanProviderIds.value.length === 0) {
+    error(t('userPlans.providersRequired'))
     return
   }
   const now = Date.now()
@@ -2655,6 +2687,7 @@ async function updateUserPlanEntitlement(): Promise<void> {
         starts_at: startsAt,
         expires_at: expiresAt,
         ...(quotaUsd === null ? {} : { initial_remaining_quota_usd: quotaUsd }),
+        ...(hasUsageQuota ? { allowed_provider_ids: [...editUserPlanProviderIds.value] } : {}),
       }
     )
     userPlanEntitlements.value = response.items
@@ -2901,11 +2934,14 @@ function closeWalletActionDrawer() {
 }
 
 async function handleWalletDrawerChanged() {
-  await loadUserWallets()
   if (!walletActionTarget.value) return
-  const latestWallet = getUserWallet(walletActionTarget.value.user.id)
-  if (latestWallet) {
+  try {
+    const latestWallet = await adminWalletApi.getWalletDetail(walletActionTarget.value.wallet.id)
+    const userId = walletActionTarget.value.user.id
+    userWalletMap.value[userId] = latestWallet
     walletActionTarget.value.wallet = latestWallet
+  } catch (err) {
+    log.error(t('userManagement.loadWalletsFailed'), err)
   }
 }
 

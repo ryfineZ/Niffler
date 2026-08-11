@@ -1,14 +1,11 @@
-use axum::body::Bytes;
-use axum::http::Uri;
-use std::time::Duration;
-
 use super::super::GatewayControlDecision;
 use super::credentials::{contains_string, extract_requested_model};
 use super::GatewayControlAuthContext;
 use crate::{AppState, GatewayError};
+use axum::body::Bytes;
+use axum::http::Uri;
 
 const DAILY_QUOTA_EPSILON_USD: f64 = 0.000_000_01;
-const QUOTA_AVAILABILITY_CACHE_TTL_SECS: u64 = 3;
 const UNRESOLVED_REQUESTED_MODEL_QUOTA_SCOPE: &str = "__niffler_unresolved_requested_model__";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,7 +44,8 @@ pub(crate) fn trusted_auth_local_rejection(
     if crate::headers::is_json_request(headers)
         && matches!(
             rejection,
-            GatewayLocalAuthRejection::ProviderNotAllowed { .. }
+            GatewayLocalAuthRejection::BalanceDenied { .. }
+                | GatewayLocalAuthRejection::ProviderNotAllowed { .. }
                 | GatewayLocalAuthRejection::ApiFormatNotAllowed { .. }
                 | GatewayLocalAuthRejection::ModelNotAllowed { .. }
         )
@@ -102,7 +100,9 @@ pub(crate) async fn request_model_local_rejection(
         })
         .cloned();
     if let Some(rejection) = auth_context.local_rejection.as_ref() {
-        if deferred_policy_rejection.is_none() {
+        let deferred_billing_rejection =
+            matches!(rejection, GatewayLocalAuthRejection::BalanceDenied { .. });
+        if deferred_policy_rejection.is_none() && !deferred_billing_rejection {
             return Ok(Some(rejection.clone()));
         }
         pay_as_you_go_allowed = false;
@@ -186,8 +186,6 @@ pub(crate) async fn request_model_local_rejection(
         requested_global_model_id,
         scoped_quota,
         pay_as_you_go_allowed,
-        headers,
-        body,
     )
     .await
 }
@@ -215,11 +213,6 @@ fn quota_allows_plan_bypass(
     quota.is_some_and(|quota| quota.base_remaining_usd > DAILY_QUOTA_EPSILON_USD)
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CachedQuotaAvailability {
-    value: Option<aether_data_contracts::repository::billing::UserDailyQuotaAvailabilityRecord>,
-}
-
 async fn load_user_daily_quota_availability(
     state: &AppState,
     user_id: &str,
@@ -228,51 +221,9 @@ async fn load_user_daily_quota_availability(
     Option<aether_data_contracts::repository::billing::UserDailyQuotaAvailabilityRecord>,
     GatewayError,
 > {
-    let cache_key = quota_availability_cache_key(user_id, global_model_id);
-    if let Ok(Some(payload)) = state.runtime_state.kv_get(&cache_key).await {
-        if let Ok(cached) = serde_json::from_str::<CachedQuotaAvailability>(&payload) {
-            return Ok(cached.value);
-        }
-    }
-
-    let value = state
+    state
         .find_user_daily_quota_availability_for_global_model(user_id, global_model_id)
-        .await?;
-    if let Ok(payload) = serde_json::to_string(&CachedQuotaAvailability {
-        value: value.clone(),
-    }) {
-        let _ = state
-            .runtime_state
-            .kv_set(
-                &cache_key,
-                payload,
-                Some(Duration::from_secs(QUOTA_AVAILABILITY_CACHE_TTL_SECS)),
-            )
-            .await;
-    }
-    Ok(value)
-}
-
-fn quota_availability_cache_key(user_id: &str, global_model_id: Option<&str>) -> String {
-    format!(
-        "billing:daily_quota_availability:v2:{}:{}",
-        cache_key_component(user_id),
-        cache_key_component(global_model_id.unwrap_or("__all__"))
-    )
-}
-
-fn cache_key_component(value: &str) -> String {
-    value
-        .trim()
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
+        .await
 }
 
 async fn ensure_requested_global_model_id(
@@ -332,38 +283,41 @@ async fn balance_capacity_rejection(
         aether_data_contracts::repository::billing::UserDailyQuotaAvailabilityRecord,
     >,
     pay_as_you_go_allowed: bool,
-    headers: &http::HeaderMap,
-    body: &Bytes,
 ) -> Result<Option<GatewayLocalAuthRejection>, GatewayError> {
-    let Some(estimate) = estimate_request_wallet_reservation(
+    if pay_as_you_go_allowed
+        && auth_context
+            .balance_remaining
+            .is_none_or(|balance| balance > 0.0)
+    {
+        return Ok(None);
+    }
+    if requested_model.is_none() {
+        return Ok(None);
+    }
+    let quota = scoped_quota_for_request(
         state,
         decision,
         auth_context,
         requested_model,
         &mut requested_global_model_id,
         preloaded_quota,
-        pay_as_you_go_allowed,
-        headers,
-        body,
     )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let Some(available_usd) = estimate.available_usd else {
-        return Ok(None);
-    };
-    if available_usd <= DAILY_QUOTA_EPSILON_USD {
-        return Ok(Some(GatewayLocalAuthRejection::BalanceDenied {
-            remaining: Some(0.0),
-        }));
+    .await?;
+    let plan_available = quota_allows_plan_bypass(quota.as_ref());
+    if !pay_as_you_go_allowed {
+        return Ok(
+            (!plan_available).then_some(GatewayLocalAuthRejection::BalanceDenied {
+                remaining: auth_context.balance_remaining,
+            }),
+        );
     }
-    if estimate.needed_usd > available_usd + DAILY_QUOTA_EPSILON_USD {
-        return Ok(Some(GatewayLocalAuthRejection::BalanceDenied {
-            remaining: Some(available_usd),
-        }));
+    if plan_available {
+        Ok(None)
+    } else {
+        Ok(Some(GatewayLocalAuthRejection::BalanceDenied {
+            remaining: auth_context.balance_remaining,
+        }))
     }
-    Ok(None)
 }
 
 pub(crate) async fn estimate_request_wallet_reservation(
@@ -1008,6 +962,15 @@ mod tests {
         context: StoredBillingModelContext,
         quota_lookup_count: Option<Arc<AtomicUsize>>,
     ) -> AppState {
+        state_with_quota_context_wallet_balance(quota, context, 30.0, quota_lookup_count)
+    }
+
+    fn state_with_quota_context_wallet_balance(
+        quota: UserDailyQuotaAvailabilityRecord,
+        context: StoredBillingModelContext,
+        wallet_balance: f64,
+        quota_lookup_count: Option<Arc<AtomicUsize>>,
+    ) -> AppState {
         let candidate_repository =
             Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
                 sample_row(),
@@ -1024,7 +987,7 @@ mod tests {
         AppState::new()
             .expect("state should build")
             .with_data_state_for_tests(data)
-            .with_auth_wallets_for_tests(vec![sample_wallet("user-1", 30.0)])
+            .with_auth_wallets_for_tests(vec![sample_wallet("user-1", wallet_balance)])
     }
 
     fn state_with_model_mapping() -> AppState {
@@ -1099,6 +1062,9 @@ mod tests {
             remaining_usd,
             base_remaining_usd: remaining_usd,
             allow_wallet_overage,
+            eligible_entitlement_ids: Vec::new(),
+            allowed_provider_ids: Vec::new(),
+            provider_ids_by_entitlement: Default::default(),
         }
     }
 
@@ -1518,7 +1484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_bypass_limits_does_not_skip_exhausted_daily_quota_capacity() {
+    async fn positive_wallet_remains_usable_when_daily_quota_is_exhausted() {
         let context = billing_context_with_pricing(
             Some(json!({
                 "tiers": [{
@@ -1546,16 +1512,11 @@ mod tests {
                 .await
                 .expect("quota rejection should resolve");
 
-        assert_eq!(
-            rejection,
-            Some(GatewayLocalAuthRejection::BalanceDenied {
-                remaining: Some(0.0),
-            })
-        );
+        assert_eq!(rejection, None);
     }
 
     #[tokio::test]
-    async fn positive_balance_still_denies_known_cost_above_available_capacity() {
+    async fn positive_balance_does_not_use_estimated_cost_as_an_admission_limit() {
         let context = billing_context_with_pricing(
             Some(json!({
                 "tiers": [{
@@ -1580,12 +1541,62 @@ mod tests {
                 .await
                 .expect("quota rejection should resolve");
 
+        assert_eq!(rejection, None);
+    }
+
+    #[tokio::test]
+    async fn negative_wallet_is_rejected_without_remaining_plan_quota() {
+        let context = billing_context_with_pricing(None, None, None, None);
+        let state = state_with_quota_context_wallet_balance(
+            quota_availability(0.0, false),
+            context,
+            -0.01,
+            None,
+        );
+        let mut decision = decision_with_allowed_models(vec!["gpt-5".to_string()]);
+        decision
+            .auth_context
+            .as_mut()
+            .expect("auth context should exist")
+            .balance_remaining = Some(-0.01);
+        let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
+        let body = Bytes::from_static(br#"{"model":"gpt-5","messages":[]}"#);
+
+        let rejection =
+            request_model_local_rejection(&state, Some(&decision), &uri, &json_headers(), &body)
+                .await
+                .expect("billing rejection should resolve");
+
         assert_eq!(
             rejection,
             Some(GatewayLocalAuthRejection::BalanceDenied {
-                remaining: Some(50.0),
+                remaining: Some(-0.01),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn negative_wallet_can_still_use_remaining_plan_quota() {
+        let context = billing_context_with_pricing(None, None, None, None);
+        let mut quota = quota_availability(2.0, false);
+        quota.eligible_entitlement_ids = vec!["entitlement-1".to_string()];
+        quota.allowed_provider_ids = vec!["provider-1".to_string()];
+        let state = state_with_quota_context_wallet_balance(quota, context, -10.0, None);
+        let mut decision = decision_with_allowed_models(vec!["gpt-5".to_string()]);
+        decision
+            .auth_context
+            .as_mut()
+            .expect("auth context should exist")
+            .balance_remaining = Some(-10.0);
+        let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
+        let body = Bytes::from_static(br#"{"model":"gpt-5","messages":[]}"#);
+
+        let rejection =
+            request_model_local_rejection(&state, Some(&decision), &uri, &json_headers(), &body)
+                .await
+                .expect("billing rejection should resolve");
+
+        assert_eq!(rejection, None);
     }
 
     #[tokio::test]

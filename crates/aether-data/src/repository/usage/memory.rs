@@ -1068,6 +1068,29 @@ impl UsageReadRepository for InMemoryUsageReadRepository {
             .collect())
     }
 
+    async fn list_pending_terminal_usage_for_settlement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<StoredRequestUsageAudit>, DataLayerError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut items = self
+            .by_request_id
+            .read()
+            .expect("usage repository lock")
+            .values()
+            .filter(|item| {
+                item.billing_status == "pending"
+                    && matches!(item.status.as_str(), "completed" | "failed" | "cancelled")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sort_usage_items(&mut items, false);
+        items.truncate(limit);
+        Ok(items)
+    }
+
     async fn find_by_request_id(
         &self,
         request_id: &str,
@@ -3307,6 +3330,32 @@ mod tests {
             created_at_unix_ms: Some(1_700_000_000),
             updated_at_unix_secs: 1_700_000_000,
         }
+    }
+
+    #[tokio::test]
+    async fn lists_only_terminal_pending_usage_for_settlement_retry() {
+        let mut oldest_pending = sample_usage("req-oldest-pending", 100);
+        oldest_pending.billing_status = "pending".to_string();
+        let mut newer_pending = sample_usage("req-newer-pending", 200);
+        newer_pending.status = "failed".to_string();
+        newer_pending.billing_status = "pending".to_string();
+        let mut active_pending = sample_usage("req-active-pending", 50);
+        active_pending.status = "streaming".to_string();
+        active_pending.billing_status = "pending".to_string();
+        let repository = InMemoryUsageReadRepository::seed(vec![
+            sample_usage("req-settled", 1),
+            newer_pending,
+            active_pending,
+            oldest_pending,
+        ]);
+
+        let pending = repository
+            .list_pending_terminal_usage_for_settlement(1)
+            .await
+            .expect("pending settlements should list");
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, "req-oldest-pending");
     }
 
     #[tokio::test]

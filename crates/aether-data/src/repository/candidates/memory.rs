@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
 
+use aether_data_contracts::repository::billing::{
+    BillingRequestAdmissionInput, BillingRequestAdmissionRecord,
+};
 use async_trait::async_trait;
 
 use super::{
@@ -30,6 +33,7 @@ fn merge_extra_data(
 #[derive(Debug, Default)]
 pub struct InMemoryRequestCandidateRepository {
     by_id: RwLock<BTreeMap<String, StoredRequestCandidate>>,
+    admissions_by_request_id: RwLock<BTreeMap<String, BillingRequestAdmissionRecord>>,
 }
 
 impl InMemoryRequestCandidateRepository {
@@ -43,12 +47,25 @@ impl InMemoryRequestCandidateRepository {
         }
         Self {
             by_id: RwLock::new(by_id),
+            admissions_by_request_id: RwLock::new(BTreeMap::new()),
         }
     }
 }
 
 #[async_trait]
 impl RequestCandidateReadRepository for InMemoryRequestCandidateRepository {
+    async fn find_billing_admission(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<BillingRequestAdmissionRecord>, DataLayerError> {
+        Ok(self
+            .admissions_by_request_id
+            .read()
+            .expect("billing admission repository lock")
+            .get(request_id)
+            .cloned())
+    }
+
     async fn list_by_request_id(
         &self,
         request_id: &str,
@@ -424,6 +441,34 @@ impl RequestCandidateWriteRepository for InMemoryRequestCandidateRepository {
 
         by_id.insert(stored.id.clone(), stored.clone());
         Ok(stored)
+    }
+
+    async fn upsert_with_billing_admission(
+        &self,
+        candidate: UpsertRequestCandidateRecord,
+        admission: BillingRequestAdmissionInput,
+    ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
+        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        let created_at_unix_ms = super::admission::current_unix_ms();
+        let record = {
+            let mut admissions = self
+                .admissions_by_request_id
+                .write()
+                .expect("billing admission repository lock");
+            if let Some(stored) = admissions.get(&admission.request_id) {
+                super::admission::validate_stored_admission_matches_input(stored, &admission)?;
+                stored.clone()
+            } else {
+                let record = super::admission::admission_record_from_input(
+                    admission.clone(),
+                    created_at_unix_ms,
+                );
+                admissions.insert(record.request_id.clone(), record.clone());
+                record
+            }
+        };
+        let stored = self.upsert(candidate).await?;
+        Ok((stored, record))
     }
 
     async fn delete_created_before(

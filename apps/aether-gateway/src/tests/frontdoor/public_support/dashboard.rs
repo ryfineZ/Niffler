@@ -249,6 +249,9 @@ async fn gateway_dashboard_stats_user_wallet_card_uses_wallet_center_balance_bre
                 remaining_usd: 100.0,
                 base_remaining_usd: 100.0,
                 allow_wallet_overage: true,
+                eligible_entitlement_ids: Vec::new(),
+                allowed_provider_ids: Vec::new(),
+                provider_ids_by_entitlement: Default::default(),
             },
         });
     let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::seed(Vec::<(

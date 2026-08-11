@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_rollout_creates_real_billing_reservation() {
+    async fn api_key_rollout_cannot_reenable_billing_reservation() {
         let state = sqlite_state_with_billing_overrides().await;
         enable_api_key_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
@@ -440,11 +440,11 @@ mod tests {
         .expect("reservation preparation should run");
 
         assert_eq!(rejection, None);
-        assert_eq!(reservation_count(&state).await, 1);
+        assert_eq!(reservation_count(&state).await, 0);
     }
 
     #[tokio::test]
-    async fn product_plan_rollout_creates_real_billing_reservation() {
+    async fn product_plan_rollout_cannot_reenable_billing_reservation() {
         let state = sqlite_state_with_billing_overrides().await;
         enable_product_plan_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
@@ -461,11 +461,11 @@ mod tests {
         .expect("reservation preparation should run");
 
         assert_eq!(rejection, None);
-        assert_eq!(reservation_count(&state).await, 1);
+        assert_eq!(reservation_count(&state).await, 0);
     }
 
     #[tokio::test]
-    async fn active_reservations_reduce_available_wallet_before_new_reservation() {
+    async fn legacy_active_reservations_do_not_reduce_available_wallet() {
         let state = sqlite_state_with_billing_overrides().await;
         enable_api_key_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
@@ -512,9 +512,6 @@ mod tests {
         .await
         .expect("reservation preparation should run");
 
-        assert!(matches!(
-            rejection,
-            Some(crate::control::GatewayLocalAuthRejection::BalanceDenied { .. })
-        ));
+        assert_eq!(rejection, None);
     }
 }
