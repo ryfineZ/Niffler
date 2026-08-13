@@ -6,6 +6,7 @@ use crate::ai_serving::planner::candidate_materialization::{
     mark_skipped_local_execution_candidate, mark_skipped_local_execution_candidate_with_extra_data,
     mark_skipped_local_execution_candidate_with_failure_diagnostic,
 };
+use crate::ai_serving::planner::codex_identity_convergence::apply_codex_oauth_identity_convergence_to_decision;
 use crate::ai_serving::planner::decision_input::apply_final_provider_request_policies_to_decision;
 use crate::ai_serving::planner::materialization_policy::{
     build_local_candidate_persistence_policy, LocalCandidatePersistencePolicyKind,
@@ -195,6 +196,8 @@ pub(crate) async fn maybe_build_local_same_format_provider_decision_payload_for_
         auth_context: input.auth_context.clone(),
     });
     apply_final_provider_request_policies_to_decision(input, &mut decision).await?;
+    apply_codex_oauth_identity_convergence_to_decision(state, input, &mut decision, &transport)
+        .await?;
     Ok(Some(decision))
 }
 

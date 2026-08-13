@@ -2949,6 +2949,13 @@ async fn provider_query_execute_standard_test_candidate(
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
     *synthetic_request.headers_mut() = incoming_request_headers;
     let (parts, _) = synthetic_request.into_parts();
+    let codex_identity_convergence =
+        crate::ai_serving::build_codex_oauth_identity_convergence_request_context(
+            &parts.headers,
+            &request_body,
+            None,
+            trace_id,
+        )?;
 
     let request_url = crate::provider_transport::build_transport_request_url_for_request_body(
         &transport,
@@ -3053,6 +3060,15 @@ async fn provider_query_execute_standard_test_candidate(
             );
         }
     }
+    crate::ai_serving::apply_codex_oauth_identity_convergence_to_request(
+        state.app(),
+        &codex_identity_convergence,
+        normalized_provider_api_format.as_str(),
+        &mut request_headers,
+        &mut provider_request_body,
+        &transport,
+    )
+    .await?;
 
     let plan = ExecutionPlan {
         request_id: trace_id.to_string(),

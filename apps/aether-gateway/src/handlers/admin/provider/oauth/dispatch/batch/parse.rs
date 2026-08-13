@@ -43,6 +43,7 @@ pub(super) struct AdminProviderOAuthBatchImportEntry {
     pub user_agent: Option<String>,
     pub browser_profile: Option<String>,
     pub last_refresh: Option<String>,
+    pub codex_installation_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +237,7 @@ fn extract_admin_provider_oauth_batch_import_entry(
                     user_agent: None,
                     browser_profile: None,
                     last_refresh: None,
+                    codex_installation_id: None,
                 })
             }
         }
@@ -416,6 +418,7 @@ fn extract_admin_provider_oauth_batch_import_entry(
                 user_agent,
                 browser_profile,
                 last_refresh,
+                codex_installation_id: None,
             })
         }
         _ => None,
@@ -446,6 +449,7 @@ fn invalid_sub2api_oauth_import_entry(
         user_agent: None,
         browser_profile: None,
         last_refresh: None,
+        codex_installation_id: None,
     }
 }
 
@@ -524,6 +528,15 @@ fn extract_sub2api_oauth_import_entry(
         );
     };
 
+    if provider_type.trim().eq_ignore_ascii_case("codex") {
+        entry.codex_installation_id = account
+            .get("extra")
+            .and_then(Value::as_object)
+            .and_then(|extra| extra.get("openai_device_id"))
+            .and_then(Value::as_str)
+            .and_then(valid_sub2api_openai_device_id);
+    }
+
     let account_name_email =
         sub2api_oauth_email_from_account_name(sub2api_oauth_import_string(account, &["name"]));
     let email = entry.email.clone().or(account_name_email);
@@ -555,6 +568,15 @@ fn extract_sub2api_oauth_import_entry(
         );
     }
     entry
+}
+
+fn valid_sub2api_openai_device_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)))
+    .then(|| value.to_string())
 }
 
 fn sub2api_oauth_accounts(
@@ -852,6 +874,11 @@ mod tests {
                         "name": "ignored-custom-name",
                         "platform": "openai",
                         "type": "oauth",
+                        "extra": {
+                            "openai_device_id": "device-from-sub2api",
+                            "codex_fingerprint_mode": "full",
+                            "untrusted": "ignored"
+                        },
                         "credentials": {
                             "access_token": "pat-1",
                             "email": "first@example.com",
@@ -885,6 +912,10 @@ mod tests {
         assert_eq!(entries[0].plan_type.as_deref(), Some("team"));
         assert_eq!(entries[0].account_name.as_deref(), Some("研发空间"));
         assert_eq!(
+            entries[0].codex_installation_id.as_deref(),
+            Some("device-from-sub2api")
+        );
+        assert_eq!(
             entries[0].key_name.as_deref(),
             Some("first@example.com · 研发空间")
         );
@@ -894,6 +925,28 @@ mod tests {
         );
         assert_eq!(entries[0].validation_error, None);
         assert_eq!(entries[1].validation_error, None);
+        assert_eq!(entries[1].codex_installation_id, None);
+    }
+
+    #[test]
+    fn ignores_invalid_sub2api_openai_device_id() {
+        let entries = parse_admin_provider_oauth_batch_import_entries(
+            "codex",
+            &json!({
+                "type": "sub2api-data",
+                "accounts": [{
+                    "name": "device@example.com",
+                    "platform": "openai",
+                    "type": "oauth",
+                    "extra": { "openai_device_id": "invalid\ndevice" },
+                    "credentials": { "access_token": "token" }
+                }]
+            })
+            .to_string(),
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].codex_installation_id, None);
     }
 
     #[test]

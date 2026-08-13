@@ -15,8 +15,8 @@ use super::progress::{
 use crate::handlers::admin::provider::oauth::duplicates::find_duplicate_provider_oauth_key;
 use crate::handlers::admin::provider::oauth::provisioning::build_provider_oauth_auth_config_from_token_payload;
 use crate::handlers::admin::provider::oauth::provisioning::{
-    create_provider_oauth_catalog_key, provider_oauth_active_api_formats,
-    provider_oauth_key_proxy_value, update_existing_provider_oauth_catalog_key,
+    create_provider_oauth_catalog_key_with_fingerprint, provider_oauth_active_api_formats,
+    provider_oauth_key_proxy_value, update_existing_provider_oauth_catalog_key_with_fingerprint,
 };
 use crate::handlers::admin::provider::oauth::runtime::{
     resolve_provider_oauth_runtime_endpoints,
@@ -36,6 +36,30 @@ struct AdminProviderOAuthResolvedBatchImport {
     access_token: String,
     auth_config: Map<String, Value>,
     expires_at: Option<u64>,
+}
+
+fn codex_import_fingerprint(
+    existing: Option<&Value>,
+    installation_id: Option<&str>,
+) -> Option<Value> {
+    let installation_id = installation_id?.trim();
+    if installation_id.is_empty() {
+        return None;
+    }
+    let mut fingerprint = existing
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut codex = fingerprint
+        .remove("codex")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    codex.insert(
+        "installation_id".to_string(),
+        Value::String(installation_id.to_string()),
+    );
+    fingerprint.insert("codex".to_string(), Value::Object(codex));
+    Some(Value::Object(fingerprint))
 }
 
 pub(super) fn estimate_admin_provider_oauth_batch_import_total(
@@ -345,7 +369,11 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
 
         let replaced = duplicate.is_some();
         let (persisted_key, key_name) = if let Some(existing_key) = duplicate {
-            match update_existing_provider_oauth_catalog_key(
+            let fingerprint = codex_import_fingerprint(
+                existing_key.fingerprint.as_ref(),
+                entry.codex_installation_id.as_deref(),
+            );
+            match update_existing_provider_oauth_catalog_key_with_fingerprint(
                 state,
                 &existing_key,
                 provider_type,
@@ -355,6 +383,7 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
                 key_proxy.clone(),
                 expires_at,
                 is_active,
+                fingerprint,
             )
             .await?
             {
@@ -386,7 +415,7 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
                     Some(index),
                 )
             });
-            match create_provider_oauth_catalog_key(
+            match create_provider_oauth_catalog_key_with_fingerprint(
                 state,
                 provider_id,
                 provider_type,
@@ -397,6 +426,7 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
                 key_proxy.clone(),
                 expires_at,
                 is_active,
+                codex_import_fingerprint(None, entry.codex_installation_id.as_deref()),
             )
             .await?
             {

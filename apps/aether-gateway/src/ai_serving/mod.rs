@@ -21,9 +21,10 @@ pub(crate) use self::finalize::internal::{
     SyncToStreamBridgeOutcome,
 };
 pub(crate) use self::planner::{
+    apply_codex_oauth_identity_convergence_to_request,
     apply_local_runtime_candidate_terminal_reason, apply_openai_image_tool_model,
-    build_gemini_stream_plan_from_decision, build_gemini_sync_plan_from_decision,
-    build_local_gemini_files_stream_attempt_source_for_kind,
+    build_codex_oauth_identity_convergence_request_context, build_gemini_stream_plan_from_decision,
+    build_gemini_sync_plan_from_decision, build_local_gemini_files_stream_attempt_source_for_kind,
     build_local_gemini_files_stream_plan_and_reports_for_kind,
     build_local_gemini_files_sync_attempt_source_for_kind,
     build_local_gemini_files_sync_plan_and_reports_for_kind,

@@ -3311,7 +3311,7 @@ async fn gateway_handles_non_kiro_multi_model_failover_locally() {
 }
 
 #[tokio::test]
-async fn gateway_handles_openai_responses_test_model_locally() {
+async fn gateway_converges_codex_oauth_responses_test_model_identity() {
     let prompt = "Tell me whether the CLI request preserved this prompt.";
     let execution_runtime = Router::new().route(
         "/v1/execute/sync",
@@ -3324,12 +3324,49 @@ async fn gateway_handles_openai_responses_test_model_locally() {
             assert!(plan.stream);
             assert_eq!(
                 plan.headers.get("authorization").map(String::as_str),
-                Some("Bearer sk-test-cli")
+                Some("Bearer cached-codex-token")
             );
             assert_eq!(
                 plan.headers.get("x-stainless-runtime").map(String::as_str),
                 Some("node")
             );
+            assert_eq!(
+                plan.headers.get("originator").map(String::as_str),
+                Some("codex-tui")
+            );
+            let version = plan.headers.get("version").expect("Codex version");
+            assert_ne!(version, "9.9.9");
+            let expected_user_agent =
+                format!("codex-tui/{version} (Ubuntu 22.4.0; x86_64) xterm-256color");
+            assert_eq!(
+                plan.headers.get("user-agent").map(String::as_str),
+                Some(expected_user_agent.as_str())
+            );
+            let thread_id = plan.headers.get("thread-id").expect("thread id");
+            uuid::Uuid::parse_str(thread_id).expect("thread id should be a UUID");
+            assert_eq!(plan.headers.get("x-client-request-id"), Some(thread_id));
+            uuid::Uuid::parse_str(
+                plan.headers
+                    .get("x-codex-installation-id")
+                    .expect("installation id"),
+            )
+            .expect("installation id should be a UUID");
+            uuid::Uuid::parse_str(plan.headers.get("session-id").expect("session id"))
+                .expect("session id should be a UUID");
+            let parent_thread_id = plan
+                .headers
+                .get("x-codex-parent-thread-id")
+                .expect("parent thread id");
+            assert_ne!(parent_thread_id, "raw-parent-thread");
+            uuid::Uuid::parse_str(parent_thread_id).expect("parent thread id should be a UUID");
+            let turn_metadata: serde_json::Value = serde_json::from_str(
+                plan.headers
+                    .get("x-codex-turn-metadata")
+                    .expect("turn metadata"),
+            )
+            .expect("turn metadata should be JSON");
+            assert_eq!(turn_metadata["parent_thread_id"], parent_thread_id.as_str());
+            assert_ne!(turn_metadata["forked_from_thread_id"], "raw-fork-thread");
             assert_eq!(
                 plan.body
                     .json_body
@@ -3354,12 +3391,27 @@ async fn gateway_handles_openai_responses_test_model_locally() {
                 plan.body
                     .json_body
                     .as_ref()
-                    .and_then(|body| body.get("input"))
-                    .and_then(|input| input.as_array())
-                    .and_then(|items| items.first())
-                    .and_then(|item| item.get("type"))
+                    .and_then(|body| body.get("prompt_cache_key"))
                     .and_then(|value| value.as_str()),
-                Some("message")
+                Some(thread_id.as_str())
+            );
+            assert_eq!(
+                plan.body
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body.get("client_metadata"))
+                    .and_then(|metadata| metadata.get("thread_id"))
+                    .and_then(|value| value.as_str()),
+                Some(thread_id.as_str())
+            );
+            assert_eq!(
+                plan.body
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body.get("client_metadata"))
+                    .and_then(|metadata| metadata.get("x-codex-parent-thread-id"))
+                    .and_then(|value| value.as_str()),
+                Some(parent_thread_id.as_str())
             );
             assert_eq!(
                 plan.body
@@ -3369,9 +3421,6 @@ async fn gateway_handles_openai_responses_test_model_locally() {
                     .and_then(|input| input.as_array())
                     .and_then(|items| items.first())
                     .and_then(|item| item.get("content"))
-                    .and_then(|content| content.as_array())
-                    .and_then(|parts| parts.first())
-                    .and_then(|part| part.get("text"))
                     .and_then(|value| value.as_str()),
                 Some(prompt)
             );
@@ -3453,20 +3502,47 @@ async fn gateway_handles_openai_responses_test_model_locally() {
             "openai:responses",
             "https://tiger.bookapi.cc/codex",
         )],
-        vec![sample_key(
-            "key-openai-cli",
-            "provider-openai",
-            "openai:responses",
-            "sk-test-cli",
-        )],
+        vec![{
+            let mut key = sample_key(
+                "key-openai-cli",
+                "provider-openai",
+                "openai:responses",
+                "cached-codex-token",
+            );
+            key.auth_type = "oauth".to_string();
+            key.encrypted_auth_config = Some(
+                aether_crypto::encrypt_python_fernet_plaintext(
+                    DEVELOPMENT_ENCRYPTION_KEY,
+                    r#"{"provider_type":"codex","account_id":"account-1"}"#,
+                )
+                .expect("auth config should encrypt"),
+            );
+            key
+        }],
     ));
 
     let gateway = build_router_with_state(
         build_state_with_execution_runtime_override(execution_runtime_url)
-            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
-                provider_catalog_repository,
-                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
-            )),
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_transport_reader_for_tests(
+                    provider_catalog_repository,
+                    DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+                )
+                .with_system_config_values_for_tests([
+                    (
+                        "codex_oauth_identity_convergence_enabled".to_string(),
+                        json!(true),
+                    ),
+                    (
+                        "codex_model_fetch_client_version_state".to_string(),
+                        json!({
+                            "version":"0.146.0",
+                            "checked_at_unix_secs":1,
+                            "next_check_at_unix_secs":4_102_444_800_u64
+                        }),
+                    ),
+                ]),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -3480,9 +3556,26 @@ async fn gateway_handles_openai_responses_test_model_locally() {
             "provider_id": "provider-openai",
             "model": "gpt-5.4-mini",
             "api_format": "openai:responses",
-            "message": prompt,
+            "request_body": {
+                "model": "gpt-5.4-mini",
+                "input": prompt,
+                "stream": true,
+                "client_metadata": {
+                    "thread_id": "body-thread",
+                    "x-codex-parent-thread-id": "raw-parent-thread"
+                }
+            },
             "request_headers": {
-                "x-stainless-runtime": "node"
+                "x-stainless-runtime": "node",
+                "user-agent": "spoofed-client/9.9.9",
+                "originator": "spoofed-client",
+                "version": "9.9.9",
+                "thread-id": "raw-admin-thread",
+                "x-codex-parent-thread-id": "raw-parent-thread",
+                "x-codex-turn-metadata": json!({
+                    "parent_thread_id":"raw-parent-thread",
+                    "forked_from_thread_id":"raw-fork-thread"
+                }).to_string()
             }
         }))
         .send()
