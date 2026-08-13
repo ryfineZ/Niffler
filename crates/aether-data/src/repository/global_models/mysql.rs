@@ -176,11 +176,13 @@ ORDER BY provider_id ASC
     ) -> Result<Vec<StoredProviderActiveGlobalModel>, DataLayerError> {
         let rows = sqlx::query(
             r#"
-SELECT DISTINCT provider_id, global_model_id
-FROM models
-WHERE is_active = 1
-  AND global_model_id IS NOT NULL
-ORDER BY provider_id ASC, global_model_id ASC
+SELECT DISTINCT m.provider_id, m.global_model_id
+FROM models m
+JOIN providers p ON p.id = m.provider_id AND p.is_active = 1
+JOIN global_models gm ON gm.id = m.global_model_id AND gm.is_active = 1
+WHERE m.is_active = 1
+  AND COALESCE(m.is_available, 1) = 1
+ORDER BY m.provider_id ASC, m.global_model_id ASC
 "#,
         )
         .fetch_all(&self.pool)

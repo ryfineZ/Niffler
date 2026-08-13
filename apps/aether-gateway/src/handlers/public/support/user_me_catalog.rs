@@ -26,7 +26,6 @@ const USERS_ME_ENDPOINT_STATUS_UNAVAILABLE_DETAIL: &str = "用户端点健康数
 #[derive(Debug, Default)]
 struct UsersMePlanCatalogScope {
     provider_ids: BTreeSet<String>,
-    legacy_global_model_ids: BTreeSet<String>,
 }
 
 async fn resolve_users_me_plan_catalog_scope(
@@ -51,51 +50,15 @@ async fn resolve_users_me_plan_catalog_scope(
             && entitlement.starts_at_unix_secs <= now
             && entitlement.expires_at_unix_secs > now
     }) {
-        if entitlement.allowed_provider_ids.is_empty() {
-            collect_legacy_plan_global_model_ids(
-                &entitlement.entitlements_snapshot,
-                &mut scope.legacy_global_model_ids,
-            );
-        } else {
-            scope.provider_ids.extend(
-                entitlement
-                    .allowed_provider_ids
-                    .into_iter()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-            );
-        }
+        scope.provider_ids.extend(
+            entitlement
+                .allowed_provider_ids
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        );
     }
     Ok(scope)
-}
-
-fn collect_legacy_plan_global_model_ids(value: &serde_json::Value, output: &mut BTreeSet<String>) {
-    match value {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_legacy_plan_global_model_ids(item, output);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            if let Some(model_ids) = map
-                .get("allowed_global_model_ids")
-                .and_then(serde_json::Value::as_array)
-            {
-                output.extend(
-                    model_ids
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned),
-                );
-            }
-            for child in map.values() {
-                collect_legacy_plan_global_model_ids(child, output);
-            }
-        }
-        _ => {}
-    }
 }
 
 async fn resolve_plan_provider_global_model_ids(
@@ -267,8 +230,7 @@ pub(super) async fn handle_users_me_available_models(
             Ok(value) => value,
             Err(response) => return response,
         };
-    let mut plan_model_ids = plan_scope.legacy_global_model_ids;
-    plan_model_ids.extend(plan_provider_model_ids);
+    let plan_model_ids = plan_provider_model_ids;
 
     let effective_policies = if auth.user.role.eq_ignore_ascii_case("admin") {
         None

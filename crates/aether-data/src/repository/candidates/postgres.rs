@@ -573,7 +573,8 @@ impl RequestCandidateReadRepository for SqlxRequestCandidateReadRepository {
         let row = sqlx::query(
             r#"
 SELECT request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
-       wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+       CAST(wallet_balance_at_admission AS DOUBLE PRECISION) AS wallet_balance_at_admission,
+       wallet_payment_allowed, wallet_overage_allowed,
        entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
        billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
 FROM billing_request_admissions
@@ -737,15 +738,18 @@ INSERT INTO billing_request_admissions (
   billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
 )
 VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+  $1, $2, $3, $4, $5, $6, CAST($7 AS NUMERIC(20,8)), $8, $9, $10, $11, $12,
   TRUE, 'admitted', NULL, $13, NOW(), NOW()
 )
 ON CONFLICT (request_id) DO UPDATE
 SET request_id = EXCLUDED.request_id
 RETURNING request_id, user_id, api_key_id, wallet_id, global_model_id, funding_source,
-          wallet_balance_at_admission, wallet_payment_allowed, wallet_overage_allowed,
+          CAST(wallet_balance_at_admission AS DOUBLE PRECISION) AS wallet_balance_at_admission,
+          wallet_payment_allowed, wallet_overage_allowed,
           entitlement_ids, entitlement_provider_scopes, allowed_provider_ids,
-          billing_admitted, status, rejection_reason, schema_version, created_at, updated_at
+          billing_admitted, status, rejection_reason, schema_version, created_at, updated_at,
+          CAST(CAST($7 AS NUMERIC(20,8)) AS DOUBLE PRECISION)
+            AS expected_wallet_balance_at_admission
         "#,
     )
     .bind(&admission.request_id)
@@ -783,7 +787,10 @@ RETURNING request_id, user_id, api_key_id, wallet_id, global_model_id, funding_s
     .await
     .map_postgres_err()?;
     let stored = map_billing_admission_row(&row)?;
-    super::admission::validate_stored_admission_matches_input(&stored, admission)?;
+    let mut persisted_admission = admission.clone();
+    persisted_admission.wallet_balance_at_admission =
+        row_get(&row, "expected_wallet_balance_at_admission")?;
+    super::admission::validate_stored_admission_matches_input(&stored, &persisted_admission)?;
     Ok(stored)
 }
 
@@ -939,6 +946,12 @@ mod tests {
         UPSERT_SQL,
     };
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
+    use crate::repository::candidates::{
+        RequestCandidateReadRepository, RequestCandidateStatus, UpsertRequestCandidateRecord,
+    };
+    use aether_data_contracts::repository::billing::{
+        BillingFundingSource, BillingRequestAdmissionInput,
+    };
 
     #[test]
     fn upsert_sql_does_not_default_missing_or_epoch_created_at_to_epoch() {
@@ -979,5 +992,95 @@ mod tests {
         let repository = SqlxRequestCandidateReadRepository::new(pool);
         let _ = repository.pool();
         let _ = repository.transaction_runner();
+    }
+
+    #[tokio::test]
+    async fn postgres_candidate_admission_round_trips_numeric_balance_when_url_is_set() {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping postgres candidate admission test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let request_id = format!("pg-admission-{suffix}");
+        let repository = SqlxRequestCandidateReadRepository::new(pool.clone());
+        let candidate = UpsertRequestCandidateRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_id: request_id.clone(),
+            user_id: None,
+            api_key_id: None,
+            username: None,
+            api_key_name: None,
+            candidate_index: 0,
+            retry_index: 0,
+            provider_id: None,
+            endpoint_id: None,
+            key_id: None,
+            status: RequestCandidateStatus::Pending,
+            skip_reason: None,
+            is_cached: Some(false),
+            status_code: None,
+            error_type: None,
+            error_message: None,
+            latency_ms: None,
+            concurrent_requests: None,
+            extra_data: None,
+            required_capabilities: None,
+            created_at_unix_ms: Some(1_000_000),
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+        };
+        let admission = BillingRequestAdmissionInput {
+            request_id: request_id.clone(),
+            user_id: None,
+            api_key_id: None,
+            wallet_id: None,
+            global_model_id: Some("global-model-1".to_string()),
+            funding_source: BillingFundingSource::Wallet,
+            wallet_balance_at_admission: Some(-626.123_456_789),
+            wallet_payment_allowed: true,
+            wallet_overage_allowed: false,
+            entitlement_ids: Vec::new(),
+            entitlement_provider_scopes: Default::default(),
+            allowed_provider_ids: Vec::new(),
+            schema_version: 1,
+        };
+
+        let (_, inserted) = repository
+            .upsert_with_billing_admission(candidate, admission)
+            .await
+            .expect("postgres should return the inserted numeric billing balance");
+        assert_eq!(inserted.wallet_balance_at_admission, Some(-626.123_456_79));
+
+        let loaded = repository
+            .find_billing_admission(&request_id)
+            .await
+            .expect("postgres should decode the stored numeric billing balance")
+            .expect("billing admission should exist");
+        assert_eq!(loaded.wallet_balance_at_admission, Some(-626.123_456_79));
+
+        sqlx::query("DELETE FROM request_candidates WHERE request_id = $1")
+            .bind(&request_id)
+            .execute(&pool)
+            .await
+            .expect("candidate should clean up");
+        sqlx::query("DELETE FROM billing_request_admissions WHERE request_id = $1")
+            .bind(&request_id)
+            .execute(&pool)
+            .await
+            .expect("billing admission should clean up");
     }
 }

@@ -582,8 +582,7 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
         .json(&json!({
             "starts_at": "2024-03-10T00:00:00Z",
             "expires_at": "2100-01-01T00:00:00Z",
-            "initial_remaining_quota_usd": 80.0,
-            "allowed_provider_ids": ["provider-test"]
+            "initial_remaining_quota_usd": 80.0
         }))
         .send()
         .await
@@ -601,6 +600,32 @@ async fn gateway_cancels_admin_user_plan_entitlement_locally() {
     assert_eq!(
         update_payload["updated"]["allowed_provider_ids"],
         json!(["provider-test"])
+    );
+
+    let rejected_provider_override = client
+        .patch(format!(
+            "{gateway_url}/api/admin/users/user-1/billing/entitlements/entitlement-1"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "starts_at": "2024-03-10T00:00:00Z",
+            "expires_at": "2100-01-01T00:00:00Z",
+            "allowed_provider_ids": ["provider-other"]
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(rejected_provider_override.status(), StatusCode::BAD_REQUEST);
+    let rejected_payload: serde_json::Value = rejected_provider_override
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        rejected_payload["detail"],
+        "套餐号池统一在套餐管理中修改，不能为单个用户单独设置"
     );
 
     let cancel_response = client

@@ -158,10 +158,12 @@ FROM global_models gm
 
 const LIST_ACTIVE_GLOBAL_MODEL_IDS_BY_PROVIDER_IDS_PREFIX: &str = r#"
 SELECT DISTINCT
-  provider_id,
-  global_model_id
-FROM models
-WHERE provider_id IN (
+  m.provider_id,
+  m.global_model_id
+FROM models m
+JOIN providers p ON p.id = m.provider_id AND p.is_active = 1
+JOIN global_models gm ON gm.id = m.global_model_id AND gm.is_active = 1
+WHERE m.provider_id IN (
 "#;
 
 #[derive(Debug, Clone)]
@@ -735,7 +737,7 @@ LIMIT 1
         let mut builder = build_provider_id_list_query(
             LIST_ACTIVE_GLOBAL_MODEL_IDS_BY_PROVIDER_IDS_PREFIX,
             provider_ids,
-            ")\nAND is_active = 1\nAND global_model_id IS NOT NULL\nORDER BY provider_id ASC, global_model_id ASC",
+            ")\nAND m.is_active = 1\nAND COALESCE(m.is_available, 1) = 1\nORDER BY m.provider_id ASC, m.global_model_id ASC",
         );
         let rows = builder.build().fetch_all(&self.pool).await.map_sql_err()?;
         rows.iter().map(map_active_global_model_row).collect()

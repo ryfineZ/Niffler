@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use sqlx::{mysql::MySqlRow, Row};
 
 use super::{
-    quota::{
-        entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
-        usage_quota_grants_from_entitlement, StoredUsageQuotaWindow, QUOTA_SCOPE_FIVE_HOUR,
-    },
+    quota::{usage_quota_grants_from_entitlement, StoredUsageQuotaWindow, QUOTA_SCOPE_FIVE_HOUR},
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
     BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
@@ -80,19 +77,6 @@ impl MysqlBillingReadRepository {
         .await
         .map_sql_err()
     }
-
-    async fn load_entitlement_provider_ids(
-        &self,
-        entitlement_id: &str,
-    ) -> Result<Vec<String>, DataLayerError> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = ? ORDER BY provider_id",
-        )
-        .bind(entitlement_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_sql_err()
-    }
 }
 
 async fn replace_plan_provider_ids_mysql(
@@ -111,31 +95,6 @@ async fn replace_plan_provider_ids_mysql(
             "INSERT INTO billing_plan_providers (plan_id, provider_id, created_at) VALUES (?, ?, ?)",
         )
         .bind(plan_id)
-        .bind(provider_id)
-        .bind(now)
-        .execute(&mut **transaction)
-        .await
-        .map_sql_err()?;
-    }
-    Ok(())
-}
-
-async fn replace_entitlement_provider_ids_mysql(
-    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
-    entitlement_id: &str,
-    provider_ids: &[String],
-    now: i64,
-) -> Result<(), DataLayerError> {
-    sqlx::query("DELETE FROM user_entitlement_providers WHERE user_entitlement_id = ?")
-        .bind(entitlement_id)
-        .execute(&mut **transaction)
-        .await
-        .map_sql_err()?;
-    for provider_id in provider_ids {
-        sqlx::query(
-            "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id, created_at) VALUES (?, ?, ?)",
-        )
-        .bind(entitlement_id)
         .bind(provider_id)
         .bind(now)
         .execute(&mut **transaction)
@@ -1039,7 +998,13 @@ WHERE product_id = ?
 SELECT
   id, user_id, plan_id, payment_order_id, status,
   starts_at AS starts_at_unix_secs, expires_at AS expires_at_unix_secs,
-  entitlements_snapshot, created_at AS created_at_unix_secs,
+  entitlements_snapshot,
+  COALESCE((
+    SELECT JSON_ARRAYAGG(bpp.provider_id)
+    FROM billing_plan_providers bpp
+    WHERE bpp.plan_id = user_plan_entitlements.plan_id
+  ), JSON_ARRAY()) AS allowed_provider_ids,
+  created_at AS created_at_unix_secs,
   updated_at AS updated_at_unix_secs
 FROM user_plan_entitlements
 WHERE user_id = ?
@@ -1050,14 +1015,10 @@ ORDER BY created_at DESC, expires_at DESC
         .fetch_all(&self.pool)
         .await
         .map_sql_err()?;
-        let mut entitlements = rows
+        let entitlements = rows
             .iter()
             .map(map_user_plan_entitlement_mysql)
             .collect::<Result<Vec<_>, _>>()?;
-        for entitlement in &mut entitlements {
-            entitlement.allowed_provider_ids =
-                self.load_entitlement_provider_ids(&entitlement.id).await?;
-        }
         Ok(Some(entitlements))
     }
 
@@ -1093,7 +1054,13 @@ WHERE id = ?
 SELECT
   id, user_id, plan_id, payment_order_id, status,
   starts_at AS starts_at_unix_secs, expires_at AS expires_at_unix_secs,
-  entitlements_snapshot, created_at AS created_at_unix_secs,
+  entitlements_snapshot,
+  COALESCE((
+    SELECT JSON_ARRAYAGG(bpp.provider_id)
+    FROM billing_plan_providers bpp
+    WHERE bpp.plan_id = user_plan_entitlements.plan_id
+  ), JSON_ARRAY()) AS allowed_provider_ids,
+  created_at AS created_at_unix_secs,
   updated_at AS updated_at_unix_secs
 FROM user_plan_entitlements
 WHERE id = ? AND user_id = ?
@@ -1106,9 +1073,7 @@ WHERE id = ? AND user_id = ?
         .map_sql_err()?;
         match row {
             Some(row) => {
-                let mut entitlement = map_user_plan_entitlement_mysql(&row)?;
-                entitlement.allowed_provider_ids =
-                    self.load_entitlement_provider_ids(entitlement_id).await?;
+                let entitlement = map_user_plan_entitlement_mysql(&row)?;
                 Ok(AdminBillingMutationOutcome::Applied(entitlement))
             }
             None => Ok(AdminBillingMutationOutcome::NotFound),
@@ -1203,15 +1168,6 @@ WHERE id = ?
         if result.rows_affected() == 0 {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
-        if let Some(provider_ids) = input.allowed_provider_ids.as_deref() {
-            replace_entitlement_provider_ids_mysql(
-                &mut transaction,
-                entitlement_id,
-                provider_ids,
-                now,
-            )
-            .await?;
-        }
         transaction.commit().await.map_sql_err()?;
         let entitlements = self
             .list_user_plan_entitlements(user_id)
@@ -1247,25 +1203,22 @@ SELECT
   upe.starts_at,
   upe.entitlements_snapshot,
   COALESCE((
-    SELECT JSON_ARRAYAGG(uep.provider_id)
-    FROM user_entitlement_providers uep
-    WHERE uep.user_entitlement_id = upe.id
-  ), JSON_ARRAY()) AS provider_ids,
-  EXISTS (
-    SELECT 1 FROM user_entitlement_providers uep
-    WHERE uep.user_entitlement_id = upe.id
-  ) AS has_provider_scope,
-  (
-    ? IS NULL OR EXISTS (
-      SELECT 1
-      FROM user_entitlement_providers uep
-      JOIN providers p ON p.id = uep.provider_id AND p.is_active = 1
-      JOIN models m ON m.provider_id = uep.provider_id
-        AND m.global_model_id = ?
-        AND m.is_active = 1
-      WHERE uep.user_entitlement_id = upe.id
-    )
-  ) AS provider_scope_allows_model
+    SELECT JSON_ARRAYAGG(bpp.provider_id)
+    FROM billing_plan_providers bpp
+    JOIN providers p ON p.id = bpp.provider_id AND p.is_active = 1
+    WHERE bpp.plan_id = upe.plan_id
+      AND (
+        ? IS NULL OR EXISTS (
+          SELECT 1
+          FROM models m
+          JOIN global_models gm ON gm.id = m.global_model_id AND gm.is_active = 1
+          WHERE m.provider_id = bpp.provider_id
+            AND m.global_model_id = ?
+            AND m.is_active = 1
+            AND COALESCE(m.is_available, 1) = 1
+        )
+      )
+  ), JSON_ARRAY()) AS provider_ids
 FROM user_plan_entitlements upe
 WHERE upe.user_id = ?
   AND upe.status = 'active'
@@ -1284,7 +1237,6 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
         .map_sql_err()?;
         let now = chrono::Utc::now();
         let mut grants = Vec::new();
-        let mut provider_scoped_entitlement_ids = BTreeSet::new();
         let mut provider_ids_by_entitlement = BTreeMap::<String, Vec<String>>::new();
         for row in rows {
             let entitlement_id: String = row.try_get("id").map_sql_err()?;
@@ -1297,26 +1249,16 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             })?;
             let entitlements = parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
                 .unwrap_or_else(|| serde_json::json!([]));
-            let has_provider_scope: bool = row.try_get("has_provider_scope").map_sql_err()?;
             let provider_ids = parse_string_vec_json(
                 row.try_get::<Option<String>, _>("provider_ids")
                     .map_sql_err()?,
             )?;
             provider_ids_by_entitlement.insert(entitlement_id.clone(), provider_ids);
-            let provider_scope_allows_model: bool =
-                row.try_get("provider_scope_allows_model").map_sql_err()?;
-            if global_model_id.is_some()
-                && ((has_provider_scope && !provider_scope_allows_model)
-                    || (!has_provider_scope
-                        && !entitlements_snapshot_has_usage_quota_for_global_model(
-                            &entitlements,
-                            global_model_id,
-                        )))
+            if provider_ids_by_entitlement
+                .get(&entitlement_id)
+                .is_none_or(Vec::is_empty)
             {
                 continue;
-            }
-            if has_provider_scope {
-                provider_scoped_entitlement_ids.insert(entitlement_id.clone());
             }
             let stored_five_hour =
                 find_usage_quota_window_mysql(&self.pool, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR)
@@ -1329,16 +1271,6 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
                 stored_five_hour.as_ref(),
             )?);
         }
-        if global_model_id.is_some() {
-            grants.retain(|grant| {
-                provider_scoped_entitlement_ids.contains(&grant.entitlement_id)
-                    || entitlement_allows_global_model(
-                        grant.allowed_global_model_ids.as_deref(),
-                        global_model_id,
-                    )
-            });
-        }
-
         let mut grouped_limits: BTreeMap<String, (Option<f64>, Option<f64>, f64)> = BTreeMap::new();
         let mut allow_wallet_overage = true;
         for grant in &grants {
@@ -1576,13 +1508,16 @@ fn parse_json(value: Option<String>) -> Result<Option<serde_json::Value>, DataLa
 }
 
 fn parse_string_vec_json(value: Option<String>) -> Result<Vec<String>, DataLayerError> {
-    Ok(parse_json(value)?
+    let mut values = parse_json(value)?
         .and_then(|value| value.as_array().cloned())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
         .filter(|value| !value.is_empty())
-        .collect())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    Ok(values)
 }
 
 fn current_unix_secs_i64() -> i64 {
@@ -1717,7 +1652,10 @@ fn map_user_plan_entitlement_mysql(
             .try_get::<i64, _>("expires_at_unix_secs")
             .map_sql_err()?
             .max(0) as u64,
-        allowed_provider_ids: Vec::new(),
+        allowed_provider_ids: parse_string_vec_json(
+            row.try_get::<Option<String>, _>("allowed_provider_ids")
+                .map_sql_err()?,
+        )?,
         entitlements_snapshot: parse_json(row.try_get("entitlements_snapshot").ok().flatten())?
             .unwrap_or_else(|| serde_json::json!([])),
         created_at_unix_secs: row

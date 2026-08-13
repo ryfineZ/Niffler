@@ -118,15 +118,18 @@ mod admission_tests {
     }
 
     #[test]
-    fn legacy_plan_allows_the_actual_provider_after_model_scope_was_checked() {
+    fn legacy_saved_admission_still_settles_after_the_live_scope_update() {
         let mut admission = provider_scoped_plan_admission();
         admission.allowed_provider_ids.clear();
         admission
             .entitlement_provider_scopes
             .insert("entitlement-1".to_string(), Vec::new());
 
-        assert!(admission.plan_allows_provider(Some("provider-legacy")));
-        assert!(!admission.plan_allows_provider(None));
+        assert!(admission.plan_allows_provider(Some("provider-used-before-update")));
+        assert_eq!(
+            admission.entitlement_ids_for_provider(Some("provider-used-before-update")),
+            vec!["entitlement-1".to_string()]
+        );
     }
 }
 
