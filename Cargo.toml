@@ -97,7 +97,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 tokio-util = { version = "0.7", features = ["codec", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-uuid = { version = "1", features = ["serde", "v4", "v5"] }
+uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 webpki-roots = "0.26"
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream", "socks", "webpki-roots", "ws"] }
 wreq-util = "3.0.0-rc.10"

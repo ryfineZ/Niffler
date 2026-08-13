@@ -1475,7 +1475,14 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
             "x-api-key",
             "api-key",
             "cookie",
-            "set-cookie"
+            "set-cookie",
+            "x-codex-installation-id",
+            "session-id",
+            "session_id",
+            "thread-id",
+            "x-client-request-id",
+            "x-codex-window-id",
+            "x-codex-turn-metadata"
         ])),
         "detail_log_retention_days" => Some(json!(1)),
         "compressed_log_retention_days" => Some(json!(2)),
@@ -1501,6 +1508,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "email_suffix_list" => Some(json!([])),
         "enable_format_conversion" => Some(json!(false)),
         "enable_model_directives" => Some(json!(false)),
+        "codex_oauth_identity_convergence_enabled" => Some(json!(false)),
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1774,6 +1782,16 @@ pub fn parse_admin_system_config_update(
     }
 
     match normalized_key.as_str() {
+        "codex_oauth_identity_convergence_enabled" => match value.as_bool() {
+            Some(enabled) => value = json!(enabled),
+            None if value.is_null() => value = json!(false),
+            None => {
+                return Err((
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                ));
+            }
+        },
         "module.chat_pii_redaction.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
@@ -2634,6 +2652,27 @@ mod tests {
             admin_system_config_default_value("header_retention_days"),
             Some(json!(30))
         );
+        assert_eq!(
+            admin_system_config_default_value("codex_oauth_identity_convergence_enabled"),
+            Some(json!(false))
+        );
+    }
+
+    #[test]
+    fn codex_oauth_identity_convergence_config_requires_boolean_value() {
+        let parsed = parse_admin_system_config_update(
+            "codex_oauth_identity_convergence_enabled",
+            br#"{"value":true}"#,
+        )
+        .expect("boolean setting should be accepted");
+        assert_eq!(parsed.value, json!(true));
+
+        let error = parse_admin_system_config_update(
+            "codex_oauth_identity_convergence_enabled",
+            br#"{"value":"session"}"#,
+        )
+        .expect_err("string mode should be rejected");
+        assert_eq!(error.0, http::StatusCode::BAD_REQUEST);
     }
 
     #[test]

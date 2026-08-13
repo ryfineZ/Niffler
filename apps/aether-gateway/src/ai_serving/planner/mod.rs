@@ -9,6 +9,7 @@ mod candidate_ranking;
 mod candidate_resolution;
 mod candidate_source;
 mod candidate_transport_ranking_facts;
+mod codex_identity_convergence;
 mod common;
 mod decision;
 mod decision_input;
@@ -29,6 +30,10 @@ pub(crate) use self::candidate_materialization::LocalExecutionAttemptSource;
 pub(crate) use self::candidate_resolution::{
     candidate_auth_channel_skip_reason, read_candidate_transport_snapshot,
     EligibleLocalExecutionCandidate, LocalExecutionCandidateKind, SkippedLocalExecutionCandidate,
+};
+pub(crate) use self::codex_identity_convergence::{
+    apply_codex_oauth_identity_convergence_to_request,
+    build_codex_oauth_identity_convergence_request_context,
 };
 pub(crate) use self::passthrough::{
     build_local_same_format_stream_attempt_source, build_local_same_format_stream_plan_and_reports,

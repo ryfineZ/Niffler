@@ -2041,6 +2041,11 @@ async fn gateway_batch_imports_sub2api_codex_export_with_workspace_names() {
                 "name": "ignored-custom-name",
                 "platform": "openai",
                 "type": "oauth",
+                "extra": {
+                    "openai_device_id": "sub2api-device-1",
+                    "codex_fingerprint_mode": "full",
+                    "ignored_field": "must-not-import"
+                },
                 "credentials": {
                     "access_token": "sub2api-pat-1",
                     "email": "first@example.com",
@@ -2124,6 +2129,14 @@ async fn gateway_batch_imports_sub2api_codex_export_with_workspace_names() {
         assert_eq!(auth_config["access_token_import_temporary"], true);
         assert_eq!(auth_config["account_id"], "workspace-1");
         assert_eq!(auth_config["plan_type"], "team");
+        if auth_config["email"] == "first@example.com" {
+            assert_eq!(
+                persisted.fingerprint,
+                Some(json!({"codex":{"installation_id":"sub2api-device-1"}}))
+            );
+        } else {
+            assert_eq!(persisted.fingerprint, None);
+        }
         emails.insert(
             auth_config["email"]
                 .as_str()
