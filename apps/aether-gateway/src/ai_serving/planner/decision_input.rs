@@ -12,6 +12,10 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use tracing::warn;
 
+use crate::ai_serving::planner::codex_identity_convergence::{
+    build_codex_oauth_identity_convergence_request_context,
+    CodexOAuthIdentityConvergenceRequestContext,
+};
 use crate::ai_serving::planner::common::extract_standard_requested_model;
 use crate::ai_serving::{ExecutionRuntimeAuthContext, GatewayAuthApiKeySnapshot, PlannerAppState};
 use crate::client_session_affinity::{
@@ -49,6 +53,8 @@ pub(crate) struct LocalRequestedModelDecisionInput {
     pub(crate) routing_policy: Option<ResolvedRoutingPolicy>,
     pub(crate) routing_trace_seed: Option<RoutingDecisionTrace>,
     pub(crate) routing_context: Option<LocalRoutingRequestContext>,
+    pub(crate) codex_oauth_identity_convergence:
+        Option<CodexOAuthIdentityConvergenceRequestContext>,
     pub(crate) managed_instructions_snapshot:
         Arc<tokio::sync::OnceCell<ManagedInstructionsBindingSnapshot>>,
 }
@@ -270,6 +276,7 @@ pub(crate) fn build_local_requested_model_decision_input(
         routing_policy: None,
         routing_trace_seed: None,
         routing_context: None,
+        codex_oauth_identity_convergence: None,
         managed_instructions_snapshot: Arc::new(tokio::sync::OnceCell::new()),
     }
 }
@@ -346,6 +353,13 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
         input.routing_policy = None;
         input.routing_trace_seed = None;
         input.routing_context = None;
+        input.codex_oauth_identity_convergence =
+            Some(build_codex_oauth_identity_convergence_request_context(
+                &parts.headers,
+                body_json,
+                input.client_session_affinity.as_ref(),
+                &input.auth_context.api_key_id,
+            )?);
         return Ok(());
     };
 
@@ -418,6 +432,13 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
     final_policy.mutation_plan = policy.mutation_plan.clone();
     input.routing_trace_seed = Some(build_routing_trace_seed(&final_policy, client_api_format));
     input.routing_policy = Some(final_policy);
+    input.codex_oauth_identity_convergence =
+        Some(build_codex_oauth_identity_convergence_request_context(
+            &effective_headers,
+            &effective_body_json,
+            input.client_session_affinity.as_ref(),
+            &input.auth_context.api_key_id,
+        )?);
     input.routing_context = Some(LocalRoutingRequestContext {
         group_id,
         group_version,
@@ -779,6 +800,7 @@ mod tests {
                     }]
                 }),
             }),
+            codex_oauth_identity_convergence: None,
             managed_instructions_snapshot: Arc::new(tokio::sync::OnceCell::new()),
         }
     }

@@ -60,6 +60,8 @@ export interface SystemConfig {
   auto_delete_expired_keys: boolean
   // 格式转换
   enable_format_conversion: boolean
+  // Codex OAuth 身份收敛
+  codex_oauth_identity_convergence_enabled: boolean
   // 同步生图心跳
   enable_openai_image_sync_heartbeat: boolean
   // 请求记录
@@ -118,6 +120,8 @@ const CONFIG_KEYS = [
   'auto_delete_expired_keys',
   // 格式转换
   'enable_format_conversion',
+  // Codex OAuth 身份收敛
+  'codex_oauth_identity_convergence_enabled',
   // 同步生图心跳
   'enable_openai_image_sync_heartbeat',
   // 请求记录
@@ -283,13 +287,28 @@ function createDefaultConfig(): SystemConfig {
     auto_delete_expired_keys: false,
     // 格式转换
     enable_format_conversion: false,
+    // Codex OAuth 身份收敛
+    codex_oauth_identity_convergence_enabled: false,
     // 同步生图心跳
     enable_openai_image_sync_heartbeat: true,
     // 请求记录
     request_record_level: 'basic',
     max_request_body_size: 262144,
     max_response_body_size: 262144,
-    sensitive_headers: ['authorization', 'x-api-key', 'api-key', 'cookie', 'set-cookie'],
+    sensitive_headers: [
+      'authorization',
+      'x-api-key',
+      'api-key',
+      'cookie',
+      'set-cookie',
+      'x-codex-installation-id',
+      'session-id',
+      'session_id',
+      'thread-id',
+      'x-client-request-id',
+      'x-codex-window-id',
+      'x-codex-turn-metadata',
+    ],
     // 内容审查 / 账号保护
     content_moderation_account_protection: createDefaultContentModerationConfig(),
     // 请求记录清理
@@ -328,6 +347,9 @@ export function useSystemConfig() {
   const logConfigLoading = ref(false)
   const contentModerationLoading = ref(false)
   const cleanupConfigLoading = ref(false)
+  const providerAdvancedConfigLoading = ref(false)
+  const providerAdvancedConfigReady = ref(false)
+  const systemConfigLoading = ref(true)
 
   // 变动检测
   const hasSiteInfoChanges = computed(() => {
@@ -420,6 +442,14 @@ export function useSystemConfig() {
     )
   })
 
+  const hasProviderAdvancedConfigChanges = computed(() => {
+    if (!originalConfig.value) return false
+    return (
+      systemConfig.value.codex_oauth_identity_convergence_enabled !==
+      originalConfig.value.codex_oauth_identity_convergence_enabled
+    )
+  })
+
   // KB 和字节之间的转换
   const maxRequestBodySizeKB = computed({
     get: () => Math.round(systemConfig.value.max_request_body_size / 1024),
@@ -460,10 +490,17 @@ export function useSystemConfig() {
 
   // 加载配置
   async function loadSystemConfig() {
+    systemConfigLoading.value = true
     try {
       for (const key of CONFIG_KEYS) {
         try {
           const response = await adminApi.getSystemConfig(key)
+          if (key === 'codex_oauth_identity_convergence_enabled') {
+            if (typeof response.value !== 'boolean') {
+              throw new Error('Codex OAuth 身份收敛配置必须是布尔值')
+            }
+            providerAdvancedConfigReady.value = true
+          }
           if (key === 'turnstile_secret_key') {
             systemConfig.value.turnstile_secret_key = ''
             systemConfig.value.turnstile_secret_key_is_set = !!response.is_set
@@ -475,7 +512,12 @@ export function useSystemConfig() {
                 ? normalizeContentModerationConfig(response.value)
                 : response.value
           }
-        } catch {
+        } catch (err) {
+          if (key === 'codex_oauth_identity_convergence_enabled') {
+            providerAdvancedConfigReady.value = false
+            error(t('systemConfigMessages.providerAdvancedLoadFailed'))
+            log.error('加载 Provider 高级设置失败:', err)
+          }
           // 单个配置项加载失败时忽略，使用默认值
         }
       }
@@ -483,6 +525,8 @@ export function useSystemConfig() {
     } catch (err) {
       error(t('systemConfigMessages.loadFailed'))
       log.error('加载系统配置失败:', err)
+    } finally {
+      systemConfigLoading.value = false
     }
   }
 
@@ -805,6 +849,27 @@ export function useSystemConfig() {
     }
   }
 
+  async function saveProviderAdvancedConfig() {
+    providerAdvancedConfigLoading.value = true
+    try {
+      const value = systemConfig.value.codex_oauth_identity_convergence_enabled
+      await adminApi.updateSystemConfig(
+        'codex_oauth_identity_convergence_enabled',
+        value,
+        'Codex OAuth 身份收敛全局开关',
+      )
+      if (originalConfig.value) {
+        originalConfig.value.codex_oauth_identity_convergence_enabled = value
+      }
+      success(t('systemConfigMessages.providerAdvancedSaved'))
+    } catch (err) {
+      error(t('systemConfigMessages.providerAdvancedSaveFailed'))
+      log.error('保存 Provider 高级设置失败:', err)
+    } finally {
+      providerAdvancedConfigLoading.value = false
+    }
+  }
+
   async function saveCleanupConfig() {
     cleanupConfigLoading.value = true
     try {
@@ -929,6 +994,9 @@ export function useSystemConfig() {
     logConfigLoading,
     contentModerationLoading,
     cleanupConfigLoading,
+    providerAdvancedConfigLoading,
+    providerAdvancedConfigReady,
+    systemConfigLoading,
     // 变动检测
     hasSiteInfoChanges,
     hasProxyConfigChanges,
@@ -936,6 +1004,7 @@ export function useSystemConfig() {
     hasLogConfigChanges,
     hasContentModerationChanges,
     hasCleanupConfigChanges,
+    hasProviderAdvancedConfigChanges,
     // 计算属性
     maxRequestBodySizeKB,
     maxResponseBodySizeKB,
@@ -951,6 +1020,7 @@ export function useSystemConfig() {
     clearTurnstileSecret,
     saveLogConfig,
     saveContentModerationConfig,
+    saveProviderAdvancedConfig,
     saveCleanupConfig,
     handleAutoCleanupToggle,
   }

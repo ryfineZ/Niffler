@@ -33,6 +33,13 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
         accept: String,
         authorization: String,
         x_client_request_id: String,
+        thread_id: String,
+        installation_id: String,
+        session_id: String,
+        originator: String,
+        version: String,
+        user_agent: String,
+        prompt_cache_key: String,
     }
 
     #[derive(Debug, Clone)]
@@ -380,6 +387,49 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
                             .and_then(|value| value.as_str())
                             .unwrap_or_default()
                             .to_string(),
+                        thread_id: payload
+                            .get("headers")
+                            .and_then(|value| value.get("thread-id"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        installation_id: payload
+                            .get("headers")
+                            .and_then(|value| value.get("x-codex-installation-id"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        session_id: payload
+                            .get("headers")
+                            .and_then(|value| value.get("session-id"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        originator: payload
+                            .get("headers")
+                            .and_then(|value| value.get("originator"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        version: payload
+                            .get("headers")
+                            .and_then(|value| value.get("version"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        user_agent: payload
+                            .get("headers")
+                            .and_then(|value| value.get("user-agent"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        prompt_cache_key: payload
+                            .get("body")
+                            .and_then(|value| value.get("json_body"))
+                            .and_then(|value| value.get("prompt_cache_key"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                     });
                 let frames = concat!(
                     "{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}}\n",
@@ -440,10 +490,13 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
             Arc::clone(&usage_repository),
             DEVELOPMENT_ENCRYPTION_KEY,
         )
-        .with_system_config_values_for_tests([(
-            "request_record_level".to_string(),
-            json!("base"),
-        )]),
+        .with_system_config_values_for_tests([
+            ("request_record_level".to_string(), json!("base")),
+            (
+                "codex_oauth_identity_convergence_enabled".to_string(),
+                json!(true),
+            ),
+        ]),
     )
     .with_oauth_refresh_coordinator_for_tests(oauth_refresh)
     .with_usage_runtime_for_tests(UsageRuntimeConfig {
@@ -461,6 +514,10 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
             format!("Bearer {client_api_key}"),
         )
         .header(TRACE_ID_HEADER, "trace-codex-cli-stream-local-123")
+        .header("thread-id", "raw-client-thread")
+        .header("user-agent", "spoofed-client/9.9.9")
+        .header("originator", "spoofed-client")
+        .header("version", "9.9.9")
         .body("{\"model\":\"gpt-5.4\",\"input\":\"hello\",\"stream\":true}")
         .send()
         .await
@@ -513,7 +570,30 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
     );
     assert_eq!(
         seen_execution_runtime_request.x_client_request_id,
-        "trace-codex-cli-stream-local-123"
+        seen_execution_runtime_request.thread_id
+    );
+    assert_eq!(
+        seen_execution_runtime_request.prompt_cache_key,
+        seen_execution_runtime_request.thread_id
+    );
+    assert_ne!(
+        seen_execution_runtime_request.thread_id,
+        "raw-client-thread"
+    );
+    uuid::Uuid::parse_str(&seen_execution_runtime_request.thread_id)
+        .expect("thread id should be a UUID");
+    uuid::Uuid::parse_str(&seen_execution_runtime_request.installation_id)
+        .expect("installation id should be a UUID");
+    uuid::Uuid::parse_str(&seen_execution_runtime_request.session_id)
+        .expect("session id should be a UUID");
+    assert_eq!(seen_execution_runtime_request.originator, "codex-tui");
+    assert_ne!(seen_execution_runtime_request.version, "9.9.9");
+    assert_eq!(
+        seen_execution_runtime_request.user_agent,
+        format!(
+            "codex-tui/{} (Ubuntu 22.4.0; x86_64) xterm-256color",
+            seen_execution_runtime_request.version
+        )
     );
 
     let stored_candidates = wait_for_request_candidate_status(

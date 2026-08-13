@@ -132,6 +132,14 @@ fn grok_oauth_catalog_key_fingerprint(
     grok_browser_transport_fingerprint_from_auth_config(auth_config)
 }
 
+fn provider_oauth_catalog_key_fingerprint(
+    provider_type: &str,
+    auth_config: &Map<String, Value>,
+    fingerprint_override: Option<Value>,
+) -> Option<Value> {
+    fingerprint_override.or_else(|| grok_oauth_catalog_key_fingerprint(provider_type, auth_config))
+}
+
 pub(crate) async fn create_provider_oauth_catalog_key(
     state: &AdminAppState<'_>,
     provider_id: &str,
@@ -143,6 +151,35 @@ pub(crate) async fn create_provider_oauth_catalog_key(
     proxy: Option<serde_json::Value>,
     expires_at_unix_secs: Option<u64>,
     is_active: bool,
+) -> Result<Option<StoredProviderCatalogKey>, GatewayError> {
+    create_provider_oauth_catalog_key_with_fingerprint(
+        state,
+        provider_id,
+        provider_type,
+        name,
+        access_token,
+        auth_config,
+        api_formats,
+        proxy,
+        expires_at_unix_secs,
+        is_active,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn create_provider_oauth_catalog_key_with_fingerprint(
+    state: &AdminAppState<'_>,
+    provider_id: &str,
+    provider_type: &str,
+    name: &str,
+    access_token: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    api_formats: &[String],
+    proxy: Option<serde_json::Value>,
+    expires_at_unix_secs: Option<u64>,
+    is_active: bool,
+    fingerprint_override: Option<Value>,
 ) -> Result<Option<StoredProviderCatalogKey>, GatewayError> {
     let Some(encrypted_api_key) = state.encrypt_catalog_secret_with_fallbacks(access_token) else {
         return Ok(None);
@@ -177,7 +214,7 @@ pub(crate) async fn create_provider_oauth_catalog_key(
         None,
         expires_at_unix_secs,
         proxy,
-        grok_oauth_catalog_key_fingerprint(provider_type, auth_config),
+        provider_oauth_catalog_key_fingerprint(provider_type, auth_config, fingerprint_override),
     )
     .map_err(|err| GatewayError::Internal(err.to_string()))?;
     record.internal_priority = 50;
@@ -213,6 +250,33 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
     expires_at_unix_secs: Option<u64>,
     is_active: bool,
 ) -> Result<Option<StoredProviderCatalogKey>, GatewayError> {
+    update_existing_provider_oauth_catalog_key_with_fingerprint(
+        state,
+        existing_key,
+        provider_type,
+        access_token,
+        auth_config,
+        api_formats,
+        proxy,
+        expires_at_unix_secs,
+        is_active,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn update_existing_provider_oauth_catalog_key_with_fingerprint(
+    state: &AdminAppState<'_>,
+    existing_key: &StoredProviderCatalogKey,
+    provider_type: &str,
+    access_token: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    api_formats: &[String],
+    proxy: Option<serde_json::Value>,
+    expires_at_unix_secs: Option<u64>,
+    is_active: bool,
+    fingerprint_override: Option<Value>,
+) -> Result<Option<StoredProviderCatalogKey>, GatewayError> {
     let Some(encrypted_api_key) = state.encrypt_catalog_secret_with_fallbacks(access_token) else {
         return Ok(None);
     };
@@ -236,7 +300,9 @@ pub(crate) async fn update_existing_provider_oauth_catalog_key(
     updated.expires_at_unix_secs = expires_at_unix_secs;
     updated.oauth_invalid_at_unix_secs = None;
     updated.oauth_invalid_reason = None;
-    if updated.fingerprint.is_none() {
+    if fingerprint_override.is_some() {
+        updated.fingerprint = fingerprint_override;
+    } else if updated.fingerprint.is_none() {
         updated.fingerprint = grok_oauth_catalog_key_fingerprint(provider_type, auth_config);
     }
     updated.health_by_format = Some(json!({}));

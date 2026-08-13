@@ -9,7 +9,7 @@
         />
 
         <Tabs v-model="activeTab" class="mt-6">
-          <TabsList class="grid w-full grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-5">
+          <TabsList class="grid w-full grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-6">
             <TabsTrigger v-for="tab in settingsTabs" :key="tab.value" :value="tab.value">
               {{ tab.label }}
             </TabsTrigger>
@@ -138,6 +138,19 @@
             @update:config="systemConfig.content_moderation_account_protection = $event"
           />
 
+          <!-- Provider 高级设置 -->
+          <ProviderAdvancedSection
+            v-show="activeTab === 'provider'"
+            id="section-provider-advanced"
+            :enabled="systemConfig.codex_oauth_identity_convergence_enabled"
+            :loading="systemConfigLoading"
+            :saving="providerAdvancedConfigLoading"
+            :load-error="!systemConfigLoading && !providerAdvancedConfigReady"
+            :has-changes="hasProviderAdvancedConfigChanges"
+            @save="saveProviderAdvancedConfig"
+            @update:enabled="systemConfig.codex_oauth_identity_convergence_enabled = $event"
+          />
+
           <!-- 请求记录清理策略 -->
           <CleanupPolicySection
             v-show="activeTab === 'data'"
@@ -259,6 +272,7 @@ import ProxyConfigSection from './system-settings/ProxyConfigSection.vue'
 import BasicConfigSection from './system-settings/BasicConfigSection.vue'
 import RequestLogSection from './system-settings/RequestLogSection.vue'
 import ContentModerationSection from './system-settings/ContentModerationSection.vue'
+import ProviderAdvancedSection from './system-settings/ProviderAdvancedSection.vue'
 import CleanupPolicySection from './system-settings/CleanupPolicySection.vue'
 import ScheduledTasksSection from './system-settings/ScheduledTasksSection.vue'
 import SystemInfoSection from './system-settings/SystemInfoSection.vue'
@@ -275,6 +289,7 @@ const settingsTabs = [
   { value: 'site', label: t('systemSettings.site') },
   { value: 'security', label: t('systemSettings.security') },
   { value: 'network', label: t('systemSettings.network') },
+  { value: 'provider', label: t('systemSettings.providerAdvanced') },
   { value: 'data', label: t('systemSettings.data') },
   { value: 'diagnostics', label: t('systemSettings.diagnostics') },
 ]
@@ -290,12 +305,16 @@ const {
   logConfigLoading,
   contentModerationLoading,
   cleanupConfigLoading,
+  providerAdvancedConfigLoading,
+  providerAdvancedConfigReady,
+  systemConfigLoading,
   hasSiteInfoChanges,
   hasProxyConfigChanges,
   hasBasicConfigChanges,
   hasLogConfigChanges,
   hasContentModerationChanges,
   hasCleanupConfigChanges,
+  hasProviderAdvancedConfigChanges,
   maxRequestBodySizeKB,
   maxResponseBodySizeKB,
   sensitiveHeadersStr,
@@ -308,6 +327,7 @@ const {
   clearTurnstileSecret,
   saveLogConfig,
   saveContentModerationConfig,
+  saveProviderAdvancedConfig,
   saveCleanupConfig,
   handleAutoCleanupToggle,
 } = useSystemConfig()

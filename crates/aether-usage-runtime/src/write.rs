@@ -2094,6 +2094,13 @@ const DEFAULT_SENSITIVE_HEADERS: &[&str] = &[
     "cookie",
     "set-cookie",
     "proxy-authorization",
+    "x-codex-installation-id",
+    "session-id",
+    "session_id",
+    "thread-id",
+    "x-client-request-id",
+    "x-codex-window-id",
+    "x-codex-turn-metadata",
 ];
 
 /// 判断 header 名是否属于敏感字段（大小写不敏感）。
