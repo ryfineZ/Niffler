@@ -329,7 +329,6 @@ export interface UpdateUserPlanEntitlementRequest {
   starts_at?: string | null
   expires_at?: string | null
   initial_remaining_quota_usd?: number | null
-  allowed_provider_ids?: string[]
 }
 
 export interface UpdateUserPlanEntitlementResponse extends AdminUserPlanEntitlementsResponse {
