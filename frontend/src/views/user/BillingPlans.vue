@@ -582,20 +582,17 @@ function quotaEntitlementLabel(item: DailyQuotaEntitlement, providerIds: string[
   if (weekly > 0) parts.push(t('billing.quota7Days', { amount: weekly.toFixed(2) }))
   if (monthly > 0) parts.push(t('billing.quota30Days', { amount: monthly.toFixed(2) }))
   const quotaText = parts.join(' / ') || t('billing.usageQuota')
-  const labels = [quotaModelScopeLabel(item.allowed_global_model_ids, providerIds)]
+  const labels = [quotaModelScopeLabel(providerIds)]
   const multiplierLabel = quotaConsumptionMultiplierLabel(item, t)
   if (multiplierLabel) labels.push(multiplierLabel)
   return `${quotaText} · ${labels.join(' · ')}`
 }
 
-function quotaModelScopeLabel(modelIds: string[] | undefined, providerIds: string[]): string {
+function quotaModelScopeLabel(providerIds: string[]): string {
   if (providerIds.length > 0) {
     return t('billing.modelsByProviders')
   }
-  if (!Array.isArray(modelIds) || modelIds.length === 0) {
-    return t('billing.allModels')
-  }
-  return t('billing.availableModels', { count: modelIds.length })
+  return t('billing.noPlanProviders')
 }
 
 function formatDuration(unit: BillingDurationUnit, value: number): string {

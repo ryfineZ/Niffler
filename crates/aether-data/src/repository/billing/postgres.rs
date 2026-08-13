@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
 use super::{
-    quota::{
-        entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
-        usage_quota_grants_from_entitlement, StoredUsageQuotaWindow,
-    },
+    quota::{usage_quota_grants_from_entitlement, StoredUsageQuotaWindow},
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
     BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
@@ -184,19 +181,6 @@ impl SqlxBillingReadRepository {
         .await
         .map_postgres_err()
     }
-
-    async fn load_entitlement_provider_ids(
-        &self,
-        entitlement_id: &str,
-    ) -> Result<Vec<String>, DataLayerError> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = $1 ORDER BY provider_id",
-        )
-        .bind(entitlement_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_postgres_err()
-    }
 }
 
 async fn replace_plan_provider_ids_postgres(
@@ -214,29 +198,6 @@ async fn replace_plan_provider_ids_postgres(
             "INSERT INTO billing_plan_providers (plan_id, provider_id, created_at) VALUES ($1, $2, NOW())",
         )
         .bind(plan_id)
-        .bind(provider_id)
-        .execute(&mut **transaction)
-        .await
-        .map_postgres_err()?;
-    }
-    Ok(())
-}
-
-async fn replace_entitlement_provider_ids_postgres(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    entitlement_id: &str,
-    provider_ids: &[String],
-) -> Result<(), DataLayerError> {
-    sqlx::query("DELETE FROM user_entitlement_providers WHERE user_entitlement_id = $1")
-        .bind(entitlement_id)
-        .execute(&mut **transaction)
-        .await
-        .map_postgres_err()?;
-    for provider_id in provider_ids {
-        sqlx::query(
-            "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id, created_at) VALUES ($1, $2, NOW())",
-        )
-        .bind(entitlement_id)
         .bind(provider_id)
         .execute(&mut **transaction)
         .await
@@ -1106,6 +1067,12 @@ SELECT
   CAST(EXTRACT(EPOCH FROM starts_at) AS BIGINT) AS starts_at_unix_secs,
   CAST(EXTRACT(EPOCH FROM expires_at) AS BIGINT) AS expires_at_unix_secs,
   entitlements_snapshot,
+  ARRAY(
+    SELECT bpp.provider_id
+    FROM billing_plan_providers bpp
+    WHERE bpp.plan_id = user_plan_entitlements.plan_id
+    ORDER BY bpp.provider_id
+  ) AS allowed_provider_ids,
   CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT) AS created_at_unix_secs,
   CAST(EXTRACT(EPOCH FROM updated_at) AS BIGINT) AS updated_at_unix_secs
 FROM user_plan_entitlements
@@ -1117,14 +1084,10 @@ ORDER BY created_at DESC, expires_at DESC
         .fetch_all(&self.pool)
         .await
         .map_postgres_err()?;
-        let mut entitlements = rows
+        let entitlements = rows
             .iter()
             .map(map_user_plan_entitlement_row)
             .collect::<Result<Vec<_>, _>>()?;
-        for entitlement in &mut entitlements {
-            entitlement.allowed_provider_ids =
-                self.load_entitlement_provider_ids(&entitlement.id).await?;
-        }
         Ok(Some(entitlements))
     }
 
@@ -1159,12 +1122,18 @@ RETURNING
         .await
         .map_postgres_err()?;
         match row {
-            Some(row) => {
-                let mut entitlement = map_user_plan_entitlement_row(&row)?;
-                entitlement.allowed_provider_ids =
-                    self.load_entitlement_provider_ids(entitlement_id).await?;
-                Ok(AdminBillingMutationOutcome::Applied(entitlement))
-            }
+            Some(_) => self
+                .list_user_plan_entitlements(user_id)
+                .await?
+                .unwrap_or_default()
+                .into_iter()
+                .find(|entitlement| entitlement.id == entitlement_id)
+                .map(AdminBillingMutationOutcome::Applied)
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue(
+                        "cancelled user entitlement missing".to_string(),
+                    )
+                }),
             None => Ok(AdminBillingMutationOutcome::NotFound),
         }
     }
@@ -1260,14 +1229,6 @@ RETURNING
         if row.is_none() {
             return Ok(AdminBillingMutationOutcome::NotFound);
         }
-        if let Some(provider_ids) = input.allowed_provider_ids.as_deref() {
-            replace_entitlement_provider_ids_postgres(
-                &mut transaction,
-                entitlement_id,
-                provider_ids,
-            )
-            .await?;
-        }
         transaction.commit().await.map_postgres_err()?;
         let entitlements = self
             .list_user_plan_entitlements(user_id)
@@ -1302,26 +1263,23 @@ SELECT
   upe.starts_at,
   upe.entitlements_snapshot,
   ARRAY(
-    SELECT uep.provider_id
-    FROM user_entitlement_providers uep
-    WHERE uep.user_entitlement_id = upe.id
-    ORDER BY uep.provider_id
+    SELECT bpp.provider_id
+    FROM billing_plan_providers bpp
+    JOIN providers p ON p.id = bpp.provider_id AND p.is_active = TRUE
+    WHERE bpp.plan_id = upe.plan_id
+      AND (
+        $2::TEXT IS NULL OR EXISTS (
+          SELECT 1
+          FROM models m
+          JOIN global_models gm ON gm.id = m.global_model_id AND gm.is_active = TRUE
+          WHERE m.provider_id = bpp.provider_id
+            AND m.global_model_id = $2
+            AND m.is_active = TRUE
+            AND COALESCE(m.is_available, TRUE) = TRUE
+        )
+      )
+    ORDER BY bpp.provider_id
   ) AS provider_ids,
-  EXISTS (
-    SELECT 1 FROM user_entitlement_providers uep
-    WHERE uep.user_entitlement_id = upe.id
-  ) AS has_provider_scope,
-  (
-    $2::TEXT IS NULL OR EXISTS (
-      SELECT 1
-      FROM user_entitlement_providers uep
-      JOIN providers p ON p.id = uep.provider_id AND p.is_active = TRUE
-      JOIN models m ON m.provider_id = uep.provider_id
-        AND m.global_model_id = $2
-        AND m.is_active = TRUE
-      WHERE uep.user_entitlement_id = upe.id
-    )
-  ) AS provider_scope_allows_model,
   five_hour.window_key AS five_hour_window_key,
   five_hour.window_started_at AS five_hour_window_started_at,
   five_hour.window_ends_at AS five_hour_window_ends_at,
@@ -1376,7 +1334,6 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
         .map_postgres_err()?;
         let now = chrono::Utc::now();
         let mut grants = Vec::new();
-        let mut provider_scoped_entitlement_ids = BTreeSet::new();
         let mut provider_ids_by_entitlement = BTreeMap::<String, Vec<String>>::new();
         let mut usage_by_entitlement =
             BTreeMap::<String, (BTreeMap<(String, String), f64>, BTreeMap<String, f64>)>::new();
@@ -1386,24 +1343,13 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
                 row.try_get("starts_at").map_postgres_err()?;
             let entitlements: serde_json::Value =
                 row.try_get("entitlements_snapshot").map_postgres_err()?;
-            let has_provider_scope: bool = row.try_get("has_provider_scope").map_postgres_err()?;
             let provider_ids: Vec<String> = row.try_get("provider_ids").map_postgres_err()?;
             provider_ids_by_entitlement.insert(entitlement_id.clone(), provider_ids);
-            let provider_scope_allows_model: bool = row
-                .try_get("provider_scope_allows_model")
-                .map_postgres_err()?;
-            if global_model_id.is_some()
-                && ((has_provider_scope && !provider_scope_allows_model)
-                    || (!has_provider_scope
-                        && !entitlements_snapshot_has_usage_quota_for_global_model(
-                            &entitlements,
-                            global_model_id,
-                        )))
+            if provider_ids_by_entitlement
+                .get(&entitlement_id)
+                .is_none_or(Vec::is_empty)
             {
                 continue;
-            }
-            if has_provider_scope {
-                provider_scoped_entitlement_ids.insert(entitlement_id.clone());
             }
             let stored_five_hour = row
                 .try_get::<Option<String>, _>("five_hour_window_key")
@@ -1460,16 +1406,6 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
                 stored_five_hour.as_ref(),
             )?);
         }
-        if global_model_id.is_some() {
-            grants.retain(|grant| {
-                provider_scoped_entitlement_ids.contains(&grant.entitlement_id)
-                    || entitlement_allows_global_model(
-                        grant.allowed_global_model_ids.as_deref(),
-                        global_model_id,
-                    )
-            });
-        }
-
         let mut grouped_limits: BTreeMap<String, (Option<f64>, Option<f64>, f64)> = BTreeMap::new();
         let mut allow_wallet_overage = true;
         for grant in &grants {
@@ -1675,7 +1611,7 @@ fn map_user_plan_entitlement_row(
             .try_get::<i64, _>("expires_at_unix_secs")
             .map_postgres_err()?
             .max(0) as u64,
-        allowed_provider_ids: Vec::new(),
+        allowed_provider_ids: row.try_get("allowed_provider_ids").map_postgres_err()?,
         entitlements_snapshot: row.try_get("entitlements_snapshot").map_postgres_err()?,
         created_at_unix_secs: row
             .try_get::<i64, _>("created_at_unix_secs")
@@ -1748,6 +1684,7 @@ fn map_admin_billing_collector_row(
 mod tests {
     use super::SqlxBillingReadRepository;
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
+    use crate::repository::billing::BillingReadRepository;
 
     #[tokio::test]
     async fn repository_constructs_from_lazy_pool() {
@@ -1765,5 +1702,233 @@ mod tests {
 
         let pool = factory.connect_lazy().expect("pool should build");
         let _repository = SqlxBillingReadRepository::new(pool);
+    }
+
+    #[tokio::test]
+    async fn postgres_existing_entitlement_follows_current_plan_providers_when_url_is_set() {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping postgres live plan provider test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let user_id = format!("u-{}", &suffix[..32]);
+        let wallet_id = format!("w-{}", &suffix[..32]);
+        let first_provider_id = format!("a-{}", &suffix[..32]);
+        let second_provider_id = format!("b-{}", &suffix[..32]);
+        let global_model_id = format!("g-{}", &suffix[..32]);
+        let first_model_id = format!("m-{}", &suffix[..32]);
+        let second_model_id = format!("n-{}", &suffix[..32]);
+        let plan_id = format!("plan-{}", &suffix[..30]);
+        let order_id = format!("ord-{}", &suffix[..32]);
+        let entitlement_id = format!("ent-{suffix}");
+
+        sqlx::query("INSERT INTO users (id, username, email_verified) VALUES ($1, $2, FALSE)")
+            .bind(&user_id)
+            .bind(format!("plan-provider-{suffix}"))
+            .execute(&pool)
+            .await
+            .expect("user should seed");
+        sqlx::query(
+            "INSERT INTO wallets (id, user_id, balance, gift_balance, created_at, updated_at) VALUES ($1, $2, 0, 0, NOW(), NOW())",
+        )
+        .bind(&wallet_id)
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .expect("wallet should seed");
+        for (provider_id, name) in [
+            (&first_provider_id, "Plan Provider One"),
+            (&second_provider_id, "Plan Provider Two"),
+        ] {
+            sqlx::query("INSERT INTO providers (id, name, is_active) VALUES ($1, $2, TRUE)")
+                .bind(provider_id)
+                .bind(format!("{name} {suffix}"))
+                .execute(&pool)
+                .await
+                .expect("provider should seed");
+        }
+        sqlx::query(
+            "INSERT INTO global_models (id, name, display_name, is_active) VALUES ($1, $2, $2, TRUE)",
+        )
+        .bind(&global_model_id)
+        .bind(format!("model-{suffix}"))
+        .execute(&pool)
+        .await
+        .expect("global model should seed");
+        for (model_id, provider_id) in [
+            (&first_model_id, &first_provider_id),
+            (&second_model_id, &second_provider_id),
+        ] {
+            sqlx::query(
+                "INSERT INTO models (id, provider_id, global_model_id, provider_model_name, is_active, is_available) VALUES ($1, $2, $3, $4, TRUE, TRUE)",
+            )
+            .bind(model_id)
+            .bind(provider_id)
+            .bind(&global_model_id)
+            .bind(format!("upstream-{model_id}"))
+            .execute(&pool)
+            .await
+            .expect("provider model should seed");
+        }
+        sqlx::query(
+            r#"
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit, duration_value,
+  entitlements_json, created_at, updated_at
+) VALUES ($1, 'Live Provider Plan', 10, 'USD', 'month', 1, $2, NOW(), NOW())
+            "#,
+        )
+        .bind(&plan_id)
+        .bind(serde_json::json!([{
+            "type": "daily_quota",
+            "daily_quota_usd": 10.0,
+            "allow_wallet_overage": false
+        }]))
+        .execute(&pool)
+        .await
+        .expect("plan should seed");
+        sqlx::query(
+            "INSERT INTO payment_orders (id, order_no, wallet_id, user_id, amount_usd, payment_method, status, created_at) VALUES ($1, $2, $3, $4, 0, 'admin_manual', 'credited', NOW())",
+        )
+        .bind(&order_id)
+        .bind(format!("order-{suffix}"))
+        .bind(&wallet_id)
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .expect("payment order should seed");
+        sqlx::query(
+            r#"
+INSERT INTO user_plan_entitlements (
+  id, user_id, plan_id, payment_order_id, status, starts_at, expires_at,
+  entitlements_snapshot, created_at, updated_at
+) VALUES ($1, $2, $3, $4, 'active', NOW() - INTERVAL '1 minute',
+          NOW() + INTERVAL '1 hour', $5, NOW(), NOW())
+            "#,
+        )
+        .bind(&entitlement_id)
+        .bind(&user_id)
+        .bind(&plan_id)
+        .bind(&order_id)
+        .bind(serde_json::json!([{
+            "type": "daily_quota",
+            "daily_quota_usd": 10.0,
+            "allow_wallet_overage": false
+        }]))
+        .execute(&pool)
+        .await
+        .expect("entitlement should seed");
+        sqlx::query(
+            "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id) VALUES ($1, $2)",
+        )
+        .bind(&entitlement_id)
+        .bind(&first_provider_id)
+        .execute(&pool)
+        .await
+        .expect("historical entitlement provider should seed");
+        sqlx::query("INSERT INTO billing_plan_providers (plan_id, provider_id) VALUES ($1, $2)")
+            .bind(&plan_id)
+            .bind(&first_provider_id)
+            .execute(&pool)
+            .await
+            .expect("plan provider should seed");
+
+        let repository = SqlxBillingReadRepository::new(pool.clone());
+        let first = repository
+            .find_user_daily_quota_availability_for_global_model(&user_id, Some(&global_model_id))
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert_eq!(first.allowed_provider_ids, vec![first_provider_id.clone()]);
+
+        let mut transaction = pool.begin().await.expect("transaction should begin");
+        sqlx::query("DELETE FROM billing_plan_providers WHERE plan_id = $1")
+            .bind(&plan_id)
+            .execute(&mut *transaction)
+            .await
+            .expect("old plan provider should delete");
+        sqlx::query("INSERT INTO billing_plan_providers (plan_id, provider_id) VALUES ($1, $2)")
+            .bind(&plan_id)
+            .bind(&second_provider_id)
+            .execute(&mut *transaction)
+            .await
+            .expect("new plan provider should insert");
+        transaction
+            .commit()
+            .await
+            .expect("plan provider change should commit");
+
+        let second = repository
+            .find_user_daily_quota_availability_for_global_model(&user_id, Some(&global_model_id))
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert_eq!(
+            second.allowed_provider_ids,
+            vec![second_provider_id.clone()]
+        );
+        let historical_provider_id: String = sqlx::query_scalar(
+            "SELECT provider_id FROM user_entitlement_providers WHERE user_entitlement_id = $1",
+        )
+        .bind(&entitlement_id)
+        .fetch_one(&pool)
+        .await
+        .expect("historical entitlement provider should read");
+        assert_eq!(historical_provider_id, first_provider_id);
+
+        sqlx::query("DELETE FROM user_plan_entitlements WHERE id = $1")
+            .bind(&entitlement_id)
+            .execute(&pool)
+            .await
+            .expect("entitlement should clean up");
+        sqlx::query("DELETE FROM payment_orders WHERE id = $1")
+            .bind(&order_id)
+            .execute(&pool)
+            .await
+            .expect("payment order should clean up");
+        sqlx::query("DELETE FROM wallets WHERE id = $1")
+            .bind(&wallet_id)
+            .execute(&pool)
+            .await
+            .expect("wallet should clean up");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .expect("user should clean up");
+        sqlx::query("DELETE FROM billing_plans WHERE id = $1")
+            .bind(&plan_id)
+            .execute(&pool)
+            .await
+            .expect("plan should clean up");
+        sqlx::query("DELETE FROM models WHERE id = ANY($1)")
+            .bind(vec![first_model_id, second_model_id])
+            .execute(&pool)
+            .await
+            .expect("provider models should clean up");
+        sqlx::query("DELETE FROM global_models WHERE id = $1")
+            .bind(&global_model_id)
+            .execute(&pool)
+            .await
+            .expect("global model should clean up");
+        sqlx::query("DELETE FROM providers WHERE id = ANY($1)")
+            .bind(vec![first_provider_id, second_provider_id])
+            .execute(&pool)
+            .await
+            .expect("providers should clean up");
     }
 }

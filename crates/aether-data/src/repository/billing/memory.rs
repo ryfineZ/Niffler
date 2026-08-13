@@ -3,7 +3,7 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 
-use super::quota::{entitlement_allows_global_model, quota_base_amount};
+use super::quota::quota_base_amount;
 use super::{
     AdminBillingMutationOutcome, BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
     PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput, StoredBillingModelContext,
@@ -107,8 +107,21 @@ fn billing_plan_from_input(
     }
 }
 
+fn apply_current_plan_provider_scope(
+    mut entitlement: UserPlanEntitlementRecord,
+    plans: &BTreeMap<String, BillingPlanRecord>,
+) -> UserPlanEntitlementRecord {
+    entitlement.allowed_provider_ids = plans
+        .get(&entitlement.plan_id)
+        .map(|plan| plan.allowed_provider_ids.clone())
+        .unwrap_or_default();
+    entitlement
+}
+
 fn daily_quota_availability_from_entitlements(
     entitlements: impl IntoIterator<Item = UserPlanEntitlementRecord>,
+    plans: &BTreeMap<String, BillingPlanRecord>,
+    model_contexts: &BillingContextMap,
     now: u64,
     global_model_id: Option<&str>,
 ) -> UserDailyQuotaAvailabilityRecord {
@@ -128,32 +141,30 @@ fn daily_quota_availability_from_entitlements(
         {
             continue;
         }
+        let Some(plan) = plans.get(&entitlement.plan_id) else {
+            continue;
+        };
+        let provider_ids = plan
+            .allowed_provider_ids
+            .iter()
+            .filter(|provider_id| {
+                global_model_id.is_none_or(|global_model_id| {
+                    model_contexts.values().any(|context| {
+                        context.provider_id == **provider_id
+                            && context.global_model_id == global_model_id
+                    })
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if provider_ids.is_empty() {
+            continue;
+        }
         let Some(items) = entitlement.entitlements_snapshot.as_array() else {
             continue;
         };
         for item in items {
             if item.get("type").and_then(serde_json::Value::as_str) != Some("daily_quota") {
-                continue;
-            }
-            let allowed_global_model_ids = item
-                .get("allowed_global_model_ids")
-                .and_then(serde_json::Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .filter(|items| !items.is_empty());
-            if global_model_id.is_some()
-                && !entitlement_allows_global_model(
-                    allowed_global_model_ids.as_deref(),
-                    global_model_id,
-                )
-            {
                 continue;
             }
             let daily_quota_usd = item
@@ -166,11 +177,8 @@ fn daily_quota_availability_from_entitlements(
             has_active_daily_quota = true;
             if !eligible_entitlement_ids.contains(&entitlement.id) {
                 eligible_entitlement_ids.push(entitlement.id.clone());
-                allowed_provider_ids.extend(entitlement.allowed_provider_ids.iter().cloned());
-                provider_ids_by_entitlement.insert(
-                    entitlement.id.clone(),
-                    entitlement.allowed_provider_ids.clone(),
-                );
+                allowed_provider_ids.extend(provider_ids.iter().cloned());
+                provider_ids_by_entitlement.insert(entitlement.id.clone(), provider_ids.clone());
             }
             total_quota_usd += daily_quota_usd;
             remaining_usd += daily_quota_usd;
@@ -436,13 +444,21 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
         &self,
         user_id: &str,
     ) -> Result<Option<Vec<UserPlanEntitlementRecord>>, DataLayerError> {
-        let mut items = self
+        let records = self
             .entitlements_by_id
             .read()
             .expect("billing repository lock")
             .values()
             .filter(|item| item.user_id == user_id)
             .cloned()
+            .collect::<Vec<_>>();
+        let plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
+        let mut items = records
+            .into_iter()
+            .map(|record| apply_current_plan_provider_scope(record, &plans))
             .collect::<Vec<_>>();
         items.sort_by_key(|item| {
             std::cmp::Reverse((item.created_at_unix_secs, item.expires_at_unix_secs))
@@ -475,7 +491,15 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
         record.status = "cancelled".to_string();
         record.expires_at_unix_secs = record.expires_at_unix_secs.min(now);
         record.updated_at_unix_secs = now;
-        Ok(AdminBillingMutationOutcome::Applied(record.clone()))
+        let record = record.clone();
+        drop(records);
+        let plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
+        Ok(AdminBillingMutationOutcome::Applied(
+            apply_current_plan_provider_scope(record, &plans),
+        ))
     }
 
     async fn update_user_plan_entitlement(
@@ -522,11 +546,16 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
         if let Some(entitlements_snapshot) = input.entitlements_snapshot.as_ref() {
             record.entitlements_snapshot = entitlements_snapshot.clone();
         }
-        if let Some(allowed_provider_ids) = input.allowed_provider_ids.as_ref() {
-            record.allowed_provider_ids = allowed_provider_ids.clone();
-        }
         record.updated_at_unix_secs = now;
-        Ok(AdminBillingMutationOutcome::Applied(record.clone()))
+        let record = record.clone();
+        drop(records);
+        let plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
+        Ok(AdminBillingMutationOutcome::Applied(
+            apply_current_plan_provider_scope(record, &plans),
+        ))
     }
 
     async fn find_user_daily_quota_availability(
@@ -551,8 +580,15 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
             .filter(|item| item.user_id == user_id)
             .cloned()
             .collect::<Vec<_>>();
+        let plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
+        let model_contexts = self.by_key.read().expect("billing repository lock");
         Ok(Some(daily_quota_availability_from_entitlements(
             entitlements,
+            &plans,
+            &model_contexts,
             now,
             global_model_id,
         )))
@@ -622,7 +658,10 @@ mod tests {
     use serde_json::json;
 
     use super::InMemoryBillingReadRepository;
-    use crate::repository::billing::{BillingReadRepository, StoredBillingModelContext};
+    use crate::repository::billing::{
+        BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, StoredBillingModelContext,
+        UserPlanEntitlementRecord,
+    };
 
     fn sample_context() -> StoredBillingModelContext {
         StoredBillingModelContext::new(
@@ -732,5 +771,89 @@ mod tests {
             stored.model_provider_model_name.as_deref(),
             Some("gpt-5-upstream")
         );
+    }
+
+    #[tokio::test]
+    async fn existing_entitlement_follows_current_plan_provider_scope() {
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let plan = BillingPlanRecord {
+            id: "plan-1".to_string(),
+            title: "Plan".to_string(),
+            description: None,
+            price_amount: 10.0,
+            price_currency: "USD".to_string(),
+            duration_unit: "month".to_string(),
+            duration_value: 1,
+            enabled: true,
+            sort_order: 0,
+            max_active_per_user: 1,
+            purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: vec!["provider-1".to_string()],
+            entitlements_json: json!([]),
+            created_at_unix_secs: now,
+            updated_at_unix_secs: now,
+        };
+        let entitlement = UserPlanEntitlementRecord {
+            id: "entitlement-1".to_string(),
+            user_id: "user-1".to_string(),
+            plan_id: plan.id.clone(),
+            payment_order_id: "order-1".to_string(),
+            status: "active".to_string(),
+            starts_at_unix_secs: now.saturating_sub(10),
+            expires_at_unix_secs: now + 3600,
+            allowed_provider_ids: vec!["old-provider".to_string()],
+            entitlements_snapshot: json!([{
+                "type": "daily_quota",
+                "daily_quota_usd": 10.0,
+                "allow_wallet_overage": false
+            }]),
+            created_at_unix_secs: now,
+            updated_at_unix_secs: now,
+        };
+        let repository = InMemoryBillingReadRepository::seed(vec![sample_context()])
+            .with_billing_plans(vec![plan])
+            .with_user_plan_entitlements(vec![entitlement]);
+
+        let listed = repository
+            .list_user_plan_entitlements("user-1")
+            .await
+            .expect("entitlement list should run")
+            .expect("entitlement list should be available");
+        assert_eq!(
+            listed[0].allowed_provider_ids,
+            vec!["provider-1".to_string()]
+        );
+        let available = repository
+            .find_user_daily_quota_availability_for_global_model("user-1", Some("global-model-1"))
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert!(available.has_active_daily_quota);
+
+        let update = BillingPlanWriteInput {
+            title: "Plan".to_string(),
+            description: None,
+            price_amount: 10.0,
+            price_currency: "USD".to_string(),
+            duration_unit: "month".to_string(),
+            duration_value: 1,
+            enabled: true,
+            sort_order: 0,
+            max_active_per_user: 1,
+            purchase_limit_scope: "active_period".to_string(),
+            allowed_provider_ids: Vec::new(),
+            entitlements_json: json!([]),
+        };
+        repository
+            .update_billing_plan("plan-1", &update)
+            .await
+            .expect("plan update should run");
+
+        let unavailable = repository
+            .find_user_daily_quota_availability_for_global_model("user-1", Some("global-model-1"))
+            .await
+            .expect("quota lookup should run")
+            .expect("quota lookup should be available");
+        assert!(!unavailable.has_active_daily_quota);
     }
 }

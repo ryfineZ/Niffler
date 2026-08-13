@@ -243,7 +243,6 @@ pub struct UserPlanEntitlementRecord {
 pub struct UserPlanEntitlementUpdateInput {
     pub starts_at_unix_secs: u64,
     pub expires_at_unix_secs: u64,
-    pub allowed_provider_ids: Option<Vec<String>>,
     pub entitlements_snapshot: Option<Value>,
 }
 
@@ -339,12 +338,13 @@ impl BillingRequestAdmissionInput {
                 .entitlement_provider_scopes
                 .values()
                 .any(|provider_ids| {
-                    provider_ids.iter().any(|provider_id| {
-                        !self
-                            .allowed_provider_ids
-                            .iter()
-                            .any(|allowed| allowed == provider_id)
-                    })
+                    provider_ids.is_empty()
+                        || provider_ids.iter().any(|provider_id| {
+                            !self
+                                .allowed_provider_ids
+                                .iter()
+                                .any(|allowed| allowed == provider_id)
+                        })
                 })
             {
                 return Err(crate::DataLayerError::InvalidInput(
@@ -432,14 +432,6 @@ pub struct UserDailyQuotaAvailabilityRecord {
 }
 
 impl UserDailyQuotaAvailabilityRecord {
-    pub fn has_legacy_eligible_entitlements(&self) -> bool {
-        self.eligible_entitlement_ids.iter().any(|entitlement_id| {
-            self.provider_ids_by_entitlement
-                .get(entitlement_id)
-                .is_none_or(Vec::is_empty)
-        })
-    }
-
     pub fn provider_scoped_entitlement_ids_for_provider(&self, provider_id: &str) -> Vec<String> {
         self.eligible_entitlement_ids
             .iter()
@@ -456,27 +448,13 @@ impl UserDailyQuotaAvailabilityRecord {
     }
 
     pub fn eligible_entitlement_ids_for_provider(&self, provider_id: &str) -> Vec<String> {
-        if self.provider_ids_by_entitlement.is_empty() {
-            return if self.allowed_provider_ids.is_empty()
-                || self
-                    .allowed_provider_ids
-                    .iter()
-                    .any(|allowed| allowed == provider_id)
-            {
-                self.eligible_entitlement_ids.clone()
-            } else {
-                Vec::new()
-            };
-        }
-
         self.eligible_entitlement_ids
             .iter()
             .filter(|entitlement_id| {
                 self.provider_ids_by_entitlement
                     .get(*entitlement_id)
-                    .is_none_or(|provider_ids| {
-                        provider_ids.is_empty()
-                            || provider_ids.iter().any(|allowed| allowed == provider_id)
+                    .is_some_and(|provider_ids| {
+                        provider_ids.iter().any(|allowed| allowed == provider_id)
                     })
             })
             .cloned()
@@ -762,6 +740,17 @@ mod tests {
     }
 
     #[test]
+    fn new_plan_admission_rejects_empty_provider_scope() {
+        let mut admission = plan_admission();
+        admission.allowed_provider_ids.clear();
+        admission
+            .entitlement_provider_scopes
+            .insert("entitlement-1".to_string(), Vec::new());
+
+        assert!(admission.validate().is_err());
+    }
+
+    #[test]
     fn plan_admission_rejects_extra_provider_without_entitlement_scope() {
         let mut admission = plan_admission();
         admission
@@ -769,17 +758,6 @@ mod tests {
             .push("provider-wallet".to_string());
 
         assert!(admission.validate().is_err());
-    }
-
-    #[test]
-    fn legacy_plan_admission_accepts_empty_provider_scope() {
-        let mut admission = plan_admission();
-        admission
-            .entitlement_provider_scopes
-            .insert("entitlement-1".to_string(), Vec::new());
-        admission.allowed_provider_ids.clear();
-
-        admission.validate().expect("legacy admission should pass");
     }
 
     #[test]
@@ -794,22 +772,17 @@ mod tests {
             eligible_entitlement_ids: vec![
                 "entitlement-a".to_string(),
                 "entitlement-b".to_string(),
-                "legacy-entitlement".to_string(),
             ],
             allowed_provider_ids: vec!["provider-a".to_string(), "provider-b".to_string()],
             provider_ids_by_entitlement: std::collections::BTreeMap::from([
                 ("entitlement-a".to_string(), vec!["provider-a".to_string()]),
                 ("entitlement-b".to_string(), vec!["provider-b".to_string()]),
-                ("legacy-entitlement".to_string(), Vec::new()),
             ]),
         };
 
         assert_eq!(
             quota.eligible_entitlement_ids_for_provider("provider-a"),
-            vec![
-                "entitlement-a".to_string(),
-                "legacy-entitlement".to_string()
-            ]
+            vec!["entitlement-a".to_string()]
         );
     }
 }

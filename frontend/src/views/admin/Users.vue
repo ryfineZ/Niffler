@@ -1018,7 +1018,7 @@
                   </div>
                   <div class="mt-2 flex flex-wrap gap-1.5">
                     <Badge
-                      v-for="label in entitlementLabels(item.entitlements)"
+                      v-for="label in entitlementLabels(item.entitlements, item.allowed_provider_ids)"
                       :key="label"
                       variant="outline"
                       class="h-5 px-1.5 py-0 text-[10px]"
@@ -1209,7 +1209,7 @@
               type="datetime-local"
               class="flex h-9 w-full rounded-md border border-border/60 bg-muted/50 px-3 py-2 text-sm text-foreground ring-offset-background transition-all focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
               autocomplete="off"
-            />
+            >
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-medium text-muted-foreground">{{ t('userPlans.expiryTime') }}</Label>
@@ -1218,7 +1218,7 @@
               type="datetime-local"
               class="flex h-9 w-full rounded-md border border-border/60 bg-muted/50 px-3 py-2 text-sm text-foreground ring-offset-background transition-all focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
               autocomplete="off"
-            />
+            >
           </div>
         </div>
 
@@ -1234,21 +1234,6 @@
           />
           <p class="text-[11px] text-muted-foreground">
             {{ t('userPlans.quotaLimitHint') }}
-          </p>
-        </div>
-
-        <div class="space-y-1.5">
-          <Label class="text-xs font-medium text-muted-foreground">
-            {{ t('userPlans.allowedProviders') }}
-          </Label>
-          <MultiSelect
-            v-model="editUserPlanProviderIds"
-            :options="editUserPlanProviderOptions"
-            :placeholder="loadingBillingProviders ? t('userPlans.loadingProviders') : t('userPlans.chooseProviders')"
-            :empty-text="t('userPlans.noProviders')"
-          />
-          <p class="text-[11px] text-muted-foreground">
-            {{ t('userPlans.allowedProvidersHint') }}
           </p>
         </div>
       </div>
@@ -1765,7 +1750,6 @@ import { usersApi, type User, type ApiKey, type UserSession, type UserBatchActio
 import { formatSessionMeta } from '@/types/session'
 import { adminWalletApi, type AdminWallet } from '@/api/admin-wallets'
 import { adminBillingPlansApi, type BillingPlan, type DailyQuotaEntitlement } from '@/api/billing'
-import { getProvidersSummary, type ProviderWithEndpointsSummary } from '@/api/endpoints/providers'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
@@ -1808,7 +1792,6 @@ import {
   Checkbox,
   Switch
 } from '@/components/ui'
-import { MultiSelect } from '@/components/common'
 
 import {
   Plus,
@@ -1873,7 +1856,6 @@ const userApiKeys = ref<ApiKey[]>([])
 const userSessions = ref<UserSession[]>([])
 const userPlanEntitlements = ref<AdminUserPlanEntitlement[]>([])
 const availableBillingPlans = ref<BillingPlan[]>([])
-const billingProviders = ref<ProviderWithEndpointsSummary[]>([])
 const selectedGrantPlanId = ref('')
 const grantReason = ref('')
 const grantStartsAt = ref('')
@@ -1885,7 +1867,6 @@ const creatingApiKey = ref(false)
 const loadingUserSessions = ref(false)
 const loadingUserPlans = ref(false)
 const loadingBillingPlans = ref(false)
-const loadingBillingProviders = ref(false)
 const grantingUserPlan = ref(false)
 const cancellingUserPlanEntitlementId = ref<string | null>(null)
 const showEditUserPlanDialog = ref(false)
@@ -1893,7 +1874,6 @@ const editingUserPlanEntitlement = ref<AdminUserPlanEntitlement | null>(null)
 const editUserPlanStartsAt = ref('')
 const editUserPlanExpiresAt = ref('')
 const editUserPlanQuotaUsd = ref('')
-const editUserPlanProviderIds = ref<string[]>([])
 const updatingUserPlanEntitlement = ref(false)
 const sessionDialogActionLoading = ref<string | null>(null)
 const apiKeyInput = ref<HTMLInputElement>()
@@ -2070,21 +2050,6 @@ const selectedGrantPlan = computed(() =>
 const activeUserPlanEntitlements = computed(() =>
   userPlanEntitlements.value.filter((item) => item.active)
 )
-const editUserPlanProviderOptions = computed(() => {
-  const knownIds = new Set(billingProviders.value.map((provider) => provider.id))
-  const loaded = billingProviders.value
-    .filter((provider) => provider.is_active || editUserPlanProviderIds.value.includes(provider.id))
-    .map((provider) => ({
-      value: provider.id,
-      label: provider.is_active
-        ? provider.name
-        : `${provider.name} (${t('billingPlansManagement.providerDisabled')})`,
-    }))
-  const missing = editUserPlanProviderIds.value
-    .filter((providerId) => providerId && !knownIds.has(providerId))
-    .map((providerId) => ({ value: providerId, label: providerId }))
-  return [...loaded, ...missing]
-})
 const selectedUserGroupIds = computed(() =>
   new Set((selectedUser.value?.groups || []).map((group) => group.id))
 )
@@ -2215,13 +2180,13 @@ function formatPlanDuration(plan: BillingPlan): string {
   return `${Number(plan.duration_value || 1)}${unit}`
 }
 
-function entitlementLabels(items: BillingEntitlementsInput): string[] {
+function entitlementLabels(items: BillingEntitlementsInput, providerIds: string[] = []): string[] {
   return normalizeBillingEntitlements(items).map((item) => {
     if (item.type === 'wallet_credit') {
       return t('userManagement.bonusBalance', { amount: Number(item.amount_usd || 0).toFixed(2) })
     }
     if (item.type === 'daily_quota') {
-      return quotaEntitlementLabel(item)
+      return quotaEntitlementLabel(item, providerIds)
     }
     if (item.type === 'membership_group') {
       return t('userManagement.membershipBenefit')
@@ -2234,7 +2199,7 @@ function hasPackageEntitlement(items: BillingEntitlementsInput): boolean {
   return hasPackageBillingEntitlement(items)
 }
 
-function quotaEntitlementLabel(item: DailyQuotaEntitlement): string {
+function quotaEntitlementLabel(item: DailyQuotaEntitlement, providerIds: string[]): string {
   const limits = item.limits || {}
   const parts = []
   const daily = Number(item.daily_quota_usd ?? limits.daily_limit_usd ?? 0)
@@ -2246,28 +2211,19 @@ function quotaEntitlementLabel(item: DailyQuotaEntitlement): string {
   if (weekly > 0) parts.push(t('userManagement.weeklyQuota', { amount: weekly.toFixed(2) }))
   if (monthly > 0) parts.push(t('userManagement.monthlyQuota', { amount: monthly.toFixed(2) }))
   const quotaText = parts.join(' / ') || t('userManagement.usageQuota')
-  const labels = [quotaModelScopeLabel(item.allowed_global_model_ids)]
+  const labels = [providerIds.length > 0
+    ? t('userManagement.modelsByProviders')
+    : t('userManagement.noPlanProviders')]
   const multiplierLabel = quotaConsumptionMultiplierLabel(item)
   if (multiplierLabel) labels.push(multiplierLabel)
   return `${quotaText} · ${labels.join(' · ')}`
 }
 
-function quotaModelScopeLabel(modelIds?: string[]): string {
-  if (!Array.isArray(modelIds) || modelIds.length === 0) {
-    return t('userManagement.allModels')
-  }
-  return t('userManagement.availableModels', { count: modelIds.length })
-}
-
 function planModelScopeLabel(plan: BillingPlan): string {
-  const modelIds = new Set<string>()
-  for (const item of normalizeBillingEntitlements(plan.entitlements)) {
-    if (item.type !== 'daily_quota') continue
-    for (const modelId of item.allowed_global_model_ids || []) {
-      if (modelId.trim()) modelIds.add(modelId)
-    }
-  }
-  return modelIds.size > 0 ? t('userManagement.modelCount', { count: modelIds.size }) : t('userManagement.allModels')
+  const count = Array.isArray(plan.allowed_provider_ids) ? plan.allowed_provider_ids.length : 0
+  return count > 0
+    ? t('userManagement.providerCount', { count })
+    : t('userManagement.noPlanProviders')
 }
 
 function syncUserWalletsFromUsers() {
@@ -2483,7 +2439,6 @@ async function manageUserPlans(user: User) {
   await Promise.all([
     loadUserPlanEntitlements(user.id),
     loadAvailableBillingPlans(),
-    loadBillingProviders(),
   ])
   if (!selectedGrantPlanId.value && grantableBillingPlans.value.length > 0) {
     selectedGrantPlanId.value = grantableBillingPlans.value[0].id
@@ -2520,22 +2475,6 @@ async function loadAvailableBillingPlans() {
     availableBillingPlans.value = []
   } finally {
     loadingBillingPlans.value = false
-  }
-}
-
-async function loadBillingProviders() {
-  loadingBillingProviders.value = true
-  try {
-    const response = await getProvidersSummary(
-      { page: 1, page_size: 500 },
-      { cacheTtlMs: 10 * 1000 },
-    )
-    billingProviders.value = response.items
-  } catch (err) {
-    error(parseApiError(err, t('billingPlansManagement.loadProvidersFailed')))
-    billingProviders.value = []
-  } finally {
-    loadingBillingProviders.value = false
   }
 }
 
@@ -2640,7 +2579,6 @@ function openEditUserPlanEntitlement(item: AdminUserPlanEntitlement): void {
   editUserPlanStartsAt.value = isoToDatetimeLocal(item.starts_at)
   editUserPlanExpiresAt.value = isoToDatetimeLocal(item.expires_at)
   editUserPlanQuotaUsd.value = ''
-  editUserPlanProviderIds.value = [...(item.allowed_provider_ids || [])]
   showEditUserPlanDialog.value = true
 }
 
@@ -2659,13 +2597,6 @@ async function updateUserPlanEntitlement(): Promise<void> {
   }
   if (quotaUsd === undefined) {
     error(t('userManagement.quotaLimitInvalid'))
-    return
-  }
-  const hasUsageQuota = normalizeBillingEntitlements(
-    editingUserPlanEntitlement.value.entitlements,
-  ).some((item) => item.type === 'daily_quota' || item.type === 'usage_quota')
-  if (hasUsageQuota && editUserPlanProviderIds.value.length === 0) {
-    error(t('userPlans.providersRequired'))
     return
   }
   const now = Date.now()
@@ -2687,7 +2618,6 @@ async function updateUserPlanEntitlement(): Promise<void> {
         starts_at: startsAt,
         expires_at: expiresAt,
         ...(quotaUsd === null ? {} : { initial_remaining_quota_usd: quotaUsd }),
-        ...(hasUsageQuota ? { allowed_provider_ids: [...editUserPlanProviderIds.value] } : {}),
       }
     )
     userPlanEntitlements.value = response.items

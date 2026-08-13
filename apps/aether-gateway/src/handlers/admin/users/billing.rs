@@ -40,7 +40,7 @@ struct AdminUpdateUserPlanEntitlementRequest {
     #[serde(default)]
     initial_remaining_quota_usd: Option<f64>,
     #[serde(default)]
-    allowed_provider_ids: Option<Vec<String>>,
+    allowed_provider_ids: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -315,6 +315,9 @@ fn normalize_admin_update_entitlement_input(
     current: &UserPlanEntitlementRecord,
     now: DateTime<Utc>,
 ) -> Result<UserPlanEntitlementUpdateInput, String> {
+    if payload.allowed_provider_ids.is_some() {
+        return Err("套餐号池统一在套餐管理中修改，不能为单个用户单独设置".to_string());
+    }
     let requested_starts_at = parse_admin_grant_time(payload.starts_at.clone(), "开始时间")?;
     let requested_expires_at = parse_admin_grant_time(payload.expires_at.clone(), "到期时间")?;
     let starts_at = requested_starts_at
@@ -346,68 +349,11 @@ fn normalize_admin_update_entitlement_input(
         None => None,
     };
 
-    let allowed_provider_ids = payload
-        .allowed_provider_ids
-        .as_ref()
-        .map(|provider_ids| {
-            if provider_ids.is_empty() {
-                return Err("至少选择一个套餐供应商".to_string());
-            }
-            if provider_ids.len() > 100 {
-                return Err("套餐供应商数量不能超过 100 个".to_string());
-            }
-            let mut normalized = std::collections::BTreeSet::new();
-            for provider_id in provider_ids {
-                let provider_id = provider_id.trim();
-                if provider_id.is_empty() || provider_id.chars().count() > 64 {
-                    return Err("套餐供应商 ID 不正确".to_string());
-                }
-                normalized.insert(provider_id.to_string());
-            }
-            Ok(normalized.into_iter().collect::<Vec<_>>())
-        })
-        .transpose()?;
-
     Ok(UserPlanEntitlementUpdateInput {
         starts_at_unix_secs: starts_at.timestamp().max(0) as u64,
         expires_at_unix_secs: expires_at.timestamp().max(0) as u64,
-        allowed_provider_ids,
         entitlements_snapshot,
     })
-}
-
-async fn validate_admin_entitlement_providers(
-    state: &crate::AppState,
-    provider_ids: &[String],
-) -> Result<Option<String>, GatewayError> {
-    let providers = state
-        .read_provider_catalog_providers_by_ids(provider_ids)
-        .await?;
-    let providers_by_id = providers
-        .into_iter()
-        .map(|provider| (provider.id.clone(), provider))
-        .collect::<BTreeMap<_, _>>();
-    let missing = provider_ids
-        .iter()
-        .filter(|provider_id| !providers_by_id.contains_key(*provider_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Ok(Some(format!("供应商不存在：{}", missing.join(", "))));
-    }
-    let inactive = provider_ids
-        .iter()
-        .filter(|provider_id| {
-            providers_by_id
-                .get(*provider_id)
-                .is_some_and(|provider| !provider.is_active)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if !inactive.is_empty() {
-        return Ok(Some(format!("供应商已停用：{}", inactive.join(", "))));
-    }
-    Ok(None)
 }
 
 fn plan_has_package_rights(record: &BillingPlanRecord) -> bool {
@@ -465,7 +411,9 @@ fn entitlement_payload(
         "status": record.status,
         "starts_at": unix_secs_to_rfc3339(record.starts_at_unix_secs),
         "expires_at": unix_secs_to_rfc3339(record.expires_at_unix_secs),
-        "allowed_provider_ids": record.allowed_provider_ids,
+        "allowed_provider_ids": plan
+            .map(|plan| plan.allowed_provider_ids.clone())
+            .unwrap_or_else(|| record.allowed_provider_ids.clone()),
         "entitlements": record.entitlements_snapshot,
         "active": record.status == "active"
             && record.starts_at_unix_secs <= now_unix_secs
@@ -633,13 +581,6 @@ pub(in super::super) async fn build_admin_update_user_billing_entitlement_respon
         Ok(value) => value,
         Err(detail) => return Ok(build_admin_users_bad_request_response(detail)),
     };
-    if let Some(provider_ids) = update_input.allowed_provider_ids.as_deref() {
-        if let Some(detail) =
-            validate_admin_entitlement_providers(state.app(), provider_ids).await?
-        {
-            return Ok(build_admin_users_bad_request_response(detail));
-        }
-    }
     let outcome = state
         .app()
         .update_user_plan_entitlement(&user_id, &entitlement_id, &update_input)

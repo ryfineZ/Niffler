@@ -1639,26 +1639,11 @@ function groupName(groupId: string): string {
   return userGroups.value.find((group) => group.id === groupId)?.name || groupId
 }
 
-function globalModelName(modelId: string): string {
-  const model = globalModels.value.find((item) => item.id === modelId)
-  return model?.display_name || model?.name || modelId
-}
-
-function formatAllowedGlobalModels(modelIds?: string[]): string {
-  if (!Array.isArray(modelIds) || modelIds.length === 0) {
-    return t('billingPlansManagement.allModelsLegacy')
-  }
-  const names = modelIds.map(globalModelName)
-  return names.length <= 2
-    ? names.join('、')
-    : t('billingPlansManagement.modelListSummary', { names: names.slice(0, 2).join('、'), count: names.length })
-}
-
 function providerName(providerId: string): string {
   return providers.value.find((provider) => provider.id === providerId)?.name || providerId
 }
 
-function formatAllowedProviders(plan: BillingPlan, legacyModelIds?: string[]): string {
+function formatAllowedProviders(plan: BillingPlan): string {
   if (Array.isArray(plan.allowed_provider_ids) && plan.allowed_provider_ids.length > 0) {
     const names = plan.allowed_provider_ids.map(providerName)
     return names.length <= 2
@@ -1668,7 +1653,7 @@ function formatAllowedProviders(plan: BillingPlan, legacyModelIds?: string[]): s
         count: names.length,
       })
   }
-  return formatAllowedGlobalModels(legacyModelIds)
+  return t('billingPlansManagement.noProviders')
 }
 
 function entitlementBadges(plan: BillingPlan): string[] {
@@ -1691,7 +1676,7 @@ function entitlementBadges(plan: BillingPlan): string[] {
         parts.push(t('billingPlansManagement.quota30dAmount', { amount: Number(entitlement.monthly_quota_usd || 0).toFixed(2) }))
       }
       const quotaText = parts.join(' / ') || t('billingPlansManagement.usageQuota')
-      const labels = [formatAllowedProviders(plan, entitlement.allowed_global_model_ids)]
+      const labels = [formatAllowedProviders(plan)]
       const multiplierLabel = quotaConsumptionMultiplierLabel(entitlement)
       if (multiplierLabel) labels.push(multiplierLabel)
       return `${quotaText} · ${labels.join(' · ')}`

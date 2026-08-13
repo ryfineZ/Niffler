@@ -6326,7 +6326,6 @@ INSERT INTO billing_plans (
                 &UserPlanEntitlementUpdateInput {
                     starts_at_unix_secs: windows[0].1 as u64,
                     expires_at_unix_secs: windows[1].2 as u64,
-                    allowed_provider_ids: None,
                     entitlements_snapshot: None,
                 },
             )
