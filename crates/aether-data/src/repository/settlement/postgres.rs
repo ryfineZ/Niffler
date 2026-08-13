@@ -1182,6 +1182,12 @@ VALUES ($1, $2, $3, 'wallet', 12, TRUE, FALSE, '[]'::jsonb, '{}'::jsonb, '[]'::j
         .execute(&pool)
         .await
         .expect("entitlement provider should seed");
+        sqlx::query("INSERT INTO billing_plan_providers (plan_id, provider_id) VALUES ($1, $2)")
+            .bind(&plan_id)
+            .bind(&provider_id)
+            .execute(&pool)
+            .await
+            .expect("plan provider should seed");
         let billing_repository =
             crate::repository::billing::SqlxBillingReadRepository::new(pool.clone());
         let availability_before = billing_repository
