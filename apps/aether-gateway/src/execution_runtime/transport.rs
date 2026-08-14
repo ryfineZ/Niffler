@@ -404,10 +404,22 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
 }
 
 fn build_stream_summary_report_context(plan: &ExecutionPlan) -> Value {
+    let upstream_is_stream =
+        if crate::ai_serving::is_openai_responses_compact_format(plan.provider_api_format.as_str())
+            && plan
+                .headers
+                .get("accept")
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        {
+            false
+        } else {
+            plan.stream
+        };
     json!({
         "provider_api_format": plan.provider_api_format,
         "client_api_format": plan.client_api_format,
         "model": plan.model_name,
+        "upstream_is_stream": upstream_is_stream,
     })
 }
 

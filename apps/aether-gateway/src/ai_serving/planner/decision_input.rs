@@ -358,7 +358,6 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
                 &parts.headers,
                 body_json,
                 input.client_session_affinity.as_ref(),
-                &input.auth_context.api_key_id,
             )?);
         return Ok(());
     };
@@ -437,7 +436,6 @@ pub(crate) async fn attach_routing_policy_to_local_requested_model_input(
             &effective_headers,
             &effective_body_json,
             input.client_session_affinity.as_ref(),
-            &input.auth_context.api_key_id,
         )?);
     input.routing_context = Some(LocalRoutingRequestContext {
         group_id,

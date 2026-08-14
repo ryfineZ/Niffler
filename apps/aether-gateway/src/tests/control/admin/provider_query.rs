@@ -3326,10 +3326,33 @@ async fn gateway_converges_codex_oauth_responses_test_model_identity() {
                 plan.headers.get("authorization").map(String::as_str),
                 Some("Bearer cached-codex-token")
             );
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("x-stainless-")));
+            assert!(!plan.headers.keys().any(|name| name.starts_with("sec-ch-")));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("sec-fetch-")));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("x-aether-tls-")));
+            for removed in [
+                "origin",
+                "accept-language",
+                "x-app",
+                "x-client-name",
+                "x-client-version",
+            ] {
+                assert!(!plan.headers.contains_key(removed));
+            }
             assert_eq!(
-                plan.headers.get("x-stainless-runtime").map(String::as_str),
-                Some("node")
+                plan.headers.get("x-business-context").map(String::as_str),
+                Some("project-alpha")
             );
+            assert!(!plan.headers.contains_key("x-oai-attestation"));
             assert_eq!(
                 plan.headers.get("originator").map(String::as_str),
                 Some("codex-tui")
@@ -3351,8 +3374,8 @@ async fn gateway_converges_codex_oauth_responses_test_model_identity() {
                     .expect("installation id"),
             )
             .expect("installation id should be a UUID");
-            uuid::Uuid::parse_str(plan.headers.get("session-id").expect("session id"))
-                .expect("session id should be a UUID");
+            let session_id = plan.headers.get("session-id").expect("session id");
+            uuid::Uuid::parse_str(session_id).expect("session id should be a UUID");
             let parent_thread_id = plan
                 .headers
                 .get("x-codex-parent-thread-id")
@@ -3567,6 +3590,18 @@ async fn gateway_converges_codex_oauth_responses_test_model_identity() {
             },
             "request_headers": {
                 "x-stainless-runtime": "node",
+                "x-stainless-os": "MacOS",
+                "x-stainless-arch": "arm64",
+                "sec-ch-ua-platform": "\"macOS\"",
+                "sec-fetch-site": "same-origin",
+                "x-aether-tls-ja4": "client-ja4",
+                "origin": "https://client.example",
+                "accept-language": "zh-CN",
+                "x-app": "third-party-client",
+                "x-client-name": "third-party-client",
+                "x-client-version": "9.9.9",
+                "x-business-context": "project-alpha",
+                "x-oai-attestation": "client-device-proof",
                 "user-agent": "spoofed-client/9.9.9",
                 "originator": "spoofed-client",
                 "version": "9.9.9",
@@ -3609,7 +3644,45 @@ async fn gateway_handles_openai_image_test_model_locally() {
             assert!(plan.stream);
             assert_eq!(
                 plan.headers.get("authorization").map(String::as_str),
-                Some("Bearer sk-test-image")
+                Some("Bearer cached-codex-image-token")
+            );
+            let thread_id = plan
+                .headers
+                .get("thread-id")
+                .expect("Codex image model test should include a converged thread ID");
+            let session_id = plan
+                .headers
+                .get("session-id")
+                .expect("Codex image model test should include a converged session ID");
+            assert_eq!(
+                plan.headers.get("x-client-request-id"),
+                Some(thread_id)
+            );
+            assert!(plan.headers.contains_key("x-codex-installation-id"));
+            assert!(plan.headers.contains_key("session-id"));
+            assert!(!plan.headers.contains_key("x-oai-attestation"));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("x-stainless-")));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("sec-ch-")));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("sec-fetch-")));
+            assert!(!plan
+                .headers
+                .keys()
+                .any(|name| name.starts_with("x-aether-tls-")));
+            for removed in ["origin", "accept-language", "x-app"] {
+                assert!(!plan.headers.contains_key(removed));
+            }
+            assert_eq!(
+                plan.headers.get("x-business-context").map(String::as_str),
+                Some("project-alpha")
             );
             assert_eq!(
                 plan.body
@@ -3628,6 +3701,23 @@ async fn gateway_handles_openai_image_test_model_locally() {
                     .and_then(|item| item.get("content"))
                     .and_then(|value| value.as_str()),
                 Some("Draw a small blue square")
+            );
+            assert_eq!(
+                plan.body
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body.get("prompt_cache_key"))
+                    .and_then(|value| value.as_str()),
+                Some(thread_id.as_str())
+            );
+            assert_eq!(
+                plan.body
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body.get("client_metadata"))
+                    .and_then(|metadata| metadata.get("thread_id"))
+                    .and_then(|value| value.as_str()),
+                Some(thread_id.as_str())
             );
             Json(json!({
                 "request_id": plan.request_id,
@@ -3667,20 +3757,47 @@ async fn gateway_handles_openai_image_test_model_locally() {
             "openai:image",
             "https://api.openai.example",
         )],
-        vec![sample_key(
-            "key-openai-image",
-            "provider-openai",
-            "openai:image",
-            "sk-test-image",
-        )],
+        vec![{
+            let mut key = sample_key(
+                "key-openai-image",
+                "provider-openai",
+                "openai:image",
+                "cached-codex-image-token",
+            );
+            key.auth_type = "oauth".to_string();
+            key.encrypted_auth_config = Some(
+                aether_crypto::encrypt_python_fernet_plaintext(
+                    DEVELOPMENT_ENCRYPTION_KEY,
+                    r#"{"provider_type":"codex","account_id":"account-image"}"#,
+                )
+                .expect("auth config should encrypt"),
+            );
+            key
+        }],
     ));
 
     let gateway = build_router_with_state(
         build_state_with_execution_runtime_override(execution_runtime_url)
-            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
-                provider_catalog_repository,
-                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
-            )),
+            .with_data_state_for_tests(
+                GatewayDataState::with_provider_transport_reader_for_tests(
+                    provider_catalog_repository,
+                    DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+                )
+                .with_system_config_values_for_tests([
+                    (
+                        "codex_oauth_identity_convergence_enabled".to_string(),
+                        json!(true),
+                    ),
+                    (
+                        "codex_model_fetch_client_version_state".to_string(),
+                        json!({
+                            "version":"0.146.0",
+                            "checked_at_unix_secs":1,
+                            "next_check_at_unix_secs":4_102_444_800_u64
+                        }),
+                    ),
+                ]),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -3694,7 +3811,20 @@ async fn gateway_handles_openai_image_test_model_locally() {
             "provider_id": "provider-openai",
             "model": "gpt-image-1",
             "api_format": "openai:image",
-            "message": "Draw a small blue square"
+            "message": "Draw a small blue square",
+            "request_headers": {
+                "thread-id": "raw-admin-image-thread",
+                "x-oai-attestation": "client-device-proof",
+                "x-stainless-os": "MacOS",
+                "x-stainless-arch": "arm64",
+                "sec-ch-ua-platform": "\"macOS\"",
+                "sec-fetch-site": "same-origin",
+                "x-aether-tls-ja4": "client-ja4",
+                "origin": "https://client.example",
+                "accept-language": "zh-CN",
+                "x-app": "third-party-client",
+                "x-business-context": "project-alpha"
+            }
         }))
         .send()
         .await

@@ -3537,6 +3537,55 @@ fn ai_serving_applies_managed_instructions_at_every_final_provider_request_seam(
 }
 
 #[test]
+fn ai_serving_applies_codex_identity_convergence_after_final_policies() {
+    let source = read_workspace_file(
+        "apps/aether-gateway/src/ai_serving/planner/specialized/image/decision.rs",
+    );
+    let final_policy_position = source
+        .rfind("apply_final_provider_request_policies_to_decision(input, &mut decision)")
+        .expect("image decision should apply final provider request policies");
+    let convergence_position = source
+        .rfind("apply_codex_oauth_identity_convergence_to_decision(state, input, &mut decision")
+        .expect("image decision should apply Codex OAuth identity convergence");
+
+    assert!(
+        final_policy_position < convergence_position,
+        "image identity convergence must run after all final provider request policies"
+    );
+
+    let model_test = read_workspace_file(
+        "apps/aether-gateway/src/handlers/admin/provider/query/models/model_test.rs",
+    );
+    let image_test_start = model_test
+        .find("async fn provider_query_execute_openai_image_test_candidate(")
+        .expect("admin model test should have an OpenAI image execution path");
+    let image_test_source = &model_test[image_test_start..];
+    assert!(
+        image_test_source
+            .contains("apply_codex_oauth_identity_convergence_to_request(\n        state.app()"),
+        "admin OpenAI image model tests should apply Codex OAuth identity convergence"
+    );
+
+    for path in [
+        "apps/aether-gateway/src/ai_serving/planner/standard/openai/responses/decision/payload.rs",
+        "apps/aether-gateway/src/ai_serving/planner/standard/openai/chat/decision/payload.rs",
+        "apps/aether-gateway/src/ai_serving/planner/standard/family/payload.rs",
+    ] {
+        let source = read_workspace_file(path);
+        let final_policy_position = source
+            .rfind("apply_final_provider_request_policies_to_decision(input, &mut decision)")
+            .unwrap_or_else(|| panic!("{path} should apply final provider request policies"));
+        let convergence_position = source
+            .rfind("apply_codex_oauth_identity_convergence_to_decision(state, input, &mut decision")
+            .unwrap_or_else(|| panic!("{path} should apply Codex OAuth identity convergence"));
+        assert!(
+            final_policy_position < convergence_position,
+            "{path} must apply identity convergence after final provider request policies"
+        );
+    }
+}
+
+#[test]
 fn ai_serving_m5_moves_contracts_and_route_logic_into_format_crate() {
     for path in [
         "crates/aether-ai-formats/src/contracts/actions.rs",

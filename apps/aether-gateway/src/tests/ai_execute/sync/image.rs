@@ -758,7 +758,15 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         url: String,
         model: String,
         authorization: String,
+        installation_id: String,
+        session_id: String,
+        thread_id: String,
         x_client_request_id: String,
+        has_attestation: bool,
+        has_client_environment_headers: bool,
+        business_context: String,
+        prompt_cache_key: String,
+        metadata_thread_id: String,
         prompt: String,
         content_is_string: bool,
         tool_type: String,
@@ -998,9 +1006,77 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                         .and_then(|value| value.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                    installation_id: payload
+                        .get("headers")
+                        .and_then(|value| value.get("x-codex-installation-id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    session_id: payload
+                        .get("headers")
+                        .and_then(|value| value.get("session-id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    thread_id: payload
+                        .get("headers")
+                        .and_then(|value| value.get("thread-id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
                     x_client_request_id: payload
                         .get("headers")
                         .and_then(|value| value.get("x-client-request-id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    has_attestation: payload
+                        .get("headers")
+                        .and_then(|value| value.get("x-oai-attestation"))
+                        .is_some(),
+                    has_client_environment_headers: payload
+                        .get("headers")
+                        .and_then(|value| value.as_object())
+                        .is_some_and(|headers| {
+                            headers.keys().any(|name| {
+                                name.starts_with("x-stainless-")
+                                    || name.starts_with("sec-ch-")
+                                    || name.starts_with("sec-fetch-")
+                                    || name.starts_with("x-aether-tls-")
+                                    || matches!(
+                                        name.as_str(),
+                                        "origin"
+                                            | "referer"
+                                            | "accept-language"
+                                            | "dnt"
+                                            | "sec-gpc"
+                                            | "x-requested-with"
+                                            | "x-app"
+                                            | "x-client-name"
+                                            | "x-client-version"
+                                            | "openai-client-user-agent"
+                                            | "x-openai-client-user-agent"
+                                    )
+                            })
+                        }),
+                    business_context: payload
+                        .get("headers")
+                        .and_then(|value| value.get("x-business-context"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    prompt_cache_key: payload
+                        .get("body")
+                        .and_then(|value| value.get("json_body"))
+                        .and_then(|value| value.get("prompt_cache_key"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    metadata_thread_id: payload
+                        .get("body")
+                        .and_then(|value| value.get("json_body"))
+                        .and_then(|value| value.get("client_metadata"))
+                        .and_then(|value| value.get("thread_id"))
                         .and_then(|value| value.as_str())
                         .unwrap_or_default()
                         .to_string(),
@@ -1151,7 +1227,21 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                 provider_catalog_repository.clone(),
                 Arc::new(InMemoryRequestCandidateRepository::default()),
                 DEVELOPMENT_ENCRYPTION_KEY,
-            ),
+            )
+            .with_system_config_values_for_tests([
+                (
+                    "codex_oauth_identity_convergence_enabled".to_string(),
+                    json!(true),
+                ),
+                (
+                    "codex_model_fetch_client_version_state".to_string(),
+                    json!({
+                        "version":"0.146.0",
+                        "checked_at_unix_secs":1,
+                        "next_check_at_unix_secs":4_102_444_800_u64
+                    }),
+                ),
+            ]),
         )
         .with_oauth_refresh_coordinator_for_tests(oauth_refresh);
     let gateway = build_router_with_state(gateway_state);
@@ -1165,6 +1255,18 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
             format!("Bearer {client_api_key}"),
         )
         .header(TRACE_ID_HEADER, "trace-codex-image-local-123")
+        .header("thread-id", "raw-client-image-thread")
+        .header("x-oai-attestation", "client-device-proof")
+        .header("x-stainless-runtime", "node")
+        .header("x-stainless-os", "MacOS")
+        .header("x-stainless-arch", "arm64")
+        .header("sec-ch-ua-platform", "\"macOS\"")
+        .header("sec-fetch-site", "same-origin")
+        .header("x-aether-tls-ja4", "client-ja4")
+        .header("origin", "https://client.example")
+        .header("accept-language", "zh-CN")
+        .header("x-app", "third-party-client")
+        .header("x-business-context", "project-alpha")
         .body("{\"model\":\"gpt-image-2\",\"prompt\":\"生成一张中国历史视觉海报\",\"size\":\"1024x1024\",\"n\":1,\"response_format\":\"b64_json\"}")
         .send()
         .await
@@ -1219,9 +1321,26 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         seen_execution_runtime_request.authorization,
         "Bearer refreshed-codex-image-access-token"
     );
+    assert!(!seen_execution_runtime_request.installation_id.is_empty());
+    assert!(!seen_execution_runtime_request.session_id.is_empty());
+    assert!(!seen_execution_runtime_request.thread_id.is_empty());
     assert_eq!(
         seen_execution_runtime_request.x_client_request_id,
-        "trace-codex-image-local-123"
+        seen_execution_runtime_request.thread_id
+    );
+    assert!(!seen_execution_runtime_request.has_attestation);
+    assert!(!seen_execution_runtime_request.has_client_environment_headers);
+    assert_eq!(
+        seen_execution_runtime_request.business_context,
+        "project-alpha"
+    );
+    assert_eq!(
+        seen_execution_runtime_request.prompt_cache_key,
+        seen_execution_runtime_request.thread_id
+    );
+    assert_eq!(
+        seen_execution_runtime_request.metadata_thread_id,
+        seen_execution_runtime_request.thread_id
     );
     assert_eq!(
         seen_execution_runtime_request.prompt,
