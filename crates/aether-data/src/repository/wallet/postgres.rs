@@ -530,6 +530,7 @@ SELECT
   po.wallet_id,
   po.user_id,
   CAST(po.amount_usd AS DOUBLE PRECISION) AS amount_usd,
+  CAST(po.debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(po.pay_amount AS DOUBLE PRECISION) AS pay_amount,
   po.pay_currency,
   CAST(po.exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
@@ -586,6 +587,7 @@ SELECT
   wallet_id,
   user_id,
   CAST(amount_usd AS DOUBLE PRECISION) AS amount_usd,
+  CAST(debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(pay_amount AS DOUBLE PRECISION) AS pay_amount,
   pay_currency,
   CAST(exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
@@ -631,6 +633,7 @@ SELECT
   wallet_id,
   user_id,
   CAST(amount_usd AS DOUBLE PRECISION) AS amount_usd,
+  CAST(debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(pay_amount AS DOUBLE PRECISION) AS pay_amount,
   pay_currency,
   CAST(exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
@@ -668,6 +671,7 @@ SELECT
   wallet_id,
   user_id,
   CAST(amount_usd AS DOUBLE PRECISION) AS amount_usd,
+  CAST(debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(pay_amount AS DOUBLE PRECISION) AS pay_amount,
   pay_currency,
   CAST(exchange_rate AS DOUBLE PRECISION) AS exchange_rate,
@@ -6518,12 +6522,16 @@ VALUES ($1, $2, 'gift', 'gift_initial', $3, 0, $3, 0, 0, 0, $3, 'system_task', $
 
 #[cfg(test)]
 mod tests {
-    use super::{SqlxWalletRepository, ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS};
+    use super::{
+        SqlxWalletRepository, ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS, FIND_ADMIN_PAYMENT_ORDER_SQL,
+        FIND_WALLET_PAYMENT_ORDER_BY_USER_SQL, LIST_ADMIN_PAYMENT_ORDERS_SQL,
+        LIST_WALLET_PAYMENT_ORDERS_BY_USER_SQL,
+    };
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
     use crate::repository::wallet::{
-        CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome,
+        AdminPaymentOrderListQuery, CreatePlanPurchaseOrderInput, CreatePlanPurchaseOrderOutcome,
         CreateWalletRechargeOrderInput, CreditAdminPaymentOrderInput, WalletMutationOutcome,
-        WalletWriteRepository,
+        WalletReadRepository, WalletWriteRepository,
     };
     use serde_json::json;
 
@@ -6616,6 +6624,30 @@ mod tests {
             assert!(
                 ADMIN_PAYMENT_ORDER_RETURNING_COLUMNS.contains(column),
                 "payment order projection should include {column}"
+            );
+        }
+    }
+
+    #[test]
+    fn payment_order_read_queries_include_debt_repayment() {
+        for (query_name, query) in [
+            (
+                "LIST_ADMIN_PAYMENT_ORDERS_SQL",
+                LIST_ADMIN_PAYMENT_ORDERS_SQL,
+            ),
+            ("FIND_ADMIN_PAYMENT_ORDER_SQL", FIND_ADMIN_PAYMENT_ORDER_SQL),
+            (
+                "LIST_WALLET_PAYMENT_ORDERS_BY_USER_SQL",
+                LIST_WALLET_PAYMENT_ORDERS_BY_USER_SQL,
+            ),
+            (
+                "FIND_WALLET_PAYMENT_ORDER_BY_USER_SQL",
+                FIND_WALLET_PAYMENT_ORDER_BY_USER_SQL,
+            ),
+        ] {
+            assert!(
+                query.contains("AS debt_repayment_usd"),
+                "{query_name} must return debt_repayment_usd for the shared order mapper"
             );
         }
     }
@@ -6722,6 +6754,49 @@ INSERT INTO billing_plans (
         assert_eq!(order.amount_usd, 4.0);
         assert_eq!(order.debt_repayment_usd, 3.0);
         assert_eq!(order.pay_amount, Some(4.0));
+
+        let admin_page = repository
+            .list_admin_payment_orders(&AdminPaymentOrderListQuery {
+                status: None,
+                payment_method: None,
+                order_kind: None,
+                user_search: Some(user_id.clone()),
+                limit: 10,
+                offset: 0,
+            })
+            .await
+            .expect("admin payment order list should include debt repayment");
+        let admin_list_order = admin_page
+            .items
+            .iter()
+            .find(|item| item.id == order.id)
+            .expect("admin payment order list should contain the plan order");
+        assert_eq!(admin_list_order.debt_repayment_usd, 3.0);
+
+        let admin_detail = repository
+            .find_admin_payment_order(&order.id)
+            .await
+            .expect("admin payment order detail should include debt repayment")
+            .expect("admin payment order detail should exist");
+        assert_eq!(admin_detail.debt_repayment_usd, 3.0);
+
+        let wallet_page = repository
+            .list_wallet_payment_orders_by_user_id(&user_id, 10, 0)
+            .await
+            .expect("wallet payment order list should include debt repayment");
+        let wallet_list_order = wallet_page
+            .items
+            .iter()
+            .find(|item| item.id == order.id)
+            .expect("wallet payment order list should contain the plan order");
+        assert_eq!(wallet_list_order.debt_repayment_usd, 3.0);
+
+        let wallet_detail = repository
+            .find_wallet_payment_order_by_user_id(&user_id, &order.id)
+            .await
+            .expect("wallet payment order detail should include debt repayment")
+            .expect("wallet payment order detail should exist");
+        assert_eq!(wallet_detail.debt_repayment_usd, 3.0);
 
         sqlx::query("UPDATE wallets SET balance = -4 WHERE id = $1")
             .bind(&wallet_id)
