@@ -10,7 +10,7 @@ interface Props {
 const props = defineProps<Props>()
 
 const tableClass = computed(() =>
-  cn('w-full min-w-max caption-bottom text-sm', props.class)
+  cn('w-full caption-bottom text-sm', props.class)
 )
 </script>
 
