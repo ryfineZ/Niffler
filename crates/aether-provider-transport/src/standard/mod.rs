@@ -272,7 +272,12 @@ pub fn build_standard_provider_request_headers(
         ensure_upstream_auth_header(&mut headers, input.auth_header, input.auth_value);
         (input.auth_header.to_string(), input.auth_value.to_string())
     };
-    if input.upstream_is_stream {
+    if crate::same_format_provider::codex_oauth_compact_requires_json(
+        input.transport,
+        input.provider_api_format,
+    ) {
+        headers.insert("accept".to_string(), "application/json".to_string());
+    } else if input.upstream_is_stream {
         headers
             .entry("accept".to_string())
             .or_insert_with(|| "text/event-stream".to_string());
@@ -425,6 +430,36 @@ mod tests {
         assert_eq!(
             resolved.headers.get("anthropic-version"),
             Some(&"2023-06-01".to_string())
+        );
+    }
+
+    #[test]
+    fn codex_oauth_compact_standard_headers_force_json_after_header_rules() {
+        let mut transport = sample_transport("openai:responses:compact");
+        transport.provider.provider_type = "codex".to_string();
+        transport.key.auth_type = "oauth".to_string();
+
+        let resolved =
+            build_standard_provider_request_headers(StandardProviderRequestHeadersInput {
+                transport: &transport,
+                provider_api_format: "openai:responses:compact",
+                same_format: true,
+                headers: &HeaderMap::new(),
+                auth_header: "authorization",
+                auth_value: "Bearer oauth-token",
+                extra_headers: &BTreeMap::new(),
+                header_rules: Some(&json!([
+                    {"action":"set","key":"accept","value":"text/event-stream"}
+                ])),
+                provider_request_body: &json!({"model":"gpt-5","input":[]}),
+                original_request_body: &json!({"model":"gpt-5","input":[],"stream":true}),
+                upstream_is_stream: true,
+            })
+            .expect("headers should build");
+
+        assert_eq!(
+            resolved.headers.get("accept"),
+            Some(&"application/json".to_string())
         );
     }
 

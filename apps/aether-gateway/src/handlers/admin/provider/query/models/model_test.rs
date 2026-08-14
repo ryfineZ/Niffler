@@ -787,9 +787,16 @@ fn provider_query_request_body_model<'a>(request_body: &'a Value, fallback: &'a 
 fn provider_query_resolve_standard_test_upstream_is_stream(
     endpoint_config: Option<&Value>,
     provider_type: &str,
+    auth_type: &str,
     provider_api_format: &str,
     client_is_stream: bool,
 ) -> bool {
+    if provider_type.trim().eq_ignore_ascii_case("codex")
+        && auth_type.trim().eq_ignore_ascii_case("oauth")
+        && crate::ai_serving::is_openai_responses_compact_format(provider_api_format)
+    {
+        return false;
+    }
     let hard_requires_streaming = crate::ai_serving::force_upstream_streaming_for_provider(
         provider_type,
         provider_api_format,
@@ -2082,7 +2089,21 @@ async fn provider_query_execute_openai_image_test_candidate(
         &auth_header,
         &auth_value,
     );
-
+    let codex_identity_convergence =
+        crate::ai_serving::build_codex_oauth_identity_convergence_request_context(
+            &parts.headers,
+            &request_body,
+            None,
+        )?;
+    crate::ai_serving::apply_codex_oauth_identity_convergence_to_request(
+        state.app(),
+        &codex_identity_convergence,
+        "openai:image",
+        &mut request_headers,
+        &mut provider_request_body,
+        &transport,
+    )
+    .await?;
     let request_model = normalized_request
         .requested_model
         .clone()
@@ -2692,6 +2713,7 @@ async fn provider_query_execute_standard_test_candidate(
     let upstream_is_stream = provider_query_resolve_standard_test_upstream_is_stream(
         transport.endpoint.config.as_ref(),
         transport.provider.provider_type.as_str(),
+        transport.key.auth_type.as_str(),
         provider_api_format,
         client_is_stream,
     );
@@ -2954,7 +2976,6 @@ async fn provider_query_execute_standard_test_candidate(
             &parts.headers,
             &request_body,
             None,
-            trace_id,
         )?;
 
     let request_url = crate::provider_transport::build_transport_request_url_for_request_body(

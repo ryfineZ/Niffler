@@ -39,6 +39,10 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
         originator: String,
         version: String,
         user_agent: String,
+        has_attestation: bool,
+        has_client_environment_headers: bool,
+        business_context: String,
+        turn_metadata: serde_json::Value,
         prompt_cache_key: String,
     }
 
@@ -423,6 +427,47 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
                             .and_then(|value| value.as_str())
                             .unwrap_or_default()
                             .to_string(),
+                        has_attestation: payload
+                            .get("headers")
+                            .and_then(|value| value.get("x-oai-attestation"))
+                            .is_some(),
+                        has_client_environment_headers: payload
+                            .get("headers")
+                            .and_then(|value| value.as_object())
+                            .is_some_and(|headers| {
+                                headers.keys().any(|name| {
+                                    name.starts_with("x-stainless-")
+                                        || name.starts_with("sec-ch-")
+                                        || name.starts_with("sec-fetch-")
+                                        || name.starts_with("x-aether-tls-")
+                                        || matches!(
+                                            name.as_str(),
+                                            "origin"
+                                                | "referer"
+                                                | "accept-language"
+                                                | "dnt"
+                                                | "sec-gpc"
+                                                | "x-requested-with"
+                                                | "x-app"
+                                                | "x-client-name"
+                                                | "x-client-version"
+                                                | "openai-client-user-agent"
+                                                | "x-openai-client-user-agent"
+                                        )
+                                })
+                            }),
+                        business_context: payload
+                            .get("headers")
+                            .and_then(|value| value.get("x-business-context"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        turn_metadata: payload
+                            .get("headers")
+                            .and_then(|value| value.get("x-codex-turn-metadata"))
+                            .and_then(|value| value.as_str())
+                            .and_then(|value| serde_json::from_str(value).ok())
+                            .unwrap_or_default(),
                         prompt_cache_key: payload
                             .get("body")
                             .and_then(|value| value.get("json_body"))
@@ -515,6 +560,29 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
         )
         .header(TRACE_ID_HEADER, "trace-codex-cli-stream-local-123")
         .header("thread-id", "raw-client-thread")
+        .header("x-oai-attestation", "client-device-proof")
+        .header("x-stainless-runtime", "node")
+        .header("x-stainless-os", "MacOS")
+        .header("x-stainless-arch", "arm64")
+        .header("sec-ch-ua-platform", "\"macOS\"")
+        .header("sec-fetch-site", "same-origin")
+        .header("x-aether-tls-ja4", "client-ja4")
+        .header("origin", "https://client.example")
+        .header("referer", "https://client.example/app")
+        .header("accept-language", "zh-CN")
+        .header("dnt", "1")
+        .header("sec-gpc", "1")
+        .header("x-requested-with", "browser-app")
+        .header("x-app", "third-party-client")
+        .header("x-client-name", "third-party-client")
+        .header("x-client-version", "9.9.9")
+        .header("openai-client-user-agent", "third-party-client/9.9.9")
+        .header("x-openai-client-user-agent", "third-party-client/9.9.9")
+        .header("x-business-context", "project-alpha")
+        .header(
+            "x-codex-turn-metadata",
+            r#"{"thread_id":"raw-client-thread","sandbox":"workspace-write","workspaces":["/workspace/project"]}"#,
+        )
         .header("user-agent", "spoofed-client/9.9.9")
         .header("originator", "spoofed-client")
         .header("version", "9.9.9")
@@ -588,6 +656,24 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
         .expect("session id should be a UUID");
     assert_eq!(seen_execution_runtime_request.originator, "codex-tui");
     assert_ne!(seen_execution_runtime_request.version, "9.9.9");
+    assert!(!seen_execution_runtime_request.has_attestation);
+    assert!(!seen_execution_runtime_request.has_client_environment_headers);
+    assert_eq!(
+        seen_execution_runtime_request.business_context,
+        "project-alpha"
+    );
+    assert_eq!(
+        seen_execution_runtime_request.turn_metadata["thread_id"],
+        seen_execution_runtime_request.thread_id
+    );
+    assert_eq!(
+        seen_execution_runtime_request.turn_metadata["sandbox"],
+        "workspace-write"
+    );
+    assert_eq!(
+        seen_execution_runtime_request.turn_metadata["workspaces"],
+        json!(["/workspace/project"])
+    );
     assert_eq!(
         seen_execution_runtime_request.user_agent,
         format!(

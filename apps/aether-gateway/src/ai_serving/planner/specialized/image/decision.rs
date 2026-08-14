@@ -1,4 +1,5 @@
 use crate::ai_serving::build_request_trace_proxy_value;
+use crate::ai_serving::planner::codex_identity_convergence::apply_codex_oauth_identity_convergence_to_decision;
 use crate::ai_serving::planner::decision_input::apply_final_provider_request_policies_to_decision;
 use crate::ai_serving::planner::report_context::{
     build_local_execution_report_context, LocalExecutionReportContextParts,
@@ -188,5 +189,7 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
         auth_context: input.auth_context.clone(),
     });
     apply_final_provider_request_policies_to_decision(input, &mut decision).await?;
+    apply_codex_oauth_identity_convergence_to_decision(state, input, &mut decision, &transport)
+        .await?;
     Ok(Some(decision))
 }

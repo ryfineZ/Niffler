@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::Error as IoError;
+use std::io::{Error as IoError, Read as _};
 use std::time::Instant;
 
 use aether_contracts::{
@@ -23,6 +23,8 @@ use crate::execution_runtime::transport::{
 };
 use crate::execution_runtime::DirectUpstreamStreamExecution;
 use crate::GatewayError;
+
+const MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) fn build_direct_execution_frame_stream(
     execution: DirectUpstreamStreamExecution,
@@ -468,6 +470,14 @@ fn should_buffer_non_stream_response(
         return false;
     }
 
+    if report_context
+        .get("upstream_is_stream")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return true;
+    }
+
     headers
         .get("content-length")
         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -492,7 +502,24 @@ async fn buffer_non_sse_upstream_body(
                             ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                         }
                         upstream_bytes += chunk.len() as u64;
-                        body_bytes.extend_from_slice(&chunk);
+                        if let Err(message) = append_buffered_upstream_chunk(
+                            &mut body_bytes,
+                            &chunk,
+                            MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES,
+                        ) {
+                            warn!(
+                                event_name = "stream_pump_body_limit_exceeded",
+                                log_type = "ops",
+                                upstream_bytes,
+                                error = %message,
+                                "buffered upstream body exceeds limit"
+                            );
+                            return Err(BufferedUpstreamBodyError {
+                                message,
+                                ttfb_ms,
+                                upstream_bytes,
+                            });
+                        }
                     }
                     Err(err) => {
                         let message = format_error_chain(&err);
@@ -521,7 +548,24 @@ async fn buffer_non_sse_upstream_body(
                             ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                         }
                         upstream_bytes += chunk.len() as u64;
-                        body_bytes.extend_from_slice(&chunk);
+                        if let Err(message) = append_buffered_upstream_chunk(
+                            &mut body_bytes,
+                            &chunk,
+                            MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES,
+                        ) {
+                            warn!(
+                                event_name = "stream_pump_body_limit_exceeded",
+                                log_type = "ops",
+                                upstream_bytes,
+                                error = %message,
+                                "buffered upstream body exceeds limit"
+                            );
+                            return Err(BufferedUpstreamBodyError {
+                                message,
+                                ttfb_ms,
+                                upstream_bytes,
+                            });
+                        }
                     }
                     Err(err) => {
                         let message = format_wreq_upstream_request_error(&err);
@@ -548,7 +592,24 @@ async fn buffer_non_sse_upstream_body(
                         ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                     }
                     upstream_bytes += chunk.len() as u64;
-                    body_bytes.extend_from_slice(&chunk);
+                    if let Err(message) = append_buffered_upstream_chunk(
+                        &mut body_bytes,
+                        &chunk,
+                        MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES,
+                    ) {
+                        warn!(
+                            event_name = "stream_pump_body_limit_exceeded",
+                            log_type = "ops",
+                            upstream_bytes,
+                            error = %message,
+                            "buffered upstream body exceeds limit"
+                        );
+                        return Err(BufferedUpstreamBodyError {
+                            message,
+                            ttfb_ms,
+                            upstream_bytes,
+                        });
+                    }
                 }
                 Ok(None) => break,
                 Err(message) => {
@@ -576,6 +637,18 @@ async fn buffer_non_sse_upstream_body(
     })
 }
 
+fn append_buffered_upstream_chunk(
+    body_bytes: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+) -> Result<(), String> {
+    if chunk.len() > max_bytes.saturating_sub(body_bytes.len()) {
+        return Err(format!("上游完整响应超过允许的 {} 字节", max_bytes));
+    }
+    body_bytes.extend_from_slice(chunk);
+    Ok(())
+}
+
 fn maybe_bridge_non_sse_sync_json_to_stream(
     status_code: u16,
     headers: &BTreeMap<String, String>,
@@ -588,6 +661,7 @@ fn maybe_bridge_non_sse_sync_json_to_stream(
     }
 
     let decoded_body_bytes = decode_non_sse_response_body_bytes(headers, body_bytes)
+        .map_err(GatewayError::Internal)?
         .unwrap_or_else(|| body_bytes.to_vec());
     if !response_body_is_json(headers, &decoded_body_bytes) {
         return Ok(None);
@@ -621,7 +695,7 @@ fn rewrite_headers_for_bridged_sse_response(
 fn decode_non_sse_response_body_bytes(
     headers: &BTreeMap<String, String>,
     body_bytes: &[u8],
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, String> {
     let encoding = headers
         .get("content-encoding")
         .map(String::as_str)
@@ -629,20 +703,32 @@ fn decode_non_sse_response_body_bytes(
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_lowercase());
     match encoding.as_deref() {
-        Some("gzip") => {
-            let mut decoder = flate2::read::GzDecoder::new(body_bytes);
-            let mut out = Vec::new();
-            std::io::Read::read_to_end(&mut decoder, &mut out).ok()?;
-            Some(out)
-        }
-        Some("deflate") => {
-            let mut decoder = flate2::read::DeflateDecoder::new(body_bytes);
-            let mut out = Vec::new();
-            std::io::Read::read_to_end(&mut decoder, &mut out).ok()?;
-            Some(out)
-        }
-        _ => None,
+        Some("gzip") => read_decoded_body_with_limit(
+            flate2::read::GzDecoder::new(body_bytes),
+            MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES,
+        ),
+        Some("deflate") => read_decoded_body_with_limit(
+            flate2::read::DeflateDecoder::new(body_bytes),
+            MAX_BUFFERED_NON_SSE_UPSTREAM_BODY_BYTES,
+        ),
+        _ => Ok(None),
     }
+}
+
+fn read_decoded_body_with_limit(
+    reader: impl std::io::Read,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    let read_limit = max_bytes.saturating_add(1) as u64;
+    let mut reader = reader.take(read_limit);
+    let mut decoded = Vec::new();
+    if reader.read_to_end(&mut decoded).is_err() {
+        return Ok(None);
+    }
+    if decoded.len() > max_bytes {
+        return Err(format!("上游完整响应解压后超过允许的 {} 字节", max_bytes));
+    }
+    Ok(Some(decoded))
 }
 
 fn response_body_is_json(headers: &BTreeMap<String, String>, body_bytes: &[u8]) -> bool {
@@ -764,7 +850,8 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{
-        build_direct_execution_frame_stream, should_buffer_non_stream_response,
+        append_buffered_upstream_chunk, build_direct_execution_frame_stream,
+        read_decoded_body_with_limit, should_buffer_non_stream_response,
         should_treat_upstream_response_as_stream,
     };
     use crate::execution_runtime::transport::{
@@ -815,6 +902,31 @@ mod tests {
             ]),
             &report_context
         ));
+    }
+
+    #[test]
+    fn buffered_non_sse_response_rejects_bytes_beyond_limit() {
+        let mut body = b"abc".to_vec();
+        append_buffered_upstream_chunk(&mut body, b"d", 4)
+            .expect("body at the limit should be accepted");
+
+        let error = append_buffered_upstream_chunk(&mut body, b"e", 4)
+            .expect_err("body beyond the limit should be rejected");
+
+        assert!(error.contains("4"));
+        assert_eq!(body, b"abcd");
+    }
+
+    #[test]
+    fn decoded_non_sse_response_rejects_bytes_beyond_limit() {
+        let decoded = read_decoded_body_with_limit(std::io::Cursor::new(b"abcd"), 4)
+            .expect("body at the limit should decode")
+            .expect("decoded body should exist");
+        assert_eq!(decoded, b"abcd");
+
+        let error = read_decoded_body_with_limit(std::io::Cursor::new(b"abcde"), 4)
+            .expect_err("decoded body beyond the limit should be rejected");
+        assert!(error.contains("4"));
     }
 
     #[tokio::test]
@@ -1136,6 +1248,115 @@ mod tests {
                 .and_then(Value::as_str),
             Some("resp_sync_bridge_123")
         );
+    }
+
+    #[tokio::test]
+    async fn direct_execution_frame_stream_bridges_chunked_compact_json_without_losing_output() {
+        let listener = crate::test_support::bind_loopback_listener()
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("local addr should resolve");
+        let server = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/responses/compact",
+                post(|| async {
+                    let body_stream = futures_util::stream::iter([
+                        Ok::<Bytes, Infallible>(Bytes::from_static(
+                            br#"{"output":[{"type":"compaction","encrypted_content":"#,
+                        )),
+                        Ok::<Bytes, Infallible>(Bytes::from_static(
+                            br#""opaque-history"}],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}"#,
+                        )),
+                    ]);
+                    let mut response = axum::http::Response::new(Body::from_stream(body_stream));
+                    response.headers_mut().insert(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/json"),
+                    );
+                    response
+                }),
+            );
+            axum::serve(listener, app)
+                .await
+                .expect("server should start");
+        });
+
+        let runtime = DirectSyncExecutionRuntime::new();
+        let execution = runtime
+            .execute_stream(&ExecutionPlan {
+                request_id: "req-compact-sync-bridge".to_string(),
+                candidate_id: Some("cand-compact-sync-bridge".to_string()),
+                provider_name: Some("Codex".to_string()),
+                provider_id: "provider-codex".to_string(),
+                endpoint_id: "endpoint-compact".to_string(),
+                key_id: "key-codex-oauth".to_string(),
+                method: "POST".to_string(),
+                url: format!("http://{addr}/responses/compact"),
+                headers: BTreeMap::from([
+                    ("accept".to_string(), "application/json".to_string()),
+                    ("content-type".to_string(), "application/json".to_string()),
+                ]),
+                content_type: Some("application/json".to_string()),
+                content_encoding: None,
+                body: RequestBody::from_json(serde_json::json!({
+                    "model":"gpt-5",
+                    "input":[]
+                })),
+                stream: true,
+                client_api_format: "openai:responses:compact".to_string(),
+                provider_api_format: "openai:responses:compact".to_string(),
+                model_name: Some("gpt-5".to_string()),
+                proxy: None,
+                transport_profile: None,
+                timeouts: Some(ExecutionTimeouts {
+                    connect_ms: Some(5_000),
+                    total_ms: Some(5_000),
+                    ..ExecutionTimeouts::default()
+                }),
+            })
+            .await
+            .expect("stream execution should succeed");
+
+        let frames = build_direct_execution_frame_stream(execution)
+            .map(|item| item.expect("frame should encode"))
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|bytes| String::from_utf8(bytes.to_vec()).expect("frame should be utf8"))
+            .collect::<Vec<_>>();
+
+        server.abort();
+
+        let header_frame: Value =
+            serde_json::from_str(&frames[0]).expect("headers frame should parse");
+        assert_eq!(
+            header_frame
+                .get("payload")
+                .and_then(|payload| payload.get("headers"))
+                .and_then(|headers| headers.get("content-type"))
+                .and_then(Value::as_str),
+            Some("text/event-stream")
+        );
+
+        let data_frame = frames
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).expect("frame should parse"))
+            .find(|frame| frame.get("type").and_then(Value::as_str) == Some("data"))
+            .expect("data frame should exist");
+        let bridged_body = base64::engine::general_purpose::STANDARD
+            .decode(
+                data_frame
+                    .get("payload")
+                    .and_then(|payload| payload.get("chunk_b64"))
+                    .and_then(Value::as_str)
+                    .expect("chunk_b64 should exist"),
+            )
+            .expect("data frame should decode");
+        let bridged_text = String::from_utf8(bridged_body).expect("bridged body should be utf8");
+        assert!(bridged_text.contains("event: response.output_item.done"));
+        assert!(bridged_text.contains("\"type\":\"compaction\""));
+        assert!(bridged_text.contains("\"encrypted_content\":\"opaque-history\""));
+        assert!(bridged_text.contains("event: response.completed"));
     }
 
     #[tokio::test]

@@ -32,6 +32,11 @@ pub fn maybe_bridge_standard_sync_json_to_stream(
 ) -> Result<Option<SyncToStreamBridgeOutcome>, AiSurfaceFinalizeError> {
     let provider_api_format = normalize_api_format(provider_api_format);
     let client_api_format = normalize_api_format(client_api_format);
+    if provider_api_format == "openai:responses:compact"
+        && client_api_format == "openai:responses:compact"
+    {
+        return bridge_openai_compact_sync_json_to_stream(provider_body_json, report_context);
+    }
     if provider_api_format == "openai:image" {
         return match client_api_format.as_str() {
             "openai:image" => {
@@ -84,6 +89,97 @@ pub fn maybe_bridge_standard_sync_json_to_stream(
         sse_body,
         terminal_summary,
     }))
+}
+
+fn bridge_openai_compact_sync_json_to_stream(
+    provider_body_json: &Value,
+    report_context: Option<&Value>,
+) -> Result<Option<SyncToStreamBridgeOutcome>, AiSurfaceFinalizeError> {
+    let Some(response) = provider_body_json.as_object() else {
+        return Err(AiSurfaceFinalizeError::new(
+            "Compact 上游响应必须是 JSON 对象",
+        ));
+    };
+    let Some(output) = response.get("output").and_then(Value::as_array) else {
+        return Err(AiSurfaceFinalizeError::new(
+            "Compact 上游响应缺少 output 数组",
+        ));
+    };
+
+    let mut response = response.clone();
+    if response
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        response.insert(
+            "id".to_string(),
+            Value::String(compact_bridge_response_id(report_context)),
+        );
+    }
+    response
+        .entry("object".to_string())
+        .or_insert_with(|| Value::String("response".to_string()));
+    response
+        .entry("status".to_string())
+        .or_insert_with(|| Value::String("completed".to_string()));
+    if response
+        .get("usage")
+        .is_some_and(|usage| !compact_usage_is_valid(usage))
+    {
+        response.remove("usage");
+    }
+
+    let response = Value::Object(response);
+    let terminal_summary = build_terminal_summary_from_openai_responses_response(&response);
+    let mut sse_body = Vec::new();
+    for (output_index, item) in output.iter().enumerate() {
+        if !item.is_object() {
+            return Err(AiSurfaceFinalizeError::new(
+                "Compact 上游响应的 output 项必须是 JSON 对象",
+            ));
+        }
+        sse_body.extend(encode_json_sse(
+            Some("response.output_item.done"),
+            &json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            }),
+        )?);
+    }
+    sse_body.extend(encode_json_sse(
+        Some("response.completed"),
+        &json!({
+            "type": "response.completed",
+            "response": response,
+        }),
+    )?);
+
+    Ok(Some(SyncToStreamBridgeOutcome {
+        terminal_summary,
+        sse_body,
+    }))
+}
+
+fn compact_bridge_response_id(report_context: Option<&Value>) -> String {
+    report_context
+        .and_then(|context| context.get("request_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("resp_{value}"))
+        .unwrap_or_else(|| format!("resp_{}", uuid::Uuid::new_v4().simple()))
+}
+
+fn compact_usage_is_valid(usage: &Value) -> bool {
+    let Some(usage) = usage.as_object() else {
+        return false;
+    };
+    ["input_tokens", "output_tokens", "total_tokens"]
+        .iter()
+        .all(|field| usage.get(*field).is_some_and(Value::is_number))
 }
 
 fn maybe_bridge_openai_image_sync_json_to_stream(
@@ -968,6 +1064,66 @@ mod tests {
             usage.dimensions.get("total_tokens").and_then(Value::as_i64),
             Some(174),
         );
+    }
+
+    #[test]
+    fn bridges_compact_json_to_sse_without_losing_compaction_output() {
+        let outcome = maybe_bridge_standard_sync_json_to_stream(
+            &json!({
+                "output": [{
+                    "type": "compaction",
+                    "encrypted_content": "opaque-history"
+                }],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "total_tokens": 12
+                }
+            }),
+            "openai:responses:compact",
+            "openai:responses:compact",
+            Some(&json!({"request_id":"compact-request-1"})),
+        )
+        .expect("bridge should succeed")
+        .expect("bridge should produce sse");
+
+        let output = utf8(outcome.sse_body);
+        assert!(output.contains("event: response.output_item.done"));
+        assert!(output.contains("\"type\":\"compaction\""));
+        assert!(output.contains("\"encrypted_content\":\"opaque-history\""));
+        assert!(output.contains("event: response.completed"));
+        assert!(output.contains("\"id\":\"resp_compact-request-1\""));
+        assert!(!output.contains("data: [DONE]"));
+
+        let summary = outcome
+            .terminal_summary
+            .expect("terminal summary should exist");
+        assert_eq!(
+            summary.response_id.as_deref(),
+            Some("resp_compact-request-1")
+        );
+        assert_eq!(
+            summary
+                .standardized_usage
+                .as_ref()
+                .and_then(|usage| usage.dimensions.get("total_tokens")),
+            Some(&json!(12))
+        );
+    }
+
+    #[test]
+    fn compact_json_bridge_rejects_missing_output() {
+        let error = match maybe_bridge_standard_sync_json_to_stream(
+            &json!({"id":"resp-invalid"}),
+            "openai:responses:compact",
+            "openai:responses:compact",
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid compact response should fail"),
+        };
+
+        assert!(error.to_string().contains("缺少 output 数组"));
     }
 
     #[test]

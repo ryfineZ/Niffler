@@ -53,6 +53,7 @@ pub struct SameFormatProviderRequestBehavior {
     pub is_vertex: bool,
     pub is_kiro: bool,
     pub upstream_is_stream: bool,
+    pub force_json_accept: bool,
     pub force_body_stream_field: bool,
     pub report_kind: &'static str,
 }
@@ -108,16 +109,22 @@ pub fn classify_same_format_provider_request_behavior(
         provider_type_is_claude_code_compatible(transport.provider.provider_type.as_str());
     let is_vertex = is_vertex_transport_context(transport);
     let is_kiro = is_kiro_provider_transport(transport);
-    let upstream_is_stream = aether_ai_formats::resolve_upstream_is_stream_from_endpoint_config(
-        transport.endpoint.config.as_ref(),
-        params.require_streaming,
-        is_kiro
-            || is_antigravity
-            || aether_ai_formats::api::force_upstream_streaming_for_provider(
-                transport.provider.provider_type.as_str(),
-                params.provider_api_format,
-            ),
-    );
+    let force_json_accept =
+        codex_oauth_compact_requires_json(transport, params.provider_api_format);
+    let upstream_is_stream = if force_json_accept {
+        false
+    } else {
+        aether_ai_formats::resolve_upstream_is_stream_from_endpoint_config(
+            transport.endpoint.config.as_ref(),
+            params.require_streaming,
+            is_kiro
+                || is_antigravity
+                || aether_ai_formats::api::force_upstream_streaming_for_provider(
+                    transport.provider.provider_type.as_str(),
+                    params.provider_api_format,
+                ),
+        )
+    };
     let force_body_stream_field = aether_ai_formats::endpoint_config_forces_upstream_stream_policy(
         transport.endpoint.config.as_ref(),
     );
@@ -139,6 +146,7 @@ pub fn classify_same_format_provider_request_behavior(
         is_vertex,
         is_kiro,
         upstream_is_stream,
+        force_json_accept,
         force_body_stream_field,
         report_kind,
     }
@@ -333,10 +341,25 @@ pub fn build_same_format_provider_headers(
     if let (Some(auth_header), Some(auth_value)) = (input.auth_header, input.auth_value) {
         ensure_upstream_auth_header(&mut provider_request_headers, auth_header, auth_value);
     }
-    if input.behavior.upstream_is_stream {
+    if input.behavior.force_json_accept {
+        provider_request_headers.insert("accept".to_string(), "application/json".to_string());
+    } else if input.behavior.upstream_is_stream {
         provider_request_headers.insert("accept".to_string(), "text/event-stream".to_string());
     }
     Some(provider_request_headers)
+}
+
+pub fn codex_oauth_compact_requires_json(
+    transport: &GatewayProviderTransportSnapshot,
+    provider_api_format: &str,
+) -> bool {
+    transport
+        .provider
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("codex")
+        && transport.key.auth_type.trim().eq_ignore_ascii_case("oauth")
+        && aether_ai_formats::is_openai_responses_compact_format(provider_api_format)
 }
 
 pub fn same_format_provider_transport_supported(
@@ -624,6 +647,87 @@ mod tests {
         );
 
         assert!(behavior.upstream_is_stream);
+    }
+
+    #[test]
+    fn codex_oauth_compact_forces_json_upstream_after_stream_overrides() {
+        let mut transport = sample_transport("codex");
+        transport.endpoint.api_format = "openai:responses:compact".to_string();
+        transport.endpoint.config = Some(json!({
+            "upstream_stream_policy": "force_stream"
+        }));
+        transport.key.auth_type = "oauth".to_string();
+
+        let behavior = classify_same_format_provider_request_behavior(
+            &transport,
+            SameFormatProviderRequestBehaviorParams {
+                require_streaming: true,
+                provider_api_format: "openai:responses:compact",
+                report_kind: "openai_responses_compact_stream_success",
+            },
+        );
+        assert!(!behavior.upstream_is_stream);
+        assert!(behavior.force_json_accept);
+
+        let headers = build_same_format_provider_headers(SameFormatProviderHeadersInput {
+            headers: &http::HeaderMap::new(),
+            provider_request_body: &json!({"model":"gpt-5","input":[]}),
+            original_request_body: &json!({"model":"gpt-5","input":[],"stream":true}),
+            header_rules: Some(&json!([
+                {"action":"set","key":"accept","value":"text/event-stream"}
+            ])),
+            behavior,
+            auth_header: Some("authorization"),
+            auth_value: Some("Bearer oauth-token"),
+            extra_headers: &BTreeMap::new(),
+            key_fingerprint: None,
+            kiro_auth_config: None,
+            kiro_machine_id: None,
+        })
+        .expect("headers should build");
+
+        assert_eq!(
+            headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn non_oauth_compact_keeps_existing_stream_behavior() {
+        let mut transport = sample_transport("custom");
+        transport.endpoint.api_format = "openai:responses:compact".to_string();
+        transport.key.auth_type = "bearer".to_string();
+
+        let behavior = classify_same_format_provider_request_behavior(
+            &transport,
+            SameFormatProviderRequestBehaviorParams {
+                require_streaming: true,
+                provider_api_format: "openai:responses:compact",
+                report_kind: "openai_responses_compact_stream_success",
+            },
+        );
+        assert!(behavior.upstream_is_stream);
+        assert!(!behavior.force_json_accept);
+
+        let headers = build_same_format_provider_headers(SameFormatProviderHeadersInput {
+            headers: &http::HeaderMap::new(),
+            provider_request_body: &json!({"model":"gpt-5","input":[]}),
+            original_request_body: &json!({"model":"gpt-5","input":[],"stream":true}),
+            header_rules: None,
+            behavior,
+            auth_header: Some("authorization"),
+            auth_value: Some("Bearer custom-token"),
+            extra_headers: &BTreeMap::new(),
+            key_fingerprint: None,
+            kiro_auth_config: None,
+            kiro_machine_id: None,
+        })
+        .expect("headers should build");
+
+        assert_eq!(
+            headers.get("accept").map(String::as_str),
+            Some("text/event-stream")
+        );
     }
 
     #[test]
@@ -995,6 +1099,7 @@ mod tests {
                 is_vertex: false,
                 is_kiro: false,
                 upstream_is_stream: true,
+                force_json_accept: false,
                 force_body_stream_field: false,
                 report_kind: "openai_chat_stream_success",
             },

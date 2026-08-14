@@ -198,30 +198,42 @@ fn provider_query_standard_test_resolves_codex_responses_upstream_streaming() {
     assert!(provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "codex",
+        "oauth",
         "openai:responses",
         false,
     ));
     assert!(provider_query_resolve_standard_test_upstream_is_stream(
         Some(&json!({"upstream_stream_policy": "force_non_stream"})),
         "codex",
+        "oauth",
         "openai:responses",
         false,
     ));
     assert!(!provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "codex",
+        "oauth",
+        "openai:responses:compact",
+        false,
+    ));
+    assert!(provider_query_resolve_standard_test_upstream_is_stream(
+        Some(&json!({"upstream_stream_policy": "force_stream"})),
+        "codex",
+        "api_key",
         "openai:responses:compact",
         false,
     ));
     assert!(!provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "custom",
+        "bearer",
         "openai:responses",
         false,
     ));
     assert!(provider_query_resolve_standard_test_upstream_is_stream(
         Some(&json!({"upstream_stream_policy": "force_stream"})),
         "custom",
+        "bearer",
         "openai:responses",
         false,
     ));
@@ -232,12 +244,14 @@ fn provider_query_standard_test_uses_client_stream_for_auto_policy() {
     assert!(!provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "custom",
+        "bearer",
         "openai:chat",
         false,
     ));
     assert!(provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "custom",
+        "bearer",
         "openai:chat",
         true,
     ));
@@ -271,6 +285,7 @@ fn provider_query_standard_test_reenforces_upstream_stream_body_field() {
     let upstream_is_stream = provider_query_resolve_standard_test_upstream_is_stream(
         Some(&endpoint_config),
         "codex",
+        "oauth",
         "openai:responses",
         false,
     );

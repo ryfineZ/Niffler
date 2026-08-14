@@ -276,13 +276,20 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts(
         .await;
 
     let needs_bidirectional_conversion = !same_format && conversion_kind.is_some();
-    let upstream_is_stream = resolve_upstream_is_stream_for_provider(
-        transport.endpoint.config.as_ref(),
-        transport.provider.provider_type.as_str(),
+    let upstream_is_stream = if crate::ai_serving::transport::codex_oauth_compact_requires_json(
+        transport,
         provider_api_format,
-        spec_metadata.require_streaming,
-        is_antigravity || is_kiro_claude_cli,
-    );
+    ) {
+        false
+    } else {
+        resolve_upstream_is_stream_for_provider(
+            transport.endpoint.config.as_ref(),
+            transport.provider.provider_type.as_str(),
+            provider_api_format,
+            spec_metadata.require_streaming,
+            is_antigravity || is_kiro_claude_cli,
+        )
+    };
     let force_body_stream_field =
         endpoint_config_forces_body_stream_field(transport.endpoint.config.as_ref());
     let effective_headers = input.effective_headers(&parts.headers);
