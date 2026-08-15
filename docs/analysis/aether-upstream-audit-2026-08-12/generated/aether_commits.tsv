@@ -1,0 +1,777 @@
+branch	commit	date	author	parent_count	is_merge	topic	subject
+aether	2ca4b486ecf2417a8a55b871396a58fc18e98dd8	2026-05-16T15:08:16+08:00	beilo	1	no	routing_scheduler	fix: auto-remove invalid oauth pool keys
+aether	64b41434ce1345961e519ff5bbb92510f7bdc0f3	2026-05-18T20:46:53+08:00	RWDai	1	no	auth_security	Add API key allowed IP migrations
+aether	437024cdb1d698d560742cbab18d4592941223f6	2026-05-18T20:47:03+08:00	RWDai	1	no	auth_security	Add API key allowed IP data types
+aether	276d19b63cae886b44708cbd75c6a908ee2c372c	2026-05-18T20:47:17+08:00	RWDai	1	no	auth_security	Persist allowed IPs in auth repositories
+aether	fc12cc8a36054ee4206a5175fa38d7ee587fde07	2026-05-18T20:47:28+08:00	RWDai	1	no	auth_security	Enforce API key IP restrictions in proxy auth
+aether	96b857f642496e613419b4e65b631cfdfadf361a	2026-05-18T20:47:37+08:00	RWDai	1	no	auth_security	Support allowed IPs in user API key endpoints
+aether	ab53326865b40c7e08449409ae0e0c83cc38f95c	2026-05-18T20:47:46+08:00	RWDai	1	no	other	Support allowed IPs in admin user key endpoints
+aether	d8f68c1d9a5d09e1c9ae7d60852159518a5f0bb6	2026-05-18T20:47:57+08:00	RWDai	1	no	other	Preserve allowed IP defaults in admin key imports
+aether	bcca8d295ac8d65c4291db4d534040c27526e33e	2026-05-18T20:48:05+08:00	RWDai	1	no	auth_security	Update auth context test fixtures
+aether	2a3593d9c5404b5bb9b943c792afe95db1c77229	2026-05-18T20:48:14+08:00	RWDai	1	no	billing_wallet	Update planner auth snapshot fixtures
+aether	460cd63d3aa0027e74727454e83c61d66a959ae1	2026-05-18T20:48:21+08:00	RWDai	1	no	auth_security	Add user API key IP whitelist UI
+aether	c6ee558180b7f0c831fe50a1a579f7621d544b34	2026-05-18T20:48:28+08:00	RWDai	1	no	frontend_product	Add admin user key IP whitelist UI
+aether	6c16f399d4f856a3e98caf59bd069cfeb51d128c	2026-05-18T23:51:14+08:00	yangrs	1	no	other	feat: 重要通知模块、Server 酱独立配置与额度提醒
+aether	f1687017e6379f47875a1763a6cd1a0454a7bffd	2026-05-19T10:22:50+08:00	RWDai	1	no	provider_protocol	Fix provider endpoint format normalization path
+aether	2aab1ea97bd9af08c7c46fa9e536bb3f41385968	2026-05-19T10:23:15+08:00	RWDai	1	no	auth_security	Clean up gateway API key whitelist handlers
+aether	b05264ff743bfd832f972b3f9ae4fc81fd7a0cf6	2026-05-19T10:23:32+08:00	RWDai	1	no	billing_wallet	Stabilize wallet today usage test timing
+aether	95af482ffef1344ae7453437c68a3e4223dd17b2	2026-05-19T10:23:54+08:00	RWDai	1	no	auth_security	Update auth snapshot observability fixture
+aether	6a104d5736f0df89172c5e36a6dfa8d30ce93e9c	2026-05-19T10:24:27+08:00	RWDai	1	no	other	Add allowed IPs to data schema sources
+aether	02f09c2056ba21b0c9f5daeef0abaf633593f537	2026-05-19T10:24:47+08:00	RWDai	1	no	auth_security	Regenerate API key schema baselines
+aether	d19bf71343094fe3561120b57da2615709810515	2026-05-19T10:25:06+08:00	RWDai	1	no	other	Refresh migration cutoff expectations
+aether	75aa3dc0cc096d34e9bb7e607b8abe1b2134b870	2026-05-19T13:41:18+08:00	beilo	1	no	auth_security	fix: refine oauth auto-removal behavior
+aether	3a318a86b2a180d911b3a2f17fd16865c58edb8d	2026-05-19T19:01:10+08:00	zhiqicloud	1	no	other	支持官方直连支付、退款配置与套餐联动
+aether	fbda210b8485dc791e07f54f1809b5fff412fa86	2026-05-20T01:22:55+08:00	fawney19	2	yes	other	Merge pull request #511
+aether	97b05e744f02805d257cdbea80deeeef832ea5c4	2026-05-19T19:01:10+08:00	zhiqicloud	1	no	other	支持官方直连支付、退款配置与套餐联动
+aether	65e3b6f3da403f03535375e46292165f85be962e	2026-05-20T09:52:39+08:00	mayrain	1	no	provider_protocol	fix(codex): trigger image override only on explicit tool_choice
+aether	bdc848b19e54f6d45757dbfce5c401d74e6a7850	2026-05-20T10:26:56+08:00	RWDai	2	yes	stream_execution	Merge upstream main into feat/500-api-key-ip-whitelist
+aether	61bcbe826a0b016469e0f666e1fcd84ced60b718	2026-05-20T10:34:22+08:00	fawney19	1	no	auth_security	fix: tighten OAuth auto cleanup signals
+aether	4d856f3deb05d417ec963f19d3082d6940c643ac	2026-05-20T10:54:32+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/516'
+aether	84c4c2f9c210a04070c167410d8879d7e88d3297	2026-05-20T11:02:41+08:00	RWDai	1	no	other	fix(gateway): preserve image generation tools
+aether	316b1e320763a2d8de7092509671b4dd36a56347	2026-05-20T11:14:43+08:00	RWDai	2	yes	stream_execution	Merge remote-tracking branch 'upstream/main' into feat/500-api-key-ip-whitelist
+aether	490306c2421e91631ca2db7124a926a8b91c55ea	2026-05-20T11:19:58+08:00	fawney19	2	yes	other	Merge commit 'refs/pull/511/head' of github-fawney19:fawney19/Aether
+aether	149651f83130ad0155e5516a8463f50cf42f7b3e	2026-05-20T11:22:45+08:00	RWDai	1	no	other	test(gateway): expect image bridge tools
+aether	122daf0f87d56c7ce2b2fe119bb27b0497f00c44	2026-05-20T12:33:31+08:00	zhiqicloud	1	no	provider_protocol	支持 Provider Key 余额查询与自动刷新
+aether	ebc1774300186f091c9822f1778c7803c57eaf55	2026-05-20T13:04:22+08:00	zhiqicloud	1	no	other	修正 new_api 验证测试断言
+aether	89860bec977ba1597807cef222f3e528dde1db01	2026-05-20T13:17:24+08:00	ZheFox	1	no	routing_scheduler	fix(codex): restrict openai image routing to codex responses
+aether	7d5ad1e70e985985f88d1f1286aa29bee74e08f9	2026-05-20T13:32:14+08:00	ZheFox	1	no	provider_protocol	chore(gateway): silence dead code warnings in openai image bridge
+aether	1604a6d87dd707183fdd7d5737539da361c9cc23	2026-05-20T13:41:14+08:00	RWDai	1	no	auth_security	fix(gateway): allow clearing API key IP whitelists
+aether	7284165f39ebc296dac3d63f4ec0d602031cee06	2026-05-20T13:42:55+08:00	RWDai	1	no	delivery_operations	feat(tunnel): add tunnel IP family controls
+aether	edded777e7c28aedb65ea7733575b469774c29cc	2026-05-20T13:43:22+08:00	RWDai	1	no	delivery_operations	docs(tunnel): document IP family controls
+aether	f4c79c80ac7aa03a6561c03d25ce1a2e215f27a9	2026-05-20T13:50:58+08:00	RWDai	1	no	delivery_operations	fix(tunnel): allow explicit false IP family flags
+aether	7e95e769d52fa88d0e28e092542ea702205b7d60	2026-05-20T13:59:24+08:00	fawney19	2	yes	provider_protocol	Merge pull request #517 from zhiqicloud/feat/provider-balance-query
+aether	b6bdc08267b74b6d6595f756ad243b5260ce18c8	2026-05-20T14:05:00+08:00	fawney19	2	yes	other	Merge branch 'pr-501'
+aether	232006f71dcb52eded70c81a9c4c0a44cd408c44	2026-05-20T14:42:52+08:00	RWDai	1	no	frontend_product	fix(tunnel): restore IP family flag test builds
+aether	eb63838f6abbb5ffadc793836b01a1cbdf10b523	2026-05-20T14:43:24+08:00	RWDai	1	no	delivery_operations	fix(proxy): keep legacy installer URLs working
+aether	19ae7c89024569de0932ec39a9175ba4fc085572	2026-05-20T15:30:17+08:00	fawney19	2	yes	delivery_operations	Merge pull request #519 from RWDai/feat/aether-tunnel-ip-family-options
+aether	9673fc4c01246c5b22b1f02e00823bc251454e93	2026-05-20T15:34:31+08:00	ZheFox	1	no	provider_protocol	fix(codex): trigger image override only on explicit tool_choice
+aether	cde20626189b39d2e40673bd6535468e1ca67ccc	2026-05-20T16:09:24+08:00	ZheFox	1	no	provider_protocol	chore(gateway): make openai image intent import local
+aether	f76bbaab52b712c3a96ab0fd5de3603de08585c0	2026-05-20T16:11:49+08:00	fawney19	1	no	auth_security	feat: support api key ip restriction rules
+aether	fa5d26ce3865cea14f8784865fad616181e4ee66	2026-05-20T16:14:09+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/main'
+aether	70f2882a433078540e6f283f386115eee40598d5	2026-05-20T16:28:58+08:00	fawney19	1	no	other	refactor(api-keys): 将独立余额 Key 表单的额度、IP 限制、敏感信息保护移至左侧列
+aether	cd994d57d27c81f35e036d0e046452b4ec7c171c	2026-05-20T16:29:46+08:00	Avilianb	1	no	provider_protocol	Fix provider model test compact request bodies
+aether	97fb588a4ac09d287f5adc34cc7b8bea35435eeb	2026-05-20T16:47:30+08:00	Avilianb	1	no	provider_protocol	Apply rustfmt to compact provider test
+aether	831554f11deef28af24d3fbe74d03784ada16407	2026-05-20T16:51:46+08:00	RWDai	1	no	other	Add admin user export count queries
+aether	8440846bae06dbcfb0cadac55f3828e5762d74d7	2026-05-20T16:51:46+08:00	RWDai	1	no	other	Expose admin user export counts through gateway state
+aether	5130da97105181170ee22aaa6c4898c2f533df3e	2026-05-20T16:51:46+08:00	RWDai	1	no	other	Return paginated admin users metadata
+aether	1be703b56ec22e53ad74a933753d9419269db7b2	2026-05-20T16:51:46+08:00	RWDai	1	no	frontend_product	Track admin users pagination in frontend data layer
+aether	462c3dde79e58bb8f0f6891b91b9c5e3f914b1ba	2026-05-20T16:51:46+08:00	RWDai	1	no	other	Load admin users with server-side pagination
+aether	2881ff097a28fb3450eb6781cd4f042c9b1fee22	2026-05-20T16:51:52+08:00	fawney19	1	no	usage_observability	feat(usage): 管理员用量统计支持筛选刷新与失败保留旧数据
+aether	e7a76b0510f5234e9fa39841f7456d815615c4a8	2026-05-20T17:00:44+08:00	fawney19	1	no	runtime_performance	chore(docker): postgres 启用 pg_stat_statements 扩展
+aether	44fb1af287d524a250a64709a43cf86012a00515	2026-05-20T17:06:33+08:00	RWDai	1	no	other	Fix admin user count clippy lint
+aether	de7be4f15b6394c751bc20242724166023071cf9	2026-05-20T17:16:38+08:00	ZheFox	1	no	provider_protocol	fix(gateway): route openai image api requests with mapped models
+aether	77051e6245b785c711965f8a3c77cdb3a935cfc6	2026-05-20T17:32:47+08:00	RWDai	1	no	other	Fix admin users pagination follow-ups
+aether	e80e7b0cfa5f500f477071180e9a38a5a5b23bb5	2026-05-20T17:41:06+08:00	RWDai	1	no	frontend_product	Fix admin users pagination review issues
+aether	76752beca67f4ebafe47c2c7964967e9cd8884c7	2026-05-20T17:41:52+08:00	fawney19	1	no	runtime_performance	chore(postgres): 支持通过环境变量配置 PG 性能参数
+aether	cb894208a11b92bd75253b2ff5e32daf9291d43c	2026-05-20T17:42:53+08:00	fawney19	2	yes	provider_protocol	Merge pull request #521 from Avilianb/fix/provider-query-responses-compact-body
+aether	74a3df3f1eaccf9861842c8faddf184dbc59078a	2026-05-20T17:46:16+08:00	RWDai	1	no	runtime_performance	Fix user group options cache invalidation
+aether	3e12c0662721a71060bfa51b349b52c49f4d697c	2026-05-20T17:51:29+08:00	RWDai	1	no	runtime_performance	Fix user group options cache busting
+aether	d0981c2fd50605b8821c98f9d77b8f6021f69e6d	2026-05-20T18:03:11+08:00	fawney19	2	yes	other	Merge pull request #522 from RWDai/fix/admin-users-server-pagination
+aether	2cacf66a373eaac521ff8aab4ac87530eb4da423	2026-05-20T18:13:34+08:00	ZheFox	1	no	stream_execution	fix(gateway): route openai image streams with images surface
+aether	cfa32a2b4dd3c151410cc62fdc1e0ffd7cbe2df6	2026-05-20T19:17:42+08:00	ZheFox	1	no	provider_protocol	fix(gateway): preserve openai image 200 responses and sync success reporting
+aether	a31e237cc31f4ffd010b29ae7b4a0291a39ebffe	2026-05-20T19:28:49+08:00	ZheFox	2	yes	stream_execution	Merge upstream main
+aether	b47282fe4c4a680bf1afde25f9cd7fc8ec708abe	2026-05-20T19:38:27+08:00	流云	1	no	other	fix: 修复优先级管理重新打开顺序回退
+aether	ab2287202d2091b4de71bf8f7eea0a37c7881486	2026-05-20T19:59:20+08:00	ZheFox	1	no	provider_protocol	feat(provider): show image previews in model test dialog
+aether	fed9bdf01a3e0c61937370ca8098ecdbd366914e	2026-05-20T12:02:00Z	MMEXA	1	no	provider_protocol	Fix Codex Responses tool schema and pending recovery
+aether	c972bbd3973e165dbbc9caf611dd13149c94e78f	2026-05-20T20:13:07+08:00	fawney19	1	no	routing_scheduler	Fix provider pool exhaustion scheduling
+aether	d3355a8a09e16009bbc0a3cfb87b8bc15a9c1a9c	2026-05-20T20:40:48+08:00	ZheFox	1	no	stream_execution	fix(gateway): decode stream-encoded provider response JSON
+aether	8838e9289bc3c4ae88429af66126771dacd39732	2026-05-20T20:53:13+08:00	ZheFox	1	no	provider_protocol	fix(provider): remove stale image preview block from model test dialog
+aether	57910f906d9ecf7cfdeb93eb9c8fbf10148f8212	2026-05-20T20:56:36+08:00	fawney19	1	no	usage_observability	Preserve usage provider identity
+aether	e50ceeba5aef8e562c55624471f05ac585fb9fe0	2026-05-20T21:00:06+08:00	fawney19	2	yes	routing_scheduler	Merge pull request #525 from final0920/fix/issue-505-priority-order
+aether	754f672ee2f3b80d6dab4c8206fb34d1f0c33224	2026-05-20T21:01:54+08:00	fawney19	2	yes	provider_protocol	Merge pull request #526 from MMEXA/fix/codex-responses-pending-recovery-20260520
+aether	64ad0f694b682952b600e44d2e48ea4f7057846b	2026-05-20T21:06:51+08:00	ZheFox	1	no	stream_execution	feat(usage): include cache token details in stream usage payloads
+aether	3c6924238ff7cd3ef4408def0ec6b9cb82abc961	2026-05-20T21:20:10+08:00	ZheFox	1	no	stream_execution	feat(usage): include cache token details in stream usage payloads
+aether	9562295d8b2b2b9bdfd529173c6076166f7ae3e5	2026-05-20T22:02:47+08:00	zhiqicloud	1	no	other	feat: 添加在线更新功能
+aether	5a9f19cbf2f5b3739748b64923bd83b85b4464f8	2026-05-20T22:33:41+08:00	ZheFox	1	no	stream_execution	fix(gateway): filter upstream SSE control-only blocks
+aether	d49b0a8a45fad1e5e77dce80425e299e169904c2	2026-05-20T22:45:32+08:00	fawney19	1	no	other	Make extension modules reorderable
+aether	779877acd0cd1345546359300fca2db0e5272ec9	2026-05-20T22:49:49+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	4d0c654822d3418d0a06e2dbd1f6a213089c526b	2026-05-20T23:17:31+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/524'
+aether	923515ab280097ef94f4c077132b60e6a652159f	2026-05-21T00:45:02+08:00	fawney19	1	no	other	fix: align image generation checks
+aether	0226e14251db3881df4f5f53f7ba05aff80339b2	2026-05-18T15:23:08+08:00	Entropy.Xu	1	no	provider_protocol	feat(provider): 原生接入 Windsurf provider
+aether	02d1343436d122f429b98aa7417025f465b6136c	2026-05-18T16:11:41+08:00	Entropy.Xu	1	no	provider_protocol	feat(provider): 补充 Windsurf 邮箱密码导入表单
+aether	208c77a062723ce397590fb44191630385e25ab9	2026-05-18T16:27:27+08:00	Entropy.Xu	1	no	auth_security	fix(provider): 对齐 Windsurf PostAuth 登录链路
+aether	0a0a8b31c7a333567e7c5a32250fc0c57d6469f5	2026-05-18T19:12:36+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 隐藏 Windsurf refresh token 刷新入口
+aether	9466d92a7a16b8a2d5170d68ae1634d09cc7165a	2026-05-18T20:04:49+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 接入 Windsurf 模型拉取和格式转换
+aether	931c5773452d90f2510fd42096e1789174cbf29f	2026-05-18T20:23:36+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 接入 Windsurf 模型测试链路
+aether	82637ad882ad494016f1d48f901459d4c94db85a	2026-05-18T21:23:02+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 修复 Windsurf Connect 请求与端点计数
+aether	129c7c90c078e6fc4304c395ca173ae52164d862	2026-05-20T23:42:12+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 修复 Windsurf 原生工具桥接
+aether	65c361115a822d80cbb213eade69e200acf587a1	2026-05-21T00:57:46+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 修复 Windsurf PR 冲突残留
+aether	e7f8b259ac53576ba9a98e2dca7cee668dcb7c6b	2026-05-21T01:24:17+08:00	fawney19	1	no	provider_protocol	"Revert ""Merge pull request #517 from zhiqicloud/feat/provider-balance-query"""
+aether	b84e4a96e2e33091a43553077ae9f086fd53cd4e	2026-05-21T01:36:05+08:00	fawney19	1	no	runtime_performance	chore: tune default postgres settings for 2c4g
+aether	4112a8b2ea2cc8632d66d62bd2427e1dd2fcdc8b	2026-05-21T02:21:35+08:00	Entropy.Xu	1	no	provider_protocol	fix(provider): 修复 Windsurf PR CI 失败
+aether	6b04a0a3a6a4c21fb215b43e8744e46c686d3976	2026-05-21T02:55:05+08:00	Entropy.Xu	1	no	provider_protocol	fix(windsurf): 修复 native 工具流式回程
+aether	e59e6c3797d8f99a5ebe696c70b6e459424b824a	2026-05-21T12:30:42+08:00	zhefox	1	no	stream_execution	fix(gateway): sanitize Claude thinking and handle missing stream finish
+aether	be6e49b9c26a952d76baa801a3cb6cd566305de4	2026-05-21T12:30:48+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	3330b2ac4c151b21e9b26df768496aa187a689f2	2026-05-21T14:34:51+08:00	stabey	1	no	stream_execution	refactor(report-context): extract UPSTREAM_IS_STREAM_KEY constant
+aether	40434005c00f992a2340486fd3b9ca188e56dc7f	2026-05-20T15:08:44+08:00	stabey	1	no	stream_execution	fix(gateway): use total_ms for non-stream upstream watchdog
+aether	e53d5f07e8e5180728df502f86e59f7b9b323bc3	2026-05-21T15:38:10+08:00	Mas0nShi	1	no	provider_protocol	feat: support Gemini CLI v1internal quota
+aether	a2ad556f2b34cd1eab28188d2affcb3fc4a0d63d	2026-05-21T15:38:42+08:00	RWDai	1	no	other	fix(gateway): raise group rate limits by tier
+aether	d33043288d787da974483f732f4eed42a828c4e7	2026-05-21T15:38:53+08:00	RWDai	1	no	frontend_product	fix(frontend): clarify user group policy help
+aether	965a8c79af2236f60928bad5e98f45f3cdd5daa6	2026-05-21T15:51:56+08:00	RWDai	1	no	runtime_performance	fix(gateway): preserve cache affinity during health updates
+aether	12abde2aeb5ed25acb8007f334ae70a956ce22ed	2026-05-21T15:52:51+08:00	zhefox	1	no	stream_execution	fix(usage): handle terminal stream failures and preserve usage updates
+aether	776f95b1ab9b15574fe5947c1655abdd88a1c604	2026-05-21T15:53:40+08:00	RWDai	1	no	auth_security	chore: format auth rate limit tests for rustfmt 1.95
+aether	bd4f6b9206bef31a6e25e04f1fb42df1f86e1e2e	2026-05-21T16:07:27+08:00	RWDai	1	no	auth_security	Add tunnel security config fields
+aether	40b9db3545af8f4021911e2c86cc9a6458d1db1b	2026-05-21T16:07:56+08:00	RWDai	1	no	auth_security	Add tunnel security setup fields
+aether	a543ca9e078e08f0ef2279a29990dd328268483f	2026-05-21T16:08:14+08:00	RWDai	1	no	auth_security	Add tunnel installer security envs
+aether	8f41bc1558972e04c4fd65f96072cea3ba645c5a	2026-05-21T16:08:37+08:00	RWDai	1	no	delivery_operations	Generate secure tunnel install sessions
+aether	888414c41b14525819095dec628e09202a006cba	2026-05-21T16:09:00+08:00	RWDai	1	no	auth_security	Forward proxy tunnel security aliases
+aether	4f49dd5943cc21ac6ebb9a7eccc4f4f4fdc50e82	2026-05-21T16:09:38+08:00	RWDai	1	no	auth_security	Document tunnel security MVP config
+aether	b7b7b4f718c1f831aa8ad6de8826c384b90195cb	2026-05-21T16:15:03+08:00	zhefox	1	no	stream_execution	fix(gateway): report terminal stream failure errors consistently
+aether	cadc45c5b88077fa4b904fb913b61fe19b308851	2026-05-21T16:56:56+08:00	stabey	1	no	routing_scheduler	fix(data): cleanup uses failed candidate status instead of 504
+aether	3e6ce6cf4a31ada4111b1e4bdd54cc02fdd46d3c	2026-05-21T17:10:17+08:00	Mas0nShi	1	no	provider_protocol	fix: hydrate Gemini CLI project metadata
+aether	66f21de50e8757cc193d4cbb96fe721e499b9f66	2026-05-21T17:39:10+08:00	Mas0nShi	1	no	provider_protocol	fix: unwrap Gemini CLI model test envelopes
+aether	8ca4a10f24e495e330b129ad163c953698344ed9	2026-05-21T17:46:21+08:00	zhefox	1	no	stream_execution	fix(gateway): require terminal events for OpenAI responses streams
+aether	71f9afc526523a05c6d877f7c11c8e22c64ead46	2026-05-21T18:09:57+08:00	zhefox	1	no	provider_protocol	fix(gateway): move openai responses helper import to ai_serving module
+aether	b8a65cbdec92c542c4371734bbab819bd152aa8f	2026-05-21T19:39:50+08:00	fawney19	2	yes	other	Merge pull request #532 from RWDai/opencode/cosmic-nebula
+aether	77c2d91eb0471880b27f70919bfd38d820699c52	2026-05-21T20:30:44+08:00	zhefox	1	no	stream_execution	fix(gateway): drain downstream-disconnected streams and stop inferring cancelled usage
+aether	26ee1a9958a2318ed748231c8cfcb3d218bf326e	2026-05-21T21:51:08+08:00	RWDai	1	no	other	fix(gateway): preserve affinity during quota telemetry
+aether	18fe5a4f1158d3368d70e2f31d439fb59a203154	2026-05-21T21:51:08+08:00	RWDai	1	no	other	fix(gateway): preserve affinity during adaptive retries
+aether	68d8f86dc653bab313e91b7615cfca5057fc0f72	2026-05-21T22:26:14+08:00	zhefox	1	no	stream_execution	fix(gateway): stop stream polling on downstream disconnect and preserve Codex cache keys
+aether	eeb7995214db3bfd8b370f061ddea096a93dda1b	2026-05-21T22:27:07+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	ab0a90de9794a7267b5a589d00760854af6c0fa7	2026-05-21T22:51:57+08:00	fawney19	1	no	runtime_performance	fix(runtime-state): govern redis connections
+aether	97997685b51c8e250ae39b3b3df0adf5d3b695d4	2026-05-21T22:56:43+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/498'
+aether	d6eb41aa78c59c64b6bd54d5ef2c6e6d07509821	2026-05-21T23:03:14+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/536'
+aether	0e6d7539ad914173250746197205d7a0dd7857d9	2026-05-21T23:12:42+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/538'
+aether	9859aec16ca347a10e247f37dafa98796c08941b	2026-05-21T23:50:34+08:00	RWDai	1	no	routing_scheduler	fix(gateway): evict pooled affinity after sibling key failures
+aether	d5e64d6ad97deaeca05462aa3ac8ae6017112438	2026-05-22T00:19:23+08:00	fawney19	2	yes	other	Merge branch 'pr-503'
+aether	504c1ccb37dd6889aefc3bb0a3fe5c9f55b62744	2026-05-22T01:45:46+08:00	fawney19	1	no	other	feat: restructure notification services
+aether	3714c211dc5a9989e4585d65ecac1379817ce1a4	2026-05-22T02:10:45+08:00	fawney19	2	yes	runtime_performance	Merge pull request #534 from RWDai/fix/issue-528-cache-affinity-health
+aether	2b32b9a445421e1f840831cab119d47a631b0dda	2026-05-22T02:46:49+08:00	fawney19	1	no	other	Fix system data import export flows
+aether	9533bd7043e128eb3b4d3e88e34500dc17098a0a	2026-05-22T09:30:55+08:00	Mas0nShi	1	no	stream_execution	fix: route Gemini CLI generateContent through stream
+aether	507f2f8250fa8ab8010f78e399c7f6d7c89c6891	2026-05-22T09:34:22+08:00	zhefox	1	no	stream_execution	fix(usage): treat stream terminal failures as failures on HTTP 200
+aether	2e701a90c9d80e97ac508ae5d24ad360dbe481cb	2026-05-22T09:47:28+08:00	RWDai	1	no	delivery_operations	Complete secure tunnel encryption support
+aether	b05f2a270a0c87dda6254eafc7fc96447e35a131	2026-05-22T10:13:06+08:00	RWDai	1	no	delivery_operations	Fix gateway secure tunnel Clippy warning
+aether	ce44d35eb6e3c6027e394578e211b6de690151e0	2026-05-22T11:08:00+08:00	AAEE86	1	no	other	feat(notification): add Bark push support
+aether	b2276699859f73b78a21423e8e5943502f7ba503	2026-05-22T11:23:53+08:00	fawney19	2	yes	other	Merge pull request #540 from zhefox/main
+aether	f341c573ebe9b856542943773e5652137738b381	2026-05-22T11:24:11+08:00	fawney19	2	yes	other	Merge pull request #541 from AAEE86/main
+aether	9b95fa4d9564024d0ab9db22477dd6d7fc84bd67	2026-05-22T11:39:38+08:00	zhefox	1	no	stream_execution	fix(gateway): handle responses-shaped OpenAI chat bodies and SSE passthrough
+aether	56abfdf39d7343e054cf22c0559d3fdd34f8a5a3	2026-05-22T11:51:53+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	f6c3ebf7d31f10993d20a9eb1c532c98ebccfe02	2026-05-22T12:05:36+08:00	fawney19	2	yes	other	Merge pull request #542 from zhefox/main
+aether	97de4ff8a3887739bab91c793d1a072fce6280a7	2026-05-22T14:09:51+08:00	zhefox	1	no	provider_protocol	fix(gateway): accept Claude Messages bodies on OpenAI chat endpoints
+aether	2b8ff8a74314cfed2e4caf19512868a5e9384a9c	2026-05-22T14:11:00+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	8966fd6aac035ff76245c2da1a9fd0db3173ab96	2026-05-22T14:11:47+08:00	fawney19	1	no	routing_scheduler	Protect background workers under DB pool pressure
+aether	8ede01ad4e6e824fb649d04308fd3286431c95c1	2026-05-22T14:16:07+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/main'
+aether	33633637e5b202deaa2ac564b54ffbf3e02a0d53	2026-05-22T14:35:43+08:00	RWDai	1	no	delivery_operations	Fix secure tunnel session handling
+aether	2a298de9714db790af30878797d26d9a2b66e9b3	2026-05-22T14:41:27+08:00	zhefox	1	no	provider_protocol	fix(provider): serialize Claude tool results as JSON strings
+aether	ecf6019ccb41e122d18fe08d524b2b2105c2caa7	2026-05-22T14:53:25+08:00	fawney19	2	yes	other	Merge pull request #543 from zhefox/main
+aether	b59c3a9e3bb26e35859781df950cdee82c08c7d2	2026-05-22T15:15:17+08:00	zhiqicloud	1	no	delivery_operations	feat: support admin online update and deploy flow
+aether	08b27806a7dc4dc0c9ea11a5065430755fc0ec13	2026-05-22T15:20:36+08:00	RWDai	1	no	auth_security	Respect explicit tunnel security off
+aether	cb2ff61bbc51f094132bd17c11512b1abdebf8cd	2026-05-22T15:26:56+08:00	RWDai	1	no	other	feat(gateway): expand client session family detection
+aether	ca341703bc7372466bc3b24d1bd145f1e6c7d889	2026-05-22T15:27:39+08:00	RWDai	1	no	usage_observability	feat(usage): infer additional client families
+aether	9633bce2e101cb6676a5a6de1e3bbb42582bdc20	2026-05-22T15:28:19+08:00	RWDai	1	no	frontend_product	feat(frontend): centralize client family labels
+aether	a4a5f70a109959f9ee0c7001dfcf80a05050d6b4	2026-05-22T15:28:27+08:00	zhiqicloud	2	yes	stream_execution	Merge upstream/main into feat/one-click-update
+aether	4c7ebf8b8dd9f3836eb182414f0625c060428f10	2026-05-22T15:32:49+08:00	zhiqicloud	1	no	provider_protocol	style: format admin update settings
+aether	9dd545353cdf670269be1d7935676640e6845ad5	2026-05-22T15:54:10+08:00	RWDai	1	no	auth_security	Preserve omitted tunnel security in CLI mode
+aether	781830a2027d0740be195b47c5be7167037911d0	2026-05-22T15:54:51+08:00	zhiqicloud	1	no	other	fix: resolve gateway clippy regressions
+aether	c2d0f607845ba6e7252940785becac3e9af21cae	2026-05-22T16:10:27+08:00	RWDai	1	no	other	fix(gateway): accept header sessions for unknown clients
+aether	ce02f1ae8cc5fe03baccaf11a2a2d47f93501ac9	2026-05-22T16:48:15+08:00	Mas0nShi	1	no	provider_protocol	Add Gemini CLI v1internal quota support
+aether	ef04f4b0fbb0fd8743e2654f74048654ccbe1958	2026-05-22T17:11:56+08:00	fawney19	1	no	provider_protocol	Add automatic B/T compact unit formatting
+aether	8b7643e150e7a2945ec84aed9e13ace514621aeb	2026-05-22T17:13:57+08:00	Mas0nShi	2	yes	provider_protocol	Merge remote-tracking branch 'origin/main' into fix/gemini-cli-v1internal
+aether	8df0e1790d7bc4a02945972d4ddd60c215ad184b	2026-05-22T17:25:13+08:00	Mas0nShi	1	no	provider_protocol	Fix Gemini CLI batch import parse error entry
+aether	6ef6cbade2127cc73c1367ddd75c5eb81b52d440	2026-05-22T17:52:36+08:00	fawney19	1	no	stream_execution	Fallback dashboard aggregate reads on schema mismatch
+aether	c67818ee8685aae483d3c8d81ba4d3abf9c12b32	2026-05-22T18:24:40+08:00	Mas0nShi	1	no	provider_protocol	Fix Gemini CLI standard conversion envelope
+aether	9af15072380c1e2757e3d34fc6f1a63e3a060c34	2026-05-22T18:36:53+08:00	fawney19	2	yes	other	Merge pull request #545 from RWDai/feat/expand-client-types
+aether	8cc6888c5bcb694e60c8152baf44e25406b9505a	2026-05-22T18:40:11+08:00	Mas0nShi	1	no	provider_protocol	Fix Gemini CLI OpenAI conversion envelope
+aether	0d80db8a8d580d3bed11fa962369ca8c03cbeab8	2026-05-22T18:57:03+08:00	Mas0nShi	1	no	billing_wallet	Refactor Gemini CLI v1internal planner request builder
+aether	d18b13a91a11633c7dce701762ddfc7c02d7bdfd	2026-05-22T23:57:38+08:00	fawney19	1	no	usage_observability	fix: harden frontdoor and usage ingestion
+aether	74c82d9948b89063ac2984f1e35063b94bfd2d8d	2026-05-22T23:59:05+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/main'
+aether	b5e942ca9db555e9e766b71b8bb7d46562fd3613	2026-05-23T00:21:34+08:00	fawney19	1	no	runtime_performance	fix: increase postgres shared memory for dashboard queries
+aether	c7641dad0a0bce4b14d90bf063f5342a2e13ee73	2026-05-23T00:26:07+08:00	fawney19	1	no	frontend_product	fix: propagate build version through local deploy
+aether	e5ce2ac7a4b7283165affe4d83614dd0badf38ee	2026-05-23T00:47:36+08:00	zhefox	1	no	stream_execution	fix(usage): detect missing terminal events in stream reporting
+aether	ab048b8a0362599176d0f4aba97f9185993ff9f1	2026-05-23T01:22:24+08:00	fawney19	1	no	stream_execution	fix monitoring trace lookup fallback
+aether	bd1e155332a546fda90d9ca2f7937013f7169497	2026-05-23T02:45:04+08:00	zhefox	1	no	provider_protocol	fix(provider): normalize OpenAI chat tool history for Claude messages
+aether	c0252387b4d8334b35dd612a135db9dd10cb730e	2026-05-23T03:17:09+08:00	Novick Yuan	1	no	auth_security	修复热池调度已失效 OAuth 账号
+aether	91cb2bbbccec7f0775172ea1e65e1ff29a8723c9	2026-05-23T03:31:15+08:00	zhefox	1	no	stream_execution	fix(usage): refine stream terminal capture gating for OpenAI responses
+aether	bf456450d7b38e07285cd0b4a277ac3cdad2d810	2026-05-23T10:40:25+08:00	wzw	1	no	other	feat: 代理池均衡分发&批量添加代理节点
+aether	74f73485292125e5a95a22c6a3c8fef9cae8b5e5	2026-05-23T13:00:18+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/535'
+aether	6447fda852fff14a8d85112391d40a80d6ff86ab	2026-05-23T14:17:04+08:00	fawney19	1	no	stream_execution	fix: harden tunnel security and timeout handling
+aether	babe328565e9ad799b19724081f3bf796f417bc8	2026-05-23T16:19:23+08:00	Kayphoon	1	no	usage_observability	fix(usage): include embedding formats in filters
+aether	4ee64339ba84325528b00351d797327aa80fdff9	2026-05-23T17:54:48+08:00	Kayphoon	1	no	stream_execution	fix(usage): show retry marker with fallback
+aether	4b66cadf15633139d3ded661a26631104d709f5a	2026-05-23T18:41:52+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/544'
+aether	0655e868a2c618ce3ddd082acb8da7aa532bd0b6	2026-05-23T19:36:20+08:00	RWDai	1	no	provider_protocol	Bound models route data reads
+aether	0f2a96554fcbdcf939371fcf4e4b0e6142d64a25	2026-05-23T19:54:24+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	18eac2dd7a6c6a2cc6f77ea561e9849e3c33d752	2026-05-23T20:14:26+08:00	fawney19	1	no	delivery_operations	feat: clarify deployment update strategies
+aether	5643b2c9014c1521f88542968c8453458e3f4050	2026-05-23T20:51:02+08:00	fawney19	1	no	other	feat: add compose data layout migration helper
+aether	8087a98c9d6dab025fd0ea30be206ee600e05d20	2026-05-23T21:26:22+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/475'
+aether	3eb9614e68b7f2c88f41069694b3889d1445bb50	2026-05-23T21:38:18+08:00	fawney19	2	yes	routing_scheduler	Merge pull request #546 from novcky/fix/pool-scheduler-skip-invalid-oauth-accounts
+aether	6b1c1e4f50ac4d86e3eb951465c2922bca0fe1d2	2026-05-23T22:03:17+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/547'
+aether	db32b1d9829e48f4dd01772a3e7c12807906517f	2026-05-23T22:16:02+08:00	fawney19	1	no	stream_execution	fix(usage): ignore truncated stream captures for terminal inference
+aether	e53a2757ebb5178df5a18bfcf29a673b7eacec36	2026-05-23T22:19:51+08:00	fawney19	2	yes	other	Merge branch 'pr-548'
+aether	9f6fac418eb1480b3c654cc6d67d87d7e1189650	2026-05-23T22:22:37+08:00	zhefox	1	no	billing_wallet	feat(usage): normalize provider stats across usage and cost views
+aether	92fd253caea03fb6a910f2431621333b00639726	2026-05-23T22:24:09+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	ba9aa7c1bd650a9e82b9cc9813cef863a7f0b528	2026-05-23T23:32:40+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	dd07425d21ab4039fd0ba9726b6bdaff51ad6d1a	2026-05-23T23:40:10+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/550'
+aether	ff7f27d4f84c10695944e3f03326670af7eeb07e	2026-05-23T23:46:18+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	ecfe04f48a03ef976ade0ea93e8f1f1ed434be4c	2026-05-24T00:15:47+08:00	fawney19	2	yes	other	Merge pull request #554 from zhefox/main
+aether	e1df06f06cdebf8b5261aad2045fae84e6e4f251	2026-05-24T00:37:03+08:00	fawney19	1	no	other	revert compose data layout to legacy paths
+aether	78523f122dd9adb0287b1e5822e36412a96516d1	2026-05-24T12:35:55+08:00	fawney19	1	no	routing_scheduler	Limit pool score interest feedback writes
+aether	e6423a91aa0234d2d4688aca48b7fb00c7347049	2026-05-24T15:19:37+08:00	zhefox	1	no	provider_protocol	feat(provider): auto-match batch assign models from key
+aether	bbd4338e8eae7782c874958015b061ee3f065674	2026-05-24T15:21:27+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	576918daa599f5fad76cf3062f9bf352c2168fd4	2026-05-24T15:47:56+08:00	fawney19	1	no	routing_scheduler	Optimize provider scheduler database hotspots
+aether	517c9e510840d4d3b0f6e2d4be604762b44937ea	2026-05-24T16:17:41+08:00	fawney19	2	yes	other	Merge pull request #552 from RWDai/issue-549-fix
+aether	80054276eb7e0c2df011db9aed7b9dfce9c1a9fc	2026-05-24T16:36:35+08:00	fawney19	1	no	delivery_operations	chore: bump aether-tunnel version to 0.3.13
+aether	13e0759d5a3c91ac9244d38f680d7afdf90e9f8c	2026-05-24T08:43:41Z	github-actions[bot]	1	no	delivery_operations	chore(tunnel): update download links for tunnel-v0.3.13
+aether	c09bb28d16b0311f8baa6009f9580b41314da72e	2026-05-24T18:07:09+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	2207b6083421c325e48c368235dc12e25fef88f0	2026-05-24T18:48:50+08:00	zhefox	1	no	usage_observability	fix(usage): preserve failed status for active request refreshes
+aether	952d1c840d204f82d2dbc416a2cbab76e57980dd	2026-05-23T17:09:55+08:00	Codex	1	no	other	修复 ChatGPT Web 额度刷新 403 误判
+aether	2b2754b7797098ccfc4b72bad87653500cb5510f	2026-05-23T17:40:44+08:00	Codex	1	no	other	修复 ChatGPT Web 生图成功后额度同步
+aether	218ca8e6eb35cc7ddd4e216cecb27bd531531575	2026-05-23T21:28:13+08:00	Codex	1	no	other	修复 ChatGPT Web 生图额度递减显示
+aether	a52b5135339292a770fb264b491d467247eac49f	2026-05-23T22:14:51+08:00	Codex	1	no	other	调整 ChatGPT Web 生图请求预扣额度
+aether	9dba6ec1d9e7c7a0da4a9f4afb7c69e5baf70cec	2026-05-24T00:45:09+08:00	Codex	1	no	other	修复 ChatGPT Web 生图预扣与 Free 限额继承
+aether	14b182d09baf48c1d21239f98e899b6ea9c5b052	2026-05-24T03:26:30+08:00	Codex	1	no	other	修复 ChatGPT Web 生图调用起始预扣额度
+aether	66837b7d7f50f9468348a1b99b3908eaea3fb552	2026-05-24T13:58:54+08:00	Codex	1	no	other	修复 ChatGPT Web 生图发起即扣额度
+aether	3bf7469d30d0c6c1dac63dcccb1960b1ec3508f8	2026-05-24T17:58:00+08:00	Codex	1	no	usage_observability	修复 ChatGPT Web 生图 usage 估算
+aether	74c8bfc59fbf4a08134146f665f645e747c82bba	2026-05-24T18:15:29+08:00	Codex	1	no	other	调整 ChatGPT Web 生图 token 估算口径
+aether	18d9004f22eec24b30f63a97227bf1b0508de033	2026-05-24T18:47:33+08:00	fawney19	1	no	auth_security	fix docker app logging permissions
+aether	83a26093443547ed7dd514b7e25879a5995b46f0	2026-05-24T18:51:00+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	c92bdfba16196274f7abfe55528bf8dab2c8aabb	2026-05-24T18:51:28+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	e2d5fc9dfbe49f339d3bbf5fb16ffcb1378cc456	2026-05-24T21:40:48+08:00	fawney19	1	no	usage_observability	Preserve usage data in system imports
+aether	40b4e52508f670860f8ebee34e50c4e904469e73	2026-05-24T22:44:12+08:00	fawney19	1	no	provider_protocol	Filter format-scoped key fields on import
+aether	ba188aea92a410c744f01cfc717cbf86a52e5bf2	2026-05-24T23:40:40+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	480579a0d5a11594552bddb332c67d8df6d692e5	2026-05-25T00:40:38+08:00	MMEXA	1	no	provider_protocol	fix(gateway): expire provider key circuit cooldowns
+aether	d4ae6e0e64bde28078cfdc14ee3a7a21fd1a25ec	2026-05-25T00:51:46+08:00	fawney19	1	no	usage_observability	fix: read imported usage aggregates in dashboards
+aether	cc3ce8b5d77d78fbfa497c57a23bce0945da8f47	2026-05-25T01:08:22+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/557'
+aether	72d43878efe93f6ab8f5827b9b29bf31d9b0814e	2026-05-25T01:14:37+08:00	Kayphoon	1	no	delivery_operations	fix(install): remove pg single-node migration entrypoint
+aether	fe7fb17ff5f2e0f0e42aad0272dcebb0c9d51f15	2026-05-25T01:18:07+08:00	fawney19	1	no	usage_observability	fix(gateway): align admin key health circuit summary
+aether	2df9615fb91b8b8f528afac1b6af98606e2d7432	2026-05-25T01:21:30+08:00	fawney19	2	yes	provider_protocol	Merge pull request #560 from Kayphoon/codex/remove-install-migration
+aether	1be445423cc8b5a4d2ffd83db972086c19558d26	2026-05-25T01:22:03+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/558'
+aether	932397d1b328d1f789c3b3253e2ecfa0f6cdb7fb	2026-05-25T01:56:25+08:00	fawney19	1	no	other	fix(gateway): defer ChatGPT web image quota decrement
+aether	505d9fd8bc7f2fbceca6adf7122c3e377f84e5fd	2026-05-25T01:56:34+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/main'
+aether	28c3a5dbe473e2437f64dc5baa636ae2dce41ac8	2026-05-25T06:58:15+08:00	MMEXA	1	no	provider_protocol	Add Antigravity v1internal gateway adapter
+aether	e9efc5c42a3a2f562045631af0c306841883225d	2026-05-25T09:15:13+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	b347f1816d5bf20cc05417b89dc15af0dec615b4	2026-05-25T09:39:55+08:00	MMEXA	1	no	stream_execution	Fix native Antigravity stream envelope handling
+aether	63681b4be38dd36e4a9c67175e55cad125ea8e3a	2026-05-25T10:02:47+08:00	calida-tec	1	no	auth_security	fix(provider): accept common OAuth token JSON aliases
+aether	aaad1131907eedb61b6f993775559b04c60ba584	2026-05-25T12:21:32+08:00	Entropy.Xu	1	no	other	feat(admin-users): 支持按创建时间排序
+aether	ec681335e80c81d354346733395f535d7c459b46	2026-05-25T13:38:18+08:00	zhefox	1	no	stream_execution	fix(usage): treat empty body_state as missing terminal event
+aether	230ce5df5fff889fd92ed0b71d9fe1f4ef3c63ad	2026-05-25T13:38:38+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	db4f3fd2106da3ac46ba908437b2af7591b6c571	2026-05-25T13:56:12+08:00	zhefox	1	no	runtime_performance	fix(usage): cast mysql usage aggregates to numeric types
+aether	b72abec2fcece124528ded3e44fe65b275f84277	2026-05-25T15:09:41+08:00	zhefox	1	no	auth_security	fix(gateway): spawn oauth account refresh asynchronously
+aether	ae138ddb56e574f4d49c4386d7792cf993c7220f	2026-05-25T15:23:02+08:00	fawney19	1	no	other	feat: update admin config import and runtime handling
+aether	54c5d5803b58c4e5b2986fafd81f8fac8378c390	2026-05-25T15:36:13+08:00	fawney19	1	no	runtime_performance	fix: cast mysql usage aggregate counters
+aether	f4d66021e4826c9e93fdf8faeb8c67f3ce5b1757	2026-05-25T17:29:12+08:00	zhefox	2	yes	stream_execution	Merge remote-tracking branch 'upstream/main'
+aether	4c22a819f9194e06a67bad46eb0e205814fa475f	2026-05-25T20:05:13+08:00	zhefox	1	no	provider_protocol	fix(provider): always show batch assign models action
+aether	d3249485fa007b5485b6e9066887e2c2d0852c95	2026-05-25T20:09:37+08:00	fawney19	1	no	stream_execution	Fix stream timeout semantics
+aether	431311979a23b01731a7c2d7b4edb5e87d4e4f3c	2026-05-24T01:07:05+08:00	root	1	no	stream_execution	fix: handle split streaming terminal events
+aether	fa172ecb95406964ce4f2422f876502b4b8c3ae6	2026-05-24T02:30:56+08:00	root	1	no	stream_execution	fix: avoid synthetic keepalive for OpenAI streams
+aether	b46028cb85ce82ef44e0a773cccb5bdff784eadb	2026-05-24T13:03:15+08:00	root	1	no	stream_execution	refactor: clarify OpenAI SSE control policy
+aether	e68b843875fb7c793d33689defbeb4004e463e70	2026-05-24T13:26:58+08:00	root	1	no	provider_protocol	Add DeepSeek thinking compatibility
+aether	686311eabf2f91b3de702c20f34a6f99001af4e7	2026-05-24T14:11:59+08:00	root	1	no	stream_execution	test: align OpenAI image stream keepalive expectation
+aether	495795327c8ea5a0d6b486894e3d23e5955709c4	2026-05-25T17:15:41+08:00	hemo94931	1	no	provider_protocol	fix(ai): sanitize empty Read pages for Claude tools
+aether	9010f0806a055fcb105567edf09d6d1c80038893	2026-05-25T19:19:46+08:00	hemo94931	1	no	provider_protocol	fix(ai): sanitize Claude Read pages passthrough
+aether	8b386b0aaceb3a40cfb90f01f28e31fda01d871a	2026-05-25T21:14:45+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/555'
+aether	5dfccdec3e42a7d3fd9dbcfc714d5cacadc57b40	2026-05-25T21:43:13+08:00	Novick Yuan	1	no	stream_execution	Fix stream candidate watchdog timeout semantics
+aether	4fb8955bc228ab176cb4f08d2b2ed740e4a6611b	2026-05-25T23:03:52+08:00	fawney19	1	no	provider_protocol	fix(provider): move key model auto-match into dialog
+aether	c03aebba3fc47f4bc762687c170dfec2f8118104	2026-05-25T23:10:29+08:00	fawney19	2	yes	frontend_product	Merge branch 'pr-562' into review/pr-562
+aether	f3a367b02d761682160ec39ab3093b307d60f472	2026-05-25T23:44:02+08:00	fawney19	2	yes	frontend_product	Merge commit 'refs/pull/563/head' of github-fawney19:fawney19/Aether into review/pr-562
+aether	e7b3acdec39a32a440ae26dbf8240ce89e6e9b33	2026-05-25T23:48:04+08:00	fawney19	1	no	auth_security	fix(provider): format oauth import tests
+aether	235f32e10ecec55f1b6135d5821888e3fb6f5eeb	2026-05-26T00:43:45+08:00	fawney19	2	yes	frontend_product	Merge remote-tracking branch 'origin/pr/566' into review/pr-566-fix
+aether	a0f22ae659e72bcb1b07ddf894ffbe8572a32e97	2026-05-26T00:57:28+08:00	fawney19	1	no	provider_protocol	fix: tighten pr 566 claude and deepseek handling
+aether	50e4f27276bdb451a9a8c2619662301ef8cd71b5	2026-05-26T01:21:03+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/567'
+aether	d60b6e74548a1ae03fc9a9573b6721c637757449	2026-05-26T01:52:01+08:00	fawney19	1	no	provider_protocol	test: run gemini image bridge case on larger stack
+aether	57ccd44b89c2eac57fbb957d37f33e807dd63eec	2026-05-26T02:11:10+08:00	fawney19	1	no	stream_execution	fix: fill provider quota execution timeout defaults
+aether	331d37be26defe4656433e8338bdad69af13ebdf	2026-05-26T02:30:39+08:00	fawney19	1	no	provider_protocol	test: run sub2api balance provider ops on larger stack
+aether	c7331390916a1b0ccab732ebf3abebb9257135b0	2026-05-26T05:33:34+08:00	MMEXA	1	no	provider_protocol	fix(ai): normalize Gemini search grounding tools
+aether	b75953bf4c016bd795da078dbf6d51a8989be273	2026-05-26T11:11:13+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/569'
+aether	12ff87949dde0fc8f935209960419f5e44c48742	2026-05-26T11:14:24+08:00	fawney19	1	no	provider_protocol	fix(ai): preserve combined Gemini builtin tools
+aether	96184caa4888934a1393412ce0c0a1bab96cb8ae	2026-05-26T12:30:58+08:00	zhefox	1	no	provider_protocol	fix(codex): strip unsupported OpenAI responses body fields
+aether	5fc6dc80195426a5698f5f23e4ec108733a6d362	2026-05-26T12:31:03+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	0bf63cc80edecee5aec2e0376435d1f8e9e0e89f	2026-05-26T13:08:35+08:00	zhefox	1	no	provider_protocol	fix(provider): support multi-key selection in model tests
+aether	992c58f2bd7a2aaa4274fbf84335e8f97b4748bb	2026-05-26T13:08:59+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	1ebe0aeadff81a137f0628e765fe68b8cc796252	2026-05-26T13:57:22+08:00	zhefox	1	no	delivery_operations	fix(users): allow clearing explicit admin group memberships
+aether	c4927162b7e7be8c010f785bb8a3cc3a287f4aad	2026-05-26T13:57:27+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	84c8bc960e432a85dd26c571b6f7954a5d4f2b67	2026-05-25T16:11:59Z	Kayphoon	1	no	delivery_operations	feat(admin): add configurable S3 backups
+aether	4523a2c67b894288a5d423aed7d0be711f3706eb	2026-05-25T03:40:29Z	Kayphoon	1	no	runtime_performance	fix(data): cast MySQL usage aggregates
+aether	9e029462aaf3ed5cb233d7524f51a7c646175d3f	2026-05-26T01:39:58+08:00	Kayphoon	1	no	stream_execution	test(gateway): stabilize stream timeout regression
+aether	7e76c9763dec9584e72bff8035077e486ef74e24	2026-05-26T15:02:50+08:00	fawney19	1	no	stream_execution	Clarify stream first byte timeout message
+aether	d28a389a93a26148b02ddb39ce312e0e407c72f0	2026-05-26T15:39:56+08:00	zhefox	1	no	provider_protocol	fix(provider): support unversioned API roots in model fetch
+aether	c9cf1d458a102f7b93c7b0e1ec8be5a03b1b2cba	2026-05-26T15:56:03+08:00	zhefox	1	no	provider_protocol	fix(provider): factor model fetch route test type alias
+aether	23a36e37bb383fedfbc9e53956b96d6ff6693e7f	2026-05-26T15:56:17+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	1793443b09f16cfca41c016aefa8692ca34007a0	2026-05-26T16:07:02+08:00	AAEE86	1	no	provider_protocol	fix(admin): add User-Agent for Done-hub provider ops
+aether	4933ae90147b36e56ef688e1d1d698ac41ed0216	2026-05-26T16:19:02+08:00	fawney19	2	yes	other	Merge pull request #572 from AAEE86/main
+aether	949e251b2e5d56911a122744e9efe5fdcc7e5c2c	2026-05-26T16:46:21+08:00	AAEE86	1	no	provider_protocol	fix(provider): 模型测试按 Key 模型权限过滤
+aether	aa409a8a9c46d83ab6feea0226d35344c9ddceb8	2026-05-26T16:50:36+08:00	zhefox	1	no	provider_protocol	fix(provider): refine endpoint default paths for openai and claude roots
+aether	1173a4d9d5a496168389668e657b8f8377167695	2026-05-26T17:45:06+08:00	zhefox	1	no	provider_protocol	fix(provider): split partial model fetch warnings from errors
+aether	7530bec7de59bb48955f257be61663f72f74a1dc	2026-05-26T22:29:45+08:00	Kayphoon	1	no	auth_security	test(gateway): cover chat pii redaction formats
+aether	ba72770cab990eec7e710bad33ce46953d7e651d	2026-05-26T22:40:46+08:00	yangrs	1	no	auth_security	fix: wire windsurf oauth runtime scheduling
+aether	a9e6a7d644a269f3cee7762a0e30c96bc8efde49	2026-05-26T23:22:30+08:00	MMEXA	1	no	frontend_product	fix(frontend): recover login redirect navigation
+aether	e21cd7218140f2b87647630d48b7bb9a9bae9164	2026-05-26T23:48:25+08:00	fawney19	1	no	routing_scheduler	fix: preserve pool scan budget for exhausted accounts
+aether	42693c2c5254ef0652d89ebf0213a94df70a3daf	2026-05-27T00:07:37+08:00	fawney19	1	no	delivery_operations	chore: remove s3 backup docs
+aether	614c99987139cdb7553aff170a433d003412f72b	2026-05-27T00:30:37+08:00	fawney19	1	no	delivery_operations	feat(admin): expose s3 backup as module
+aether	e27ca671fd029b2aeabd2f0691e1572888652c0d	2026-05-27T00:36:52+08:00	AAEE86	1	no	usage_observability	feat(usage): show reasoning and fast badges in usage records
+aether	e2b5c3acc8c93a4d349dadddc4a48292b4da1240	2026-05-27T00:45:03+08:00	fawney19	1	no	other	docs: remove simple query inventory
+aether	bd71a46c2539629e4672d9a9d2caf1303157acd9	2026-05-27T00:48:59+08:00	fawney19	2	yes	provider_protocol	Merge pull request #561 from Kayphoon/codex/s3-integrated-backup
+aether	c632ec616daf390ada2f82957e1437e9818a5818	2026-05-27T00:52:15+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/564'
+aether	8c6e5860634fad28915c3df5645ce785fef5eaf2	2026-05-27T01:01:34+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'zhefox/main'
+aether	d816ae5c8847b965d021282c3b29d42ac931df38	2026-05-27T01:06:57+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/573'
+aether	d24ead234d436230223bdfa9644554faecc04bf4	2026-05-27T01:34:19+08:00	fawney19	2	yes	other	Merge branch 'pr-575'
+aether	1109c3547c4af284fd2d59f0dc793e2528f016dd	2026-05-27T01:35:25+08:00	fawney19	2	yes	other	Merge branch 'pr-577'
+aether	56901f91cec4811d92413d985477ee5c9d1e69b0	2026-05-27T02:06:22+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/576'
+aether	5a710c4f5ed6d5e8876f89d480ceb506d52c60ad	2026-05-27T02:07:52+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/578'
+aether	f03550415be3e93d36dea237382f4f309fe76551	2026-05-27T02:11:59+08:00	fawney19	1	no	usage_observability	style(usage): make fast badge white
+aether	cf8372c8cb20878a8a81d310cb1bcaccd7c4c045	2026-05-27T02:48:01+08:00	fawney19	1	no	stream_execution	fix(usage): record visible stream first byte timing
+aether	049f26c03b7ddeabcb73062b3ab782671d1bf1ea	2026-05-27T09:20:10+08:00	AAEE86	1	no	routing_scheduler	fix(mobile): improve usage and pool management layouts
+aether	433a4d3c7da0fb92b124403fc566f883070ff71c	2026-05-27T09:21:57+08:00	fawney19	1	no	auth_security	test(gateway): run claude pii redaction cases on large stack
+aether	0ee6e393ce66f02362473d70abb222a5c639e6ee	2026-05-27T10:19:49+08:00	fawney19	1	no	stream_execution	Record stream first byte on upstream event
+aether	dd2da693611866d1da9de1f1cfb3fc87c45800a0	2026-05-27T10:23:17+08:00	fawney19	2	yes	other	Merge pull request #580 from AAEE86/main
+aether	674cc85005f9db1161d6b9f0bebeeaecc7ce1a36	2026-05-27T11:00:04+08:00	fawney19	1	no	stream_execution	Stabilize stream runtime nextest timing
+aether	41ad42200295b527080d79088736a66319a6d9d2	2026-05-27T13:35:16+08:00	zhefox	1	no	provider_protocol	fix(gateway): preserve JSON mode chat hints in responses normalization
+aether	ccfc4cbddc3ee319d88259b50858125a9927f2d4	2026-05-27T13:56:39+08:00	fawney19	1	no	runtime_performance	Cache provider catalog lookups
+aether	e09d3199c1f2656d5d615e8c4d0c25e27d70b4d8	2026-05-27T13:57:48+08:00	zhefox	1	no	runtime_performance	fix(gateway): update codex prompt cache key test
+aether	b9ac97ebc3d395405f538f4fef79d8f2789455c2	2026-05-27T14:24:57+08:00	fawney19	1	no	billing_wallet	Simplify request detail cost overview
+aether	d488b1a6802b69390b6d1560ed4b27c4eee4fb1d	2026-05-27T15:06:51+08:00	fawney19	1	no	auth_security	fix auth refresh request body
+aether	6673ab6d4af470318cb46bed514ffd3c5fc90490	2026-05-27T15:08:23+08:00	fawney19	1	no	provider_protocol	Add fast model directive service tier
+aether	21e52722e6a3eaaec77e1b2c272c3969c95f34b5	2026-05-27T15:39:39+08:00	fawney19	1	no	usage_observability	Prefer provider request body for usage badges
+aether	8606455355ce82914771ee10df2a3229c10ff3a0	2026-05-27T15:40:17+08:00	fawney19	2	yes	other	Merge pull request #581 from zhefox/main
+aether	d77a572dc7651372392982d24091c5505d2e3935	2026-05-27T15:48:12+08:00	fawney19	1	no	usage_observability	fix: cast usage provider body before jsonb type checks
+aether	8abedecb164d42f99e5ff25f6e2866b4c46cfa76	2026-05-27T16:11:02+08:00	zhefox	1	no	provider_protocol	fix(ai): dedupe OpenAI responses text snapshot deltas
+aether	b02d62642aac0f8f8c6f005cb2411bd890ab0f57	2026-05-27T16:18:21+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	42e723ff7c892d52fa55e6d19beebdc8892229f7	2026-05-27T17:00:09+08:00	fawney19	1	no	routing_scheduler	Clarify API key concurrency skip reasons
+aether	c05d227df2271f666a2d3eb61e8f6f07c5dd4ba4	2026-05-27T17:06:31+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	d46d225a90d2c0e13af34eda3d3cd618a931e453	2026-05-27T18:38:59+08:00	fawney19	1	no	other	暗色模式下交换流式徽章填充与描边样式
+aether	14ad6e9b758ffdd51845b1d3f38787c2df8dd4e4	2026-05-27T18:42:57+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/583'
+aether	739e39e1cafcb5cb9ad348d7981e0a018f7a345c	2026-05-27T23:15:50+08:00	stabey	1	no	usage_observability	fix: 修复缓存 token usage 转换语义
+aether	adca142d1e6e5d65fdf880e627825fbc4c98fd2f	2026-05-28T00:24:56+08:00	MMEXA	1	no	provider_protocol	fix: adapt gemini cli to v1internal endpoint
+aether	9ad9858ac285996f6c57073265bc7e87ffbfce8e	2026-05-28T11:58:00+08:00	Mas0nShi	2	yes	provider_protocol	Merge origin/main into fix/gemini-cli-v1internal
+aether	4ce056fe45c834b3c914f411f7e890859c4c730b	2026-05-28T12:00:20+08:00	AAEE86	1	no	usage_observability	feat(health): add model and provider health monitoring
+aether	93d3de1644fd26aa72237f1d3c4fcd1194aa22bd	2026-05-28T12:11:43+08:00	fawney19	1	no	routing_scheduler	feat: improve routing policy diagnostics
+aether	535039c29ed2c4bb70692757f37304234ccc8411	2026-05-28T12:16:51+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/584'
+aether	0efb3d340ddd5478967105e42448834b3c6dec7f	2026-05-28T12:53:45+08:00	fawney19	2	yes	other	Merge commit 'refs/pr/530'
+aether	2c28d9979ce8133bd892585facb249623a06dc5f	2026-05-28T13:19:42+08:00	fawney19	2	yes	other	Merge commit 'refs/pr/585'
+aether	069e1c1e60f90eb3288390661945a7f103b88574	2026-05-28T13:53:04+08:00	fawney19	1	no	other	Fix merged PR check regressions
+aether	18566b583779e506a6a9e449901e9b2685fb2d1b	2026-05-28T13:56:04+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/587'
+aether	bb2fc2ec00278477a032379eb43f45ed31491b72	2026-05-28T14:24:37+08:00	fawney19	1	no	runtime_performance	Optimize health monitor database reads
+aether	8aca1f8b932b65339f789866f8f416a9b58075bc	2026-05-28T11:59:24+08:00	Novick Yuan	1	no	usage_observability	Add server time to usage responses
+aether	6de684df59303ccf183a88b1e4619971caec2a9b	2026-05-28T12:05:15+08:00	Novick Yuan	1	no	usage_observability	Track server clock offset for usage data
+aether	9b5c3ecd23cf4d4f328685eb661e82f4b0ca245a	2026-05-28T12:11:34+08:00	Novick Yuan	1	no	usage_observability	Use shared clock for active usage timers
+aether	01c8592ca6a0d664ae109348a0ddc0794127e715	2026-05-28T12:15:11+08:00	Novick Yuan	1	no	usage_observability	Align admin user usage timing samples
+aether	641229426232ca307e5b47e43cc99978def5ab14	2026-05-28T14:07:36+08:00	Novick Yuan	1	no	usage_observability	Use header-only usage server timing
+aether	35cf44b38eee817b97e67ac2b86ec8f251df8eb2	2026-05-28T14:08:09+08:00	Novick Yuan	1	no	usage_observability	Extract active usage elapsed clock
+aether	b108dc5ea64aee4a5130e96ab8b902c5e79fa00e	2026-05-28T15:01:59+08:00	Novick Yuan	1	no	stream_execution	Assert usage server timing over HTTP
+aether	97133f657fd90c1d1ebc0390c2504e98cd398d5c	2026-05-28T15:03:14+08:00	fawney19	1	no	other	style: 突出路由策略选中标签样式
+aether	1a45ec938606836571c00f189c82895a672d00b1	2026-05-28T15:05:05+08:00	Mas0nShi	1	no	stream_execution	Fix Gemini CLI streaming policy for OpenAI chat
+aether	5c3a1aecbed8fdcbae5426e31074b7b2ccb4a9cc	2026-05-28T15:23:26+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/591'
+aether	6ebd39ed0be88ef25648299d498b49bf9d7e3471	2026-05-28T15:33:28+08:00	Mas0nShi	1	no	stream_execution	Stabilize stream first-byte usage test
+aether	0f6d4b9146d25cdf96b0c811bdaab07b624c98a2	2026-05-28T16:05:36+08:00	Entropy.Xu	1	no	other	feat(embedding): 接入阿里云多模态向量端点
+aether	3504875922933a403646e0523bcc39c9400f267f	2026-05-28T16:07:07+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/592'
+aether	b21be24faaf2eba419481fef1aef64530a2681db	2026-05-28T16:07:08+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/pr/591'
+aether	60e3ffc402380d74286e149a30819a0904089785	2026-05-28T16:14:37+08:00	AAEE86	1	no	usage_observability	feat(usage): support output_config effort badge source
+aether	d076f64db39cd04978eea55119fcd0542e3821df	2026-05-28T16:28:19+08:00	fawney19	1	no	usage_observability	Harden usage server timing header passthrough
+aether	47886abd2b318809576d88aa7a636339a10fa906	2026-05-28T16:33:10+08:00	fawney19	1	no	stream_execution	Preserve streaming usage timing on refresh
+aether	10532e1a55221dcca9273761b51371faa68f2618	2026-05-28T16:48:02+08:00	fawney19	2	yes	other	Merge pull request #594 from AAEE86/main
+aether	d2d28c30d9ca6782ef7422dfbe8d5cf3965833f0	2026-05-28T16:53:00+08:00	RWDai	1	no	auth_security	Use bearer auth for OpenAI embedding passthrough
+aether	734717899b652558eb2bd73097c103c63cecb447	2026-05-28T16:42:49+08:00	Novick Yuan	1	no	routing_scheduler	Invalidate model routing cache after admin model writes
+aether	ef2a96bcc4cfcdedb5a163c5d51aa30d5d890e1d	2026-05-28T17:01:03+08:00	fawney19	1	no	routing_scheduler	Remove default hot pool size cap
+aether	ffd8d273c432875ed62e4cf4a284dd94c54d68cd	2026-05-28T17:10:27+08:00	fawney19	1	no	other	"Revert ""Merge remote-tracking branch 'origin/pr/592'"""
+aether	88f03aaef2e4c8edc8ffca680101f74f13f6e0dc	2026-05-28T17:18:42+08:00	fawney19	1	no	routing_scheduler	Keep key circuit breaker out of pool scoring
+aether	37b0c00701d1c513d98ac1891c25ad78741d1514	2026-05-28T17:19:04+08:00	fawney19	2	yes	other	Merge remote-tracking branch 'origin/main'
+aether	df518ad66817e52510bcc31c6ce46d55d8691802	2026-05-28T17:54:56+08:00	fawney19	1	no	usage_observability	fix contracts usage server time header
+aether	4b2d8cef3cd8a07b9f2b3fc66313ee59da681e9f	2026-05-28T18:45:16+08:00	Novick Yuan	1	no	usage_observability	fix(usage): calibrate active elapsed clock efficiently
+aether	cc1a63bf019611380fe9b800d853dd5923744d8c	2026-05-28T18:59:04+08:00	zhefox	1	no	routing_scheduler	fix: repair missing routing profiles snapshot
+aether	ef2953038e6f3aeb7085cfbd3a0d1fa334a13037	2026-05-28T20:24:48+08:00	fawney19	1	no	routing_scheduler	Fix usage records filtering and pool trace display
+aether	eaabfb83edb68f6322c2309d53ab9ae2a070dc62	2026-05-28T20:34:08+08:00	Entropy.Xu	1	no	stream_execution	fix(tunnel): bound upstream clients and heartbeat deltas
+aether	6d285410c296e04ad0286b0972a48a8c3917d0f8	2026-05-28T22:02:42+08:00	RWDai	1	no	usage_observability	Preserve dashboard daily breakdown rows
+aether	0ee45f41e13e4eb884c3dd85f1ad6b71056eb312	2026-05-28T22:43:20+08:00	AAEE86	1	no	usage_observability	feat(mobile): Refine mobile usage record layout
+aether	906742e3c4fa341f752a8f926b4263b26d73c3d4	2026-05-28T23:09:36+08:00	Entropy.Xu	1	no	billing_wallet	fix(billing): 复用待支付套餐订单
+aether	ab5d1f266f6763fa6ace44fc15c60227899061ac	2026-05-29T00:01:51+08:00	AAEE86	1	no	billing_wallet	fix(usage): Optimize the billing layout of the request details page for mobile devices
+aether	3ee272fd5345760b864d3bdcbe4435731fab4bda	2026-05-29T01:48:50+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	b59c7244559c86c7d8918b9a9b544f9ab3d80dab	2026-05-29T02:29:33+08:00	fawney19	1	no	other	Normalize endpoint API root handling
+aether	8bd82c8c95ffa335b7d295b0b8146a5b19c84682	2026-05-29T02:44:03+08:00	fawney19	1	no	other	Update endpoint base URL placeholders
+aether	3e4dfd2bac5749600a6417a5117010050a2472a1	2026-05-29T02:46:07+08:00	fawney19	2	yes	other	Merge branch 'pr-599'
+aether	fff4fe4e200c342baf9f0979f0f8c324756f04f8	2026-05-29T12:27:38+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	9fb600df1be8f19ac9483eedfea8261bbffabb4a	2026-05-29T12:30:56+08:00	fawney19	1	no	other	Fix PR 599 check regressions
+aether	bb5a4454a5469f85037a21e6ce25b428213b875a	2026-05-29T14:35:16+08:00	Entropy.Xu	1	no	other	feat(gateway): 添加标准文本非流式心跳
+aether	1658925f52f4a0bf6fabfff5a6539abfe98ec93a	2026-05-29T15:16:06+08:00	fawney19	1	no	routing_scheduler	Disable key circuit breaker for pool providers
+aether	91a5e58cec6b0c0152d86237b2d6a8bfbcc20915	2026-05-29T15:27:46+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	92ae88f1bea3b093b828f8e0ec43a315e1c167fa	2026-05-29T16:18:59+08:00	fawney19	1	no	runtime_performance	fix: avoid postgres migration version collision
+aether	b9612fef9be6bb05de979669ef8facd1d79113cf	2026-05-29T21:21:30+08:00	elky	1	no	delivery_operations	chore: bump aether-tunnel version to 0.3.14
+aether	0d76a8e478268cf39a9b14e8d9aea1079c1a1824	2026-05-29T13:32:35Z	github-actions[bot]	1	no	delivery_operations	chore(tunnel): update download links for tunnel-v0.3.14
+aether	7ed4b8465497782de2d511889374f66b1aea8824	2026-05-29T21:39:28+08:00	Entropy.Xu	1	no	other	feat(ccswitch): 添加一键导入和用量查询
+aether	3455faf7da075ba69f4d8ade009bdf80bbccd24b	2026-05-29T22:00:59+08:00	MMEXA	1	no	other	修复格式转换优先级保持的首轮候选排序
+aether	9616f458deb1ead6e564e84dd49f0c4226fe4b98	2026-05-30T00:42:14+08:00	Entropy.Xu	1	no	provider_protocol	fix(kiro): 模拟缓存读取移动断点前缀
+aether	f27485ec05c79ae1da73ebdbafcc9d814d02ce42	2026-05-30T02:59:04+08:00	Entropy.Xu	1	no	provider_protocol	fix(kiro): 忽略图片 base64 token 估算
+aether	ce1d532e3c65c8536f7d294383af68de79801746	2026-05-30T18:49:26+08:00	cym	1	no	routing_scheduler	fix(pool): align status filters with visible key state
+aether	ae96d5d61b6481dd92d375be43a3f155208c78a6	2026-05-30T19:47:00+08:00	elky	1	no	usage_observability	fix usage trace active key selection
+aether	b5a02a118f0346b24a814c4885c93f05bd9c9121	2026-05-30T21:25:39+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-595'
+aether	1db6b9d307c3d26b9da5219990b9a22f6e96a9db	2026-05-30T21:25:46+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-596'
+aether	463576915f32a98a617be61fb7b2725575801677	2026-05-30T21:25:52+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-602'
+aether	c3a8352d76439db3d66b9ec07bafa1b7f06c0f0d	2026-05-30T21:25:58+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-603'
+aether	02fc6bd4ef0531b725ffbfe9d258ffc1c678a777	2026-05-30T21:26:07+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-610'
+aether	c56f0198ff98cdaafc42a1f685522e3e60ff0a6a	2026-05-30T21:26:12+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-611'
+aether	1bdd3006066d5034c0b91e8b866497dd14355cbb	2026-05-30T21:26:18+08:00	elky	2	yes	frontend_product	Merge branch 'review-pr-612'
+aether	a20ac1d31ff6009592ce551ce65e1e051a24f833	2026-05-30T21:37:21+08:00	elky	1	no	routing_scheduler	fix(pool): align oauth status filter with visible state
+aether	5360665432859dafa2e53761f56e3d77823910e6	2026-05-30T22:48:19+08:00	elky	1	no	other	test(gateway): avoid stack overflow in cors proxy test
+aether	06f26cfacfde74731abd3bf9061cb8e38e1d5431	2026-05-31T00:09:42+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/597'
+aether	fde15c9b60c14c14ab9c58b21e37cfb357a110c1	2026-05-31T01:13:09+08:00	elky	1	no	other	Fix sync chat test stack overflow
+aether	49f952692b3e8ab2115630c7ff92578d6b388bdc	2026-05-31T02:12:22+08:00	elky	1	no	other	Fix remaining sync chat stack overflows
+aether	6bfd56b54fbdaabe5737969275c5eeddf3a03cab	2026-05-31T01:57:44+08:00	stabey	1	no	usage_observability	fix(usage): 避免上游流式错误误记为成功
+aether	8d1e54eba62d7757336cd92b46b4df6748650f5c	2026-05-31T01:57:50+08:00	stabey	1	no	stream_execution	fix(stream): 中途失败时不合成正常收尾
+aether	3dfafbc3797796ecc01c69b15a329a6271cb736c	2026-05-31T01:57:55+08:00	stabey	1	no	provider_protocol	fix(ai): 按 Responses 文本分片去重快照
+aether	eda94913cf72f2ee7327fc6b5131767efd2cbb35	2026-05-31T02:49:43+08:00	stabey	1	no	usage_observability	test(gateway): 修复 usage 同步测试栈溢出
+aether	1c05a722c19e16ce85bf8a3a91956f47e8ae3654	2026-05-31T03:09:11+08:00	stabey	1	no	usage_observability	test(gateway): 修复 usage local 同步测试栈溢出
+aether	ba4e194cb55fa0d1428b9dcf13529bd2a380d785	2026-05-31T03:21:29+08:00	stabey	1	no	usage_observability	test(gateway): 修复 usage base 记录测试栈溢出
+aether	de0a880ca655c1e7671afa9fae351cf31f4f4fad	2026-05-31T03:35:01+08:00	stabey	1	no	billing_wallet	test(gateway): 修复 usage wallet 测试栈溢出
+aether	f8b5651883e1a72a0981b978d4ad2c5a94be8468	2026-05-31T16:33:06+08:00	elky	1	no	delivery_operations	Support encoded tunnel node names
+aether	549463088cdf7b46508e06cb4b4128809484fbd6	2026-05-31T19:09:56+08:00	elky	1	no	delivery_operations	chore: bump aether-tunnel version to 0.3.15
+aether	40eb3cf6e1b49231d84b3b8bb1f8963bd9a94578	2026-05-31T11:17:51Z	github-actions[bot]	1	no	delivery_operations	chore(tunnel): update download links for tunnel-v0.3.15
+aether	2e24e5f358d1c6c18074a3e7be519ce8d1352ad3	2026-05-31T19:52:18+08:00	Entropy.Xu	1	no	provider_protocol	修复：扩大 Kiro 模拟缓存前缀读取范围
+aether	a3b8a997097e9fa025966774686d5ea29bfd8e10	2026-05-31T20:22:18+08:00	Entropy.Xu	1	no	provider_protocol	修复：补齐 Kiro 模拟缓存 TTL 和消息级断点
+aether	905453d62bb9b9c76b1fd278fad6aa31ec35d34f	2026-05-31T20:29:39+08:00	elky	1	no	usage_observability	revert: remove usage elapsed clock calibration
+aether	9734be31cfebd723b2174981b6dd434421f97b5c	2026-05-31T20:45:16+08:00	Entropy.Xu	1	no	provider_protocol	修复：收敛 Kiro 模拟缓存断点语义
+aether	392353ffff823b09634edc4dfef63af97a1015a6	2026-05-31T20:52:26+08:00	elky	2	yes	provider_protocol	Merge remote-tracking branch 'entropy-xu/codex/ccswitch-import'
+aether	c2bcfab7d436dcefb22cdc71297028b71ae1f828	2026-05-31T22:13:45+08:00	Entropy.Xu	1	no	provider_protocol	修复：Kiro 模拟缓存接入共享运行时
+aether	d1b64b67487b1200021b7b4ef2dbc186860f6e4f	2026-05-31T22:43:27+08:00	Entropy.Xu	1	no	provider_protocol	修复：完善 Kiro 模拟缓存共享回收
+aether	37413c0211cd1fe4c6185117abdfc7aa4cdd9c59	2026-06-01T01:36:49+08:00	elky	1	no	delivery_operations	Refactor tunnel stability protocol
+aether	0f4141ef3fb097797cc1fc1aa5547c8eadaf526e	2026-05-31T17:46:42Z	github-actions[bot]	1	no	delivery_operations	chore(tunnel): update download links for tunnel-v0.3.16
+aether	6c2a57f2379e1e085d666becb66a22281858aceb	2026-06-01T02:40:57+08:00	elky	1	no	delivery_operations	fix rust ci failures
+aether	7ffe33f867a6288c9d8bf5ae12e1a8bac90d5937	2026-06-01T18:34:51+08:00	AAEE86	1	no	usage_observability	feat(health): refine health monitor metrics
+aether	d3c831793901fbfa4426b6a73397ee73235d618c	2026-06-01T18:54:56+08:00	AAEE86	1	no	usage_observability	fix(health): align model health card layout
+aether	c1649fe837c0e59b17f7f1645710a40730da77e2	2026-06-01T20:49:38+08:00	AAEE86	1	no	usage_observability	refactor(health): consolidate monitor components
+aether	9d8f7d158ba38c09409a34750905768966bf8e5b	2026-06-01T21:13:10+08:00	AAEE86	1	no	usage_observability	Refine mobile usage record details
+aether	21c478be221612cca70ef5b107cabf5da6038976	2026-06-01T21:24:20+08:00	AAEE86	1	no	usage_observability	fix(health): hide empty endpoint monitors
+aether	8627a18f2e29daed1b364d4302f47414cc3f7a0c	2026-06-01T21:45:44+08:00	AAEE86	1	no	usage_observability	test(gateway): run local usage report test on large stack
+aether	2aef9d247825ad8131763868522b46ed0c9af8d3	2026-06-01T21:59:45+08:00	AAEE86	1	no	usage_observability	Refine mobile usage record metadata layout
+aether	b052f40ffb994588b95ce710db3aeb55137ec2c0	2026-06-01T22:23:54+08:00	AAEE86	1	no	usage_observability	test(gateway): run base usage body capture test on larger stack
+aether	0e6fc96eb1f9cd9b3e0589ca66f7bc21cb4f8f53	2026-06-01T22:40:22+08:00	AAEE86	1	no	billing_wallet	test(gateway): run wallet usage settlement test on larger stack
+aether	d5d3f098465b2b6e6caf0cd48dc826153d60c4ca	2026-06-02T00:10:59+08:00	AAEE86	1	no	usage_observability	refactor(health): add dashboard overview and related drill-down
+aether	98dc5925a510662cf6a88255249fd4eaa2230ae6	2026-06-02T00:35:19+08:00	zhefox	1	no	provider_protocol	fix(provider): preserve openai responses tool history in chat conversion
+aether	0daa8c196bf8b0e08969846c91e6b832a3a8f3f5	2026-06-02T09:04:55+08:00	zhefox	1	no	provider_protocol	fix(provider): preserve reasoning and Claude tool results in responses conversion
+aether	0a2c674ad8f0029cd6ab169f7b84af8ae3d02820	2026-06-02T09:43:12+08:00	elky	1	no	frontend_product	Ignore tunnel release tags for app build version
+aether	86f72da3d9bb46860f80b2014094113904af6ecb	2026-06-02T10:36:54+08:00	AAEE86	1	no	usage_observability	feat(health): 增加历史状态条指标 Tooltip
+aether	781bc5ac587bd6a99a341d45ad0e552493eb4611	2026-06-02T10:40:34+08:00	elky	2	yes	other	Merge branch 'pr-617'
+aether	03e436707d28cb2a039adb5eaa11dc8aca7490a3	2026-06-02T16:59:13+08:00	elky	1	no	usage_observability	Fix gateway usage nextest stack overflow
+aether	6cabcd85aac9223f2899bf60efc0dca630197934	2026-06-02T17:14:26+08:00	zhefox	1	no	provider_protocol	fix(provider): preserve Claude messages defaults in responses conversion
+aether	7835840ebdfea1cc497e434adbad305056e94742	2026-06-02T18:16:24+08:00	AAEE86	1	no	usage_observability	feat(dashboard): 增加全站实时指标和自动刷新
+aether	657e6aa672a94f96463d2e688867248fa2af5ded	2026-06-02T19:23:44+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/619'
+aether	4ec9ca61cfc50900afc796845b05947902b0131b	2026-06-02T19:27:50+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/613'
+aether	bce3bf2b6efee7f46443d3062d79fa8ee54dea4d	2026-06-02T21:40:59+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/593'
+aether	08ac9c5c58b228f1c1b4c5209f3b0c1d96560f3a	2026-06-02T22:10:41+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/614'
+aether	746af0d93ecde6c22c2182307e827e61c4cd11e7	2026-06-02T23:06:29+08:00	elky	1	no	runtime_performance	Fix Kiro cache usage reporting
+aether	eb983409247d8da33d8beeeb2411e4b9f462d0bf	2026-06-02T23:34:59+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/604'
+aether	21432911defba8c9ccf26d085fc6219ad68d7c38	2026-06-03T00:16:22+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/pr/605'
+aether	ef6a11c1463cd00a09a7415f61505a53715a3ec3	2026-06-03T00:25:01+08:00	elky	1	no	stream_execution	fix(gateway): preserve heartbeat no-path fallback
+aether	869c3d3037fb5cb6675a119638b50161393b2dd4	2026-06-03T00:48:36+08:00	elky	1	no	other	Fix finalize local test stack overflow
+aether	c7a5155ce4cdbf137f9bb8aa87da4ae0906b755b	2026-06-03T01:12:40+08:00	elky	1	no	other	Fix sync CLI test stack overflow
+aether	5ac153a0bb50286601d56bc64332bd64c9796aaa	2026-06-03T01:32:25+08:00	elky	1	no	other	Fix gateway nextest stack limit
+aether	5e39801bba119c4e9fe3be08d8bf14821f8d6cae	2026-06-03T10:52:26+08:00	zhefox	1	no	provider_protocol	fix(provider): clamp reasoning effort and filter chat extensions
+aether	7507af58295c451d2b1f0da8c5b7698ebb6eb793	2026-06-03T20:27:15+08:00	elky	1	no	provider_protocol	feat: audit strict format conversion contracts
+aether	b2f68bbaf70a7dc4283c5d9ed6bbfae7ddad3194	2026-06-03T21:18:49+08:00	elky	1	no	provider_protocol	feat: enforce full format field coverage audit
+aether	da5624c98ee3a3e5a8545383d21a399439bb93fe	2026-06-03T21:44:33+08:00	elky	1	no	provider_protocol	chore: add format field coverage generator
+aether	465476985bacedbeb9d168f7fca04412a83546aa	2026-06-03T22:29:24+08:00	elky	1	no	provider_protocol	fix: preserve provider schema drift safely
+aether	ada690624bbc383397ff994ba8d7d08bd773c6b0	2026-06-04T11:06:36+08:00	stabey	1	no	usage_observability	fix(usage): render responses call items in conversation view
+aether	2de2a792f6a2c63f9c86177db6cb4bb1d677446f	2026-06-04T12:01:36+08:00	stabey	1	no	stream_execution	fix(codex): strip cache_control before responses upstream
+aether	9f19ca575438f070ee9ff900981e76292d3eb35e	2026-06-04T13:20:47+08:00	stabey	1	no	stream_execution	fix(usage): keep streamed call args in responses completion
+aether	19d1d360436f78779bb2499189c6ee7fb52f0cb2	2026-06-04T13:59:42+08:00	fawney19	2	yes	other	Merge pull request #620 from zhefox/main
+aether	69b8b96fb89fb2232b1f5531981f0beef3f37d5f	2026-06-04T13:59:56+08:00	fawney19	2	yes	runtime_performance	Merge pull request #625 from stabey/pr/responses-call-items-cache-control-20260604
+aether	fd27f55fe524fb8dcd59f061f704b06d5eff8f73	2026-06-04T15:45:37+08:00	zhefox	1	no	stream_execution	fix(provider): normalize OpenAI Responses modern fields and stream events
+aether	ebd59246a884a5911aac0d724cf4be24aadc89d1	2026-06-04T17:35:10+08:00	zhefox	1	no	stream_execution	fix(test): assert responses timestamps and output text in finalize tests
+aether	85573d798032094107792ef73254c49f345923e8	2026-06-05T08:28:43+08:00	AAEE86	2	yes	stream_execution	Merge remote-tracking branch 'upstream/main'
+aether	7a19891c60f0cc9cddc9350ee3d0ff348847ab5f	2026-06-06T00:35:27+08:00	elky	1	no	frontend_product	fix: distinguish unaudited conversion fields
+aether	63a2fd4dcf2cce632108124fef2218a49d9fce8d	2026-06-06T03:11:38+08:00	elky	2	yes	other	Merge origin/main into dev
+aether	77759fac544d44503d33d185a39bceae83559205	2026-06-07T22:57:02+08:00	elky	1	no	other	feat: 新增提供商批量处理功能
+aether	bf4279a59046cb506d06bffca5fa8683e19ede16	2026-06-08T00:17:30+08:00	elky	2	yes	other	Merge remote-tracking branch 'origin/main' into dev
+aether	6155ffefcc45cb0e5389d578f9f063285de5df12	2026-06-08T00:52:48+08:00	elky	1	no	runtime_performance	fix(format): avoid false cache-control conversion blocks
+aether	82040bfc21f7e9e0f5affb4410761744bd117320	2026-06-08T13:22:08+08:00	zhefox	1	no	provider_protocol	fix(gateway): support OpenAI image edit requests
+aether	84f41dae77613b992282b12fc9cfe5c96122900d	2026-06-08T16:12:37+08:00	elky	1	no	provider_protocol	feat(format): audit same-format compatibility rewrites
+aether	04ba8cbe9ed00880d85d88f6b59cbc16547a63d2	2026-06-08T20:40:30+08:00	zhefox	1	no	provider_protocol	fix(gateway): support openai image accept negotiation
+aether	ba723ebe48cbf7177bd1df09e313ce59038dd6e3	2026-06-09T09:59:10+08:00	zhefox	1	no	usage_observability	fix(usage): always use truncated body placeholder when limit exceeded
+aether	4824e4a48776923049ae0cac85be3f8d30e85bf5	2026-06-09T16:40:45+08:00	AAEE86	1	no	frontend_product	fix(frontend): 移除账号导入重复处理中提示
+aether	84b99a641a0837126fbcad73f8d4cf78231983dd	2026-06-09T16:52:58+08:00	ndllz	1	no	usage_observability	fix: speed up usage activity heatmap render
+aether	5249660e075d1bf0a2316e20ea3529855d7580b1	2026-06-09T18:13:07+08:00	ndllz	1	no	auth_security	fix: respect oauth module disabled state
+aether	8edcbdcb293f95a2a5aafd8487e6ac612b7353c2	2026-06-10T09:16:15+08:00	elky	1	no	usage_observability	feat(usage): expose request timing details
+aether	ea76f7bb0b18ae9f29c1152807e8017b76f41612	2026-06-10T14:49:13+08:00	elky	1	no	stream_execution	Support OpenAI Responses builtin tool stream items
+aether	e9b4efc2d4bc7b428f1557fbbe1d1310fe862f54	2026-06-10T18:16:55+08:00	elky	1	no	delivery_operations	fix(ai-serving): preserve explicit request encoding
+aether	aa58cb4a05575cc79a3ea7ed5fd4526ed9785d21	2026-06-10T18:37:23+08:00	elky	1	no	frontend_product	build: speed up release image linking
+aether	ff7ec8575c3bb15e9b23b93395118fdac645301d	2026-06-10T18:44:46+08:00	elky	1	no	stream_execution	fix(ai-formats): ignore null stream errors
+aether	0246ba93ddd771e6d0f3aceb79482a7abbe9cc8c	2026-06-10T19:58:57+08:00	elky	1	no	other	fix(transport): preserve safe accept encoding
+aether	31fade82f6cd01a523024ec141e47500ae939e08	2026-06-10T20:02:03+08:00	elky	1	no	provider_protocol	Preserve OpenAI encrypted reasoning blocks
+aether	30b545785fc06a718486ebf81b9818c3009f26b4	2026-06-11T00:49:29+08:00	elky	1	no	stream_execution	feat: improve failover rules and request timeline
+aether	308cc88ef7f9e2826f9c7639fda5d42ee3b2137a	2026-06-12T16:25:11+08:00	elky	1	no	provider_protocol	Fix provider deletion cleanup
+aether	68038c182b21498e2da7a487d6080bed4a810659	2026-06-12T19:43:59+08:00	elky	1	no	auth_security	Distinguish expired OAuth token status
+aether	669636d3e42d98524ee0d1598df97de6e734e4d3	2026-06-14T20:36:57+08:00	elky	1	no	auth_security	Harden PII redaction format conversion
+aether	6d1b818414090409e40cd4ee54048e9b6fab49bf	2026-06-16T04:19:58+08:00	Kayphoon	1	no	routing_scheduler	fix(usage): align cleanup loop break conditions with candidate row count
+aether	c255f29e98c0d782132e31c52aa8457d408ba18c	2026-06-16T10:53:47+08:00	AAEE86	2	yes	stream_execution	Merge remote-tracking branch 'upstream/main'
+aether	302620cb940d12473984f33410610d70d700c84b	2026-06-16T12:17:28+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	c2748dc86816e9553381c983948131d90f1f3b31	2026-06-16T20:00:46+08:00	zhefox	1	no	provider_protocol	忽略 OpenAI Responses keepalive 事件
+aether	b1bd7279786ef41b73c14b714d8334b4bf0da477	2026-06-16T21:40:15+08:00	zhefox	1	no	other	将 JSON 提示注入为 developer 输入
+aether	803e5550225faa16ad74001ae3cfcb1851f40d3f	2026-06-16T22:31:52+08:00	fawney19	2	yes	other	Merge pull request #635 from zhefox/main
+aether	f9d97ececb423d9ff1f0f87644aded41488c03c9	2026-06-16T22:34:38+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): ignore OpenAI Responses metadata events
+aether	f52628e00b8bcaa006bf2ce603075ff4b87d4de7	2026-06-16T22:52:06+08:00	elky	1	no	stream_execution	Handle OpenAI Responses keepalive stream events
+aether	628a3a0d8d86f27200581ac46d92148c331fa546	2026-06-17T02:33:14+08:00	zhefox	1	no	stream_execution	fix(ai-formats): support cyber policy failover and custom tool/audio passthrough
+aether	6ab08f4014943a4fc3ebcd31d550c2d795aa3a5e	2026-06-17T03:45:23+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): preserve Claude raw blocks, reasoning tokens, and test stack safety
+aether	18d8ea2052415fea95d2fd90a58b719d6afabe7f	2026-06-17T04:03:40+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): preserve OpenAI tool call item ids
+aether	3a3fcbe46a4a47b49cae41891c071f5713fb2220	2026-06-17T04:05:09+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): preserve OpenAI tool call item ids
+aether	16a4fd368746106430d585eb6bab471dd7158b08	2026-06-17T04:07:53+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	0f92ef664d5f3839547f30362af2b0ffd19fc05b	2026-06-17T04:24:56+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): support OpenAI Responses custom tool/raw passthrough
+aether	8ad97761e8a96a40df3fe27556fbec8717a77022	2026-06-17T08:29:25+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): preserve OpenAI Responses tool call item ids
+aether	5b305c64e1a2b7fb0ebd917ea1ace924176264aa	2026-06-17T09:15:38+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): omit request tool call ids in OpenAI Responses input
+aether	34f0913ed0e5de24703c9d7ece4b2669e54ef4b7	2026-06-17T11:03:29+08:00	fawney19	2	yes	other	Merge pull request #645 from zhefox/main
+aether	6de0fe75a4a7d6c9f558aa76b24218b4e2b73c76	2026-06-17T11:04:55+08:00	fawney19	2	yes	usage_observability	Merge pull request #641 from Kayphoon/codex/usage-cleanup-break-condition
+aether	16584067d76badb2506249cca4e1aca6e129567d	2026-06-18T02:06:34+08:00	elky	1	no	routing_scheduler	Add route-backed routing profile views
+aether	6c4e730e605a7825a09e4049d37a48b9aec270d7	2026-06-03T21:45:37+08:00	MMEXA	1	no	auth_security	修复 Antigravity OAuth 配额复检缺 project
+aether	938f11981d1590198ccd2f7a86b5f0009513e7b9	2026-06-19T22:25:52+08:00	MMEXA	1	no	auth_security	fix(ai-serving): route Antigravity auth enum through facade
+aether	1123095bb79dda34db4e32763599177b66682926	2026-06-19T23:11:38+08:00	fawney19	2	yes	auth_security	Merge pull request #624 from MMEXA/codex/fix-antigravity-oauth-quota
+aether	f1c30439ff3f60ad828e1b7cad977788acdeb341	2026-06-20T22:08:33+08:00	elky	1	no	auth_security	fix: preserve provider auth metadata
+aether	6a224886986b15794879907ea10f4cd18510c8ec	2026-06-21T00:07:57+08:00	stabey	1	no	provider_protocol	fix(ai-formats): preserve Claude in-message system guidance in responses
+aether	bb6aa0348599b226ad13dc90baa3f02f464a0e05	2026-06-21T00:22:57+08:00	stabey	1	no	billing_wallet	fix(ai-formats): strip Claude billing headers from preserved guidance
+aether	8dbd7305680b28026c62c02461f309812c16f678	2026-06-21T02:27:06+08:00	elky	1	no	auth_security	fix: respect imported oauth authorization headers
+aether	cc2830f6ecece39589debddda332b18685714b90	2026-06-21T10:48:49+08:00	elky	2	yes	frontend_product	Merge branch 'review/pr-639'
+aether	279735ae7fb43ff7c6f353fbc0c0002a0f22a5bc	2026-06-21T11:15:40+08:00	elky	1	no	routing_scheduler	Auto-size SQL pool defaults
+aether	61bdd304b7a0081dd60bf9951b3d12d156a1f52f	2026-06-21T11:39:20+08:00	elky	1	no	auth_security	Handle inactive PAT owner as invalid OAuth token
+aether	900f8a71634a0d06205d499f577f4d8a154258c8	2026-06-21T12:20:08+08:00	elky	1	no	routing_scheduler	fix(pool): allow zero cooldown settings
+aether	eb2cf662b7459fc4ca514608813633ddd6fe900c	2026-06-21T12:47:26+08:00	fawney19	2	yes	provider_protocol	Merge pull request #650 from stabey/pr/claude-system-responses-20260620
+aether	363d1aba9a29cd8fa73564249d670443c41087d6	2026-06-21T12:48:13+08:00	fawney19	2	yes	other	Merge pull request #615 from AAEE86/main
+aether	541cc197c4922fdef78833514db862f7a0ab0464	2026-06-22T00:03:58+08:00	elky	1	no	stream_execution	fix: preserve in-memory user export fallback
+aether	f75894acbb7006c9eadc55292b2b5d6b9b4a21f3	2026-06-22T00:07:26+08:00	elky	1	no	runtime_performance	perf: reduce gateway db pressure under load
+aether	5b7805181b371912adc8c35beb0cbaa685faee90	2026-06-22T02:49:17+08:00	elky	1	no	routing_scheduler	perf: queue request candidate persistence
+aether	1836c2b652fad8c6ee53d009f55371f2d4caa54b	2026-06-23T10:03:55+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): accept Claude context_management in responses conversion
+aether	deb5f55786f63827d04a0650cb253680296dea3a	2026-06-23T10:30:13+08:00	zhefox	1	no	provider_protocol	fix(ai-formats): clean up cross-format safety rules for Gemini requests
+aether	4fcc17114f8faa53975bf33dca21be155518214c	2026-06-23T10:43:26+08:00	ZheFox	2	yes	other	Merge pull request #651 from zhefox/main
+aether	c54b21465789b427c44ac3bb3af7c6b8e1f7d552	2026-06-23T13:35:56+08:00	zhefox	1	no	delivery_operations	ci: shard gateway tests and disable debug info in rust ci
+aether	ba65c96c749dcfe6c2a91fd22fdaa20c468ee737	2026-06-23T13:36:00+08:00	zhefox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	3472bb75e75c900efec95414cbc6be55e670d1f2	2026-06-23T14:06:43+08:00	zhefox	1	no	delivery_operations	ci: combine gateway clippy and nextest jobs
+aether	fd220b6c42184b93a1fce79461f2ebbc24a56b5e	2026-06-23T14:38:39+08:00	zhefox	1	no	usage_observability	fix(usage): preserve token counts in body redaction
+aether	cf0af8fa1e7d807204966ba683b21b2af03bbb41	2026-06-23T14:40:59+08:00	ZheFox	2	yes	other	Merge pull request #652 from zhefox/main
+aether	d336d1a7fabf3e3b5e3b97adb3fa0b656a5b586b	2026-06-24T01:47:26+08:00	elky	1	no	routing_scheduler	Improve gateway scheduling and runtime admission
+aether	6f00e9fc67d71cefc861037c56e144bd78ad69f6	2026-06-25T22:36:27+08:00	elky	1	no	usage_observability	Improve gateway transport and usage runtime
+aether	c76d6b639609f6c2973786b8b3022674e661252e	2026-06-26T01:32:45+08:00	elky	1	no	usage_observability	Add admin operations dashboard and usage state fixes
+aether	063834e95b0ccdd577005aceaea63fc854013e99	2026-06-26T01:48:37+08:00	elky	1	no	usage_observability	Split admin operations dashboard route
+aether	6c5e70ccb16b7ef73758958ad728e53d4f6f6a06	2026-06-26T10:48:45+08:00	elky	1	no	usage_observability	fix monitoring error totals and counter health
+aether	7e9424008ffcd3bea6276183622d617e2fd37e95	2026-06-26T14:02:57+08:00	elky	1	no	runtime_performance	Add usage queue worker autoscaling
+aether	f6293b6812d3db25365caa9b8c59e77530f1f895	2026-06-29T00:30:41+08:00	zhefox	1	no	stream_execution	fix(usage): void cancelled usage and cancel dropped streams
+aether	bf29129a4bfac70527b6397af5984a14a0517b21	2026-06-29T01:14:11+08:00	ZheFox	2	yes	other	Merge pull request #654 from zhefox/main
+aether	9f138d09e648f1dbb8ee792a62b695c46b931899	2026-06-30T14:14:12+08:00	elky	1	no	frontend_product	refactor(frontend): modularize i18n architecture
+aether	d7411a31044a5740871820889b6f49686ab4296f	2026-06-30T14:38:13+08:00	elky	1	no	routing_scheduler	refactor(frontend): extract pool header and theme toggle
+aether	15b6606c82735af2a2b32e0f225eb9c280789be7	2026-06-30T14:46:30+08:00	elky	1	no	routing_scheduler	refactor(frontend): extract pool key display panels
+aether	ed83184d552187189e5f423d9ab257aa551f1ef1	2026-06-30T15:02:08+08:00	elky	1	no	provider_protocol	refactor(frontend): extract provider quota display components
+aether	e5351b7d9d4c845694e7bb079b6e50d338fca860	2026-06-30T15:18:14+08:00	elky	1	no	provider_protocol	refactor(frontend): extract provider key actions
+aether	974def5fef17d5f5c91cc1660f13ab1b492414ed	2026-06-30T15:37:46+08:00	elky	1	no	provider_protocol	refactor(frontend): extract provider key identity block
+aether	f179ee72f9af45536c7ece76ebbf53e03b66680f	2026-06-30T16:54:58+08:00	elky	1	no	runtime_performance	chore: update gateway pressure observability
+aether	778b106023569157778d0258247b6f1d30587603	2026-06-30T18:42:57+08:00	elky	1	no	other	test: stabilize gateway nextest timing
+aether	6ed2f9bd0af2a6a3c9a428bc198ca7d5c2f3f4b4	2026-07-01T01:12:40+08:00	Entropy.Xu	1	no	billing_wallet	fix: apply actual billing cost to wallet settlement
+aether	7c32be46ca53cc0a8bbfb5623916f0dc5856a6e9	2026-07-01T02:15:51+08:00	elky	1	no	usage_observability	Mark sync usage active earlier
+aether	a0f7074e599d9e9b196d052ea438a9670ff3509f	2026-07-01T14:15:16+08:00	elky	1	no	runtime_performance	chore: disable Redis persistence by default, document triage and policy
+aether	2e5ff32e1a158dd35a38798d861724482b4f2e23	2026-07-01T20:42:52+08:00	elky	1	no	runtime_performance	perf(frontend): 收敛导航预取并去重首屏请求
+aether	400b3125a4b4e69a244e71f481e08e7c84c222f6	2026-07-02T01:40:57+08:00	elky	1	no	stream_execution	Preserve terminal request candidate state
+aether	ac93851b2ae7d8415b537e718f8eebba8143a5c4	2026-07-02T14:02:26+08:00	elky	1	no	other	Stabilize Gateway h2c transport test
+aether	2f1cdb6a0bce25d8bd9d402887d917f59dd50dc0	2026-07-02T16:08:04+08:00	elky	1	no	usage_observability	Record exhausted usage failures synchronously
+aether	1ac16005f95f8b920363b32e6e896e6341421f9e	2026-07-02T17:28:25+08:00	elky	1	no	runtime_performance	Stabilize usage worker autoscale tests
+aether	1dcee770554d4a673679b1a16683a8f5824c5aed	2026-07-03T11:26:40+08:00	ZheFox	1	no	frontend_product	refactor(frontend): improve dialog and mobile overflow handling
+aether	26d85681f07da071bfb1e17efef27f23bd57e779	2026-07-03T12:25:53+08:00	ZheFox	1	no	frontend_product	refactor(frontend): improve mobile overflow and proxy node table
+aether	1b0440481b557ba5c2345b13877c7e9d4c702f7b	2026-07-03T12:49:15+08:00	ZheFox	2	yes	other	Merge pull request #658 from zhefox/main
+aether	e72e25c59cc526dcfd94545686b1d3b5f2aa7de4	2026-07-03T12:53:22+08:00	ZheFox	1	no	frontend_product	refactor(frontend): improve mobile overflow handling
+aether	42f7907740d556e9cfbf22e3c702df3df9f12a04	2026-07-03T12:54:01+08:00	ZheFox	2	yes	other	Merge pull request #659 from zhefox/main
+aether	a151f37d63dae3033f3a990848201010e87e6653	2026-07-03T13:17:18+08:00	ZheFox	1	no	frontend_product	refactor(frontend): unify mobile menu background styles
+aether	b86d4e1f0ce96a7e8ab403f371a0bdd9e6c469de	2026-07-03T13:17:59+08:00	ZheFox	2	yes	other	Merge pull request #660 from zhefox/main
+aether	242081433e58bfe4b6519a75bdc201d0ae6384a1	2026-07-04T05:24:40+08:00	MMEXA	1	no	other	修复前端调试与基础交互问题
+aether	ef77ec04ca368e476a56d8551671cd9351c882a7	2026-07-04T06:10:53+08:00	MMEXA	1	no	provider_protocol	增加 Codex 重置次数功能
+aether	99b6fe468fbdf0c66e3e641969b5951ae22a84a2	2026-07-04T15:16:38+08:00	MMEXA	1	no	provider_protocol	简化 Codex 重置机会展示标签
+aether	b03aae18c38bbbb2d508bf4a05175b3dc94b19a0	2026-07-04T15:47:01+08:00	MMEXA	1	no	provider_protocol	修复 Codex 重置次数 CI 检查
+aether	b23d2995336e35d14b521a2d66703cb228d04a0c	2026-07-05T01:37:31+08:00	MMEXA	1	no	provider_protocol	重跑 Codex 重置次数 CI
+aether	c3136126e543b7abb8d4bd75e3708baa4fb8ec6b	2026-07-06T06:15:31+08:00	MMEXA	1	no	other	修复钱包余额变更后的鉴权缓存延迟
+aether	a61374c5957b3a6989f16bbb2c8de83dadf072d9	2026-07-07T01:57:41+08:00	fawney19	2	yes	provider_protocol	Merge pull request #661 from MMEXA/codex/frontend-debug-20260704
+aether	a931da076405df79b8341ddddce0dc6bd99d5b75	2026-07-07T01:58:44+08:00	fawney19	2	yes	provider_protocol	Merge pull request #662 from MMEXA/codex/reset-credit-20260704
+aether	1ca83ca3fb705ffc0f2c86752f99c1e9f416a9bd	2026-07-07T01:59:44+08:00	fawney19	2	yes	runtime_performance	Merge pull request #664 from MMEXA/codex/wallet-auth-cache-delay-20260706
+aether	80a6579766de4a2d09ce3e98d62b6e997622e54e	2026-07-05T01:28:57+08:00	MMEXA	1	no	provider_protocol	支持 Gemini Interactions 与 Antigravity 配额精细化
+aether	accd250226290ea91050c4eb5789c53535dc1507	2026-07-05T06:24:56+08:00	MMEXA	1	no	provider_protocol	修正 Antigravity 配额模型标签
+aether	9ec48ab6b928ac1051643f237ec5caff06a4cef3	2026-07-05T06:34:06+08:00	MMEXA	1	no	provider_protocol	优化 Antigravity 配额展示顺序
+aether	c17c78ad4b26318226a2fcf12f911204f7fc69a5	2026-07-05T17:29:43+08:00	MMEXA	1	no	provider_protocol	修正 Antigravity Gemini 3.5 Flash 档位展示
+aether	b1ed6b24b0c8e75737905541a81b67bc6d801cd0	2026-07-05T18:16:59+08:00	MMEXA	1	no	delivery_operations	触发 CI 复跑
+aether	f9c8ec41f4a7e2947b5b728060e8f20f99bf9dae	2026-07-05T23:57:40+08:00	MMEXA	1	no	provider_protocol	完善 Antigravity 与 Gemini 跨格式兼容
+aether	5c68ab896a59de38b31399eaecf1526104398809	2026-07-06T00:34:50+08:00	MMEXA	1	no	other	恢复历史 backfill 兼容 live 账本
+aether	2122660a5c4a1b8f3c77353089175c24c7f01fe7	2026-07-06T03:43:42+08:00	MMEXA	1	no	provider_protocol	对齐原生 Antigravity 控制面与显示模型
+aether	4866509938b0e2d9bff06fd5730e70c27f42b453	2026-07-06T04:18:37+08:00	MMEXA	1	no	provider_protocol	移除 Antigravity 未知重置时间噪音
+aether	c7186e1720bf4fc17a6e819604f865462e3254c8	2026-07-06T05:21:20+08:00	MMEXA	1	no	provider_protocol	完善 Antigravity 配额展示与 CI 断言
+aether	5eddf4f9eefe4eeec096da0e88c6f2cb87971399	2026-07-08T22:33:22+08:00	MMEXA	1	no	provider_protocol	细化 Antigravity 测试模型项目元数据补全
+aether	b8b89d21b7b98279c3a795bfd1436f971b6d4d11	2026-07-08T23:49:18+08:00	MMEXA	1	no	other	fix: 同步提交本地 sync 错误上报
+aether	5e1d14f19b954ee3fee391fc385452ace73a0c34	2026-07-09T10:21:49+08:00	elky	1	no	usage_observability	Fix timeline duration display from latency
+aether	192dc6c20d44ee05807ba7476fa3e7d5dcf869c9	2026-07-09T14:34:09+08:00	yangrs	1	no	provider_protocol	Fix provider key response time overflow
+aether	e50db10439111294ad264094e083f90606b01e78	2026-07-09T14:55:51+08:00	fawney19	2	yes	provider_protocol	Merge pull request #663 from MMEXA/codex/gemini-interactions-antigravity-20260705
+aether	f31c9e03e2f4577d13ec963850808c4503e59e6c	2026-07-09T15:11:44+08:00	Start	2	yes	other	Merge branch 'fawney19:main' into main
+aether	ee0ec18283c8b355e8b025aaf466a69a38bd5b5d	2026-07-09T15:58:19+08:00	MMEXA	1	no	provider_protocol	修复 Antigravity v1internal 查询参数透传
+aether	55cdab592ce1030917eac27665f50bb2d7b659db	2026-07-09T16:25:15+08:00	yangrs	1	no	other	Remove redundant response time conversion
+aether	14cf639aba6baf81b50006b59af7119fb4afdc3d	2026-07-09T17:50:38+08:00	fawney19	2	yes	provider_protocol	Merge pull request #667 from MMEXA/codex/antigravity-v1internal-query-20260709
+aether	7bc7d0f8d85eb1dbb1d34cefb00def2e99263157	2026-07-09T18:04:11+08:00	fawney19	2	yes	other	Merge pull request #666 from xixiknow/main
+aether	d2ea437c1c17c612c84e4a56a1f035e19aea0d8b	2026-07-09T23:10:25+08:00	MMEXA	1	no	provider_protocol	修复 Gemini 空输出按候选重试处理
+aether	f07eb25cfcbcedd8d3b94fceb28e26095ce36241	2026-07-10T00:23:31+08:00	MMEXA	1	no	usage_observability	修复 usage 详情 body 引用解包
+aether	b6b2ca38f4bc3792d8dbfd3097cdb3a7808444f6	2026-07-10T00:41:22+08:00	MMEXA	1	no	delivery_operations	触发 CI 重跑
+aether	736fc7634596dfb978f9e9347ee2da319e6f04e3	2026-07-10T09:16:56+08:00	fawney19	2	yes	stream_execution	Merge pull request #668 from MMEXA/codex/antigravity-empty-output-retry-20260709
+aether	4bf5d4c044e6b7ac5014ee5283984eb57424d570	2026-07-10T10:39:13+08:00	elky	1	no	runtime_performance	Fix cache token accounting and tiered pricing
+aether	6e0dc3b59eb51e4967fa608716afaf3668c615ac	2026-07-10T12:18:42+08:00	elky	1	no	billing_wallet	feat(frontend): refine global model pricing dialog
+aether	bc1da3bf3f0ea940d07f263ac047495fd60183cf	2026-07-10T15:11:49+08:00	elky	1	no	auth_security	feat(security): harden client IP and admin controls
+aether	dfa121dd5b495a69bbe5a8dda53e206524cf302d	2026-07-11T03:42:30+08:00	MMEXA	1	no	provider_protocol	feat(openai): align GPT-5.6 and Codex request contracts
+aether	46a903aada68b64121717f0c03daf69eb1d7001e	2026-07-11T09:15:08+08:00	MMEXA	1	no	provider_protocol	fix(codex): align current reasoning request semantics
+aether	01a96fed74a7112493cb3041fa4b36ab51f363ab	2026-07-11T09:20:07+08:00	MMEXA	1	no	provider_protocol	fix(codex): simplify summary normalization
+aether	b2f596b8f0244f5f2ad95805a688da78ce9ebcd4	2026-07-11T09:43:12+08:00	MMEXA	1	no	provider_protocol	fix(gateway): route Codex header through serving facade
+aether	0b30cc6b0f16e684fe3c1fe37cc6b52bb62df0fa	2026-07-11T12:27:05+08:00	MMEXA	1	no	billing_wallet	feat(openai): unify tier authorization and settlement
+aether	8f1070a45109efbed2181f9b5735e9ad10856ed0	2026-07-11T12:27:09+08:00	MMEXA	1	no	billing_wallet	feat(frontend): expose processing tier pricing
+aether	14c4e3a04e056112df7c540aebea405ba44f3c13	2026-07-11T18:09:14+08:00	MMEXA	1	no	provider_protocol	fix(codex): enforce provider request identity
+aether	3014fd50c6bad57675d43d083e532b31aa4fa412	2026-07-11T18:09:25+08:00	MMEXA	1	no	runtime_performance	fix(billing): preserve effective cache and tier facts
+aether	59d37ae1dd73b38155973c5b3980b5e103d87344	2026-07-11T18:09:31+08:00	MMEXA	1	no	billing_wallet	fix(frontend): import structured models.dev pricing
+aether	2316df5c9a03dabcc83dea0ac98c97a071b15335	2026-07-12T03:04:15+08:00	MMEXA	1	no	provider_protocol	feat(codex): align Search and execution protocol
+aether	8d4d42a88772f10f82232dca601c76ef6475c1ca	2026-07-12T03:35:42+08:00	MMEXA	1	no	auth_security	fix(auth): resolve group policy before key intersection
+aether	63936aa11007ce191b1296849d7ad1fb013bde0b	2026-07-12T03:56:53+08:00	MMEXA	1	no	provider_protocol	fix(gateway): route format rules through serving facade
+aether	02495ce28efcec83bb01965759903a9024ce987e	2026-07-12T04:19:06+08:00	MMEXA	1	no	other	fix(admin): preserve inactive endpoint key counts
+aether	063d517306713fe0d098fc95f958d461f34c1281	2026-07-12T04:43:13+08:00	MMEXA	1	no	stream_execution	test(gateway): compare timeout response numerically
+aether	72222d935c4209784371cb3a88a906f102bcf340	2026-07-12T05:45:32+08:00	MMEXA	1	no	delivery_operations	test(gateway): use valid tunnel relay envelopes
+aether	25c49dd804a377c7361d4e839a7ed3260d482151	2026-07-12T05:45:37+08:00	MMEXA	1	no	stream_execution	fix(data): keep terminal usage state monotonic
+aether	7f61bb43c7c998280548fe71dd2482099285c140	2026-07-12T14:10:54+08:00	elky	1	no	auth_security	feat(security): harden gateway request and runtime controls
+aether	f127b67e731571d4e8c7574be3ef0451582daa62	2026-07-12T20:34:31+08:00	MMEXA	1	no	provider_protocol	fix(openai): encode tool errors in Responses output
+aether	cf0d957ac7495f266457492a3a0cb29c58d2d436	2026-07-12T20:34:39+08:00	MMEXA	2	yes	other	Merge f127b67e731571d4e8c7574be3ef0451582daa62 into 7f61bb43c7c998280548fe71dd2482099285c140
+aether	b1be370b2e9a34a38b5d0f41b6ca8b0c79fdf1b7	2026-07-12T21:08:30+08:00	MMEXA	1	no	routing_scheduler	fix(gateway): scope concurrency test helper to tests
+aether	e58621a735df5901eadf6916f779f542c2d8cb73	2026-07-12T21:50:20+08:00	elky	2	yes	provider_protocol	Merge PR #669: align GPT-5.6 and Codex request protocols
+aether	a728c090a9c0ba9d784348c5ddea3e1f7ffb361c	2026-07-12T22:36:48+08:00	elky	1	no	routing_scheduler	fix(gateway): scope concurrency helper to tests
+aether	fc2dfb82d2aad9bf5454ad16c22ddb16d2614087	2026-07-12T23:04:33+08:00	MMEXA	1	no	provider_protocol	fix(codex): preserve reset consume request body
+aether	e8afa03e454b59890a166e45e5eaf2a8ed02b5cc	2026-07-13T06:07:54+08:00	MMEXA	1	no	auth_security	fix(auth): 授权 Responses Compact 伴随端点
+aether	2fc604e047a63103232e0066780f24556c0bb36f	2026-07-13T21:43:18+08:00	MMEXA	1	no	provider_protocol	feat(codex): 按操作语义路由 Responses V2 压缩
+aether	b09d1f1c336cb4902b1e9437d448b75fc6fbddc0	2026-07-12T23:05:00+08:00	MMEXA	1	no	usage_observability	fix(usage): expose pending reasoning and exact reset expiry
+aether	3f86fdd6bc41333dcd872060e50345b8e5e805f4	2026-07-13T21:45:53+08:00	MMEXA	1	no	usage_observability	feat(usage): 展示压缩操作与进行态请求语义
+aether	cfc4894dab500c78c19111ed932cd001770f025a	2026-07-14T00:30:24+08:00	MMEXA	1	no	usage_observability	fix(usage): 保留最新进行态生命周期事件
+aether	f10d631a9c57e643d1cab85ae273b595a52e4b7f	2026-07-14T00:30:39+08:00	MMEXA	1	no	frontend_product	feat(frontend): 澄清模型映射适用范围
+aether	93e2f95c47942986a52ae56447eb3292fc9eb710	2026-07-14T02:05:10+08:00	MMEXA	1	no	frontend_product	fix(frontend): 按端点能力约束会话压缩映射
+aether	a25fab371a446e7c8461c8571d94ee0a6b23c80c	2026-07-14T04:57:05+08:00	MMEXA	1	no	routing_scheduler	feat(pool): add bulk key configuration management
+aether	0acd1de29c530e0ad1401560ef3dd37fc54646ca	2026-07-14T05:19:04+08:00	MMEXA	1	no	other	fix(gateway): 保持密钥更新模块显式所有权
+aether	01e104d86a89552fc45855edc829a5929dc5533e	2026-07-14T08:07:28+08:00	MMEXA	1	no	routing_scheduler	fix(pool): 对齐账号批量配置语义
+aether	9b8724453b21bc7a162ae10ead87e6d3116f822c	2026-07-14T08:39:41+08:00	MMEXA	1	no	routing_scheduler	test(pool): 使用正式 Gemini API 格式
+aether	8616fe6ee2dad6b2e19364f5e8e329ee37125d39	2026-07-15T23:47:19+08:00	elky	1	no	other	refactor(workspace): enforce layered crate boundaries
+aether	25da99fac2be75c94a209dd45a3b278c7efc3d65	2026-07-16T00:27:28+08:00	MMEXA	1	no	provider_protocol	fix(codex): preserve reset consume request body
+aether	ff7988430d9865a954da07b13f8c1b6e7f743e6f	2026-07-16T00:31:23+08:00	MMEXA	1	no	provider_protocol	fix(openai): encode tool errors in Responses output
+aether	598b2fb3743120f7bfd69881db0548f9e3438e09	2026-07-16T00:32:14+08:00	MMEXA	1	no	auth_security	fix(auth): 授权 Responses Compact 伴随端点
+aether	20b27a13b247116acc209e0b601f083c1659ca0d	2026-07-13T21:43:18+08:00	MMEXA	1	no	provider_protocol	feat(codex): 按操作语义路由 Responses V2 压缩
+aether	b50242ab9f9c90f2a40d687bb573a25c73ac156f	2026-07-16T01:29:51+08:00	elky	1	no	other	fix(test): handle absent empty testkit bin directory
+aether	85854e4476dd5b3c752696ffe05da1445973cdbc	2026-07-16T08:54:29+08:00	fawney19	2	yes	other	Merge pull request #675 from fawney19/fix/pr-669-tail
+aether	7b56546e2133b95fb9f1f7a9a52b1655b0f27926	2026-07-16T10:24:32+08:00	MMEXA	1	no	other	fix(finalize): 聚合同步流捕获包装
+aether	3976652942171f8ff52ac981cf8ffd3da9b3d7c6	2026-07-16T11:25:11+08:00	ZheFox	1	no	provider_protocol	fix(codex): 移除 Responses Lite 请求中的 context_management
+aether	71fcb9c16817eb1b3a24bfd7fd552fca704322bd	2026-07-16T12:02:33+08:00	ZheFox	1	no	provider_protocol	fix(codex): 服务端压缩使用标准 Responses 合约
+aether	c6d373e6aa8fcc43bfd6662244172961ffe95893	2026-07-16T12:28:34+08:00	ZheFox	2	yes	other	Merge pull request #677 from zhefox/main
+aether	7851503fbc7bb62014321d2e8ea4b00b0ab3a0ba	2026-07-16T12:49:39+08:00	MMEXA	1	no	provider_protocol	fix(finalize): 严格聚合并投影同步 Responses 流
+aether	9a472675457287becf8500cddf5cbc19e8aad896	2026-07-16T13:11:38+08:00	elky	1	no	stream_execution	fix(usage): bound terminal event persistence
+aether	d6215d9dec46e429e7d4225de4c0e0c53521afd8	2026-07-16T13:12:10+08:00	elky	1	no	delivery_operations	ci(tunnel): reduce artifact retention
+aether	cd8de1aa1313234052795103bbcc1339e702521f	2026-07-16T14:27:44+08:00	AAEE86	1	no	provider_protocol	"fix: map Developer role to ""system"" in OpenAI Chat Completions output"
+aether	1333efdad5137ee42ac4ab7154927a0923db1345	2026-07-16T15:21:11+08:00	ZheFox	1	no	frontend_product	fix(frontend): 优化移动端弹窗并完善提供商配额刷新
+aether	7dc919e8e3cc88ac41f676f776ba0b6b169e2895	2026-07-16T15:48:49+08:00	ZheFox	2	yes	other	Merge pull request #679 from zhefox/main
+aether	e369e4aab14d563694a5276d6d82a002ed92efc0	2026-07-16T16:27:11+08:00	elky	1	no	provider_protocol	fix(formats): preserve chat-backed Responses metadata
+aether	8fe4d2440870d5d743f16a2653ae1c89310bda83	2026-07-16T16:28:57+08:00	elky	1	no	runtime_performance	fix(usage): canonicalize cached token totals
+aether	c32d043afb9dd8e223e7b554d38713e5535593e1	2026-07-16T16:30:51+08:00	elky	1	no	billing_wallet	fix(frontend): preserve fetched model preset pricing
+aether	9ea84f97483ab3318ebfbc8051590838b9f74144	2026-07-16T16:33:19+08:00	elky	1	no	frontend_product	fix(frontend): show service tier transitions
+aether	6b707f29a2b8387e33bb4d9a12b0b8416b83a9a7	2026-07-16T08:06:47Z	Kayphoon	1	no	delivery_operations	feat(admin): configure S3 backup User-Agent
+aether	5cf38d1b355faabe25abf779945e9f1593a4e678	2026-07-16T17:23:41+08:00	ZheFox	1	no	provider_protocol	Codex 重置功能和显示修复
+aether	715a5ed626fa2460966c95c4b4b9a84410f2ccb4	2026-07-16T18:09:10+08:00	ZheFox	1	no	other	修复重置次数缓存问题
+aether	f009fb73c3a9fc067b5ff9263c1c20baa7dca292	2026-07-16T18:55:28+08:00	ZheFox	1	no	other	缓存问题修复
+aether	0099167a6d8fd45eb7ed4f82b176fb51553dc65e	2026-07-16T19:13:09+08:00	ZheFox	1	no	provider_protocol	fix(codex): 避免重置机会缺失触发配额刷新
+aether	6664c2dbb8da28fee2ae5cbbcb1b6b6d85f15507	2026-07-16T19:31:07+08:00	ZheFox	1	no	routing_scheduler	feat(pool): 支持批量导入 Key 和选择性更新设置
+aether	3f5f65eb9a106d89808187ab01e050e30ad92f35	2026-07-16T19:48:33+08:00	ZheFox	2	yes	other	Merge pull request #681 from zhefox/main
+aether	470cef17cf793a78be14d60bd80681b8ecde8f58	2026-07-16T23:29:38+08:00	fawney19	2	yes	provider_protocol	Merge pull request #676 from MMEXA/codex/sync-capture-envelope-finalize-20260716
+aether	33f49ea9b0e2d5ef302310f0697cad6fdca3fae8	2026-07-16T23:29:55+08:00	fawney19	2	yes	other	Merge pull request #678 from AAEE86/fix
+aether	312583f05564bb633aef72715a009e045ad6fd34	2026-07-16T23:30:30+08:00	fawney19	2	yes	provider_protocol	Merge pull request #680 from Kayphoon/codex/s3-backup-user-agent
+aether	0be380243b779a36b47ef7b80141cb50a2721600	2026-07-16T23:26:47+08:00	elky	1	no	billing_wallet	feat(pricing): support processing tier multipliers
+aether	427030c5def94ad8885e3d99b7bf41f421de3697	2026-07-16T23:41:58+08:00	MMEXA	2	yes	usage_observability	Merge remote-tracking branch 'origin/main' into codex/usage-pending-reasoning-reset-expiry-20260712
+aether	ec1783a35c81c11161a6ebd16929f539b2e4a9c6	2026-07-16T23:43:04+08:00	MMEXA	2	yes	routing_scheduler	Merge remote-tracking branch 'origin/main' into codex/pool-key-bulk-management-20260714
+aether	3c348dff3ad52b1421d4b732abcc681c186d469e	2026-07-17T00:16:58+08:00	MMEXA	2	yes	usage_observability	Merge remote-tracking branch 'origin/main' into codex/usage-pending-reasoning-reset-expiry-20260712
+aether	3b0d87b0fd147eb42d53be2ac12a137440e42b6b	2026-07-17T00:17:02+08:00	MMEXA	2	yes	routing_scheduler	Merge remote-tracking branch 'origin/main' into codex/pool-key-bulk-management-20260714
+aether	d9796d502b1f93752dd192e8e1534b06e16c1881	2026-07-17T06:13:09+08:00	MMEXA	1	no	provider_protocol	fix(codex): 统一通用缓存键与原生会话身份
+aether	5b332da7d78ab2b6f936187a50644c01cc89faac	2026-07-17T08:11:16+08:00	MMEXA	1	no	provider_protocol	fix(codex): 补齐缓存身份终态请求头
+aether	75795c6fbc0337492c43f7848ecb568f54a90004	2026-07-17T08:49:35+08:00	MMEXA	1	no	provider_protocol	test(codex): 对齐 Compact 确定性缓存身份
+aether	664c063a062726bb9e833e74cb29859f941fc43b	2026-07-17T19:20:16+08:00	elky	1	no	usage_observability	feat(usage): enrich audit metadata and detail views
+aether	f65ed2795ca92d8e18420022fff9ea23b6867b25	2026-07-17T20:18:04+08:00	elky	1	no	provider_protocol	fix(codex): support dynamic quota windows
+aether	373ebf26d65e54383d47a715f016038ad5803253	2026-07-17T21:33:21+08:00	elky	1	no	billing_wallet	fix(pricing): default zero tier ratios to one
+aether	5dda34c66ec4f136ecb2789c2f9ab5d55b5ea785	2026-07-17T22:36:55+08:00	elky	1	no	usage_observability	style(usage): give fast tier an amber accent
+aether	ed27d404ac77d66bd7920c4c0c6b8ceb00f4ade6	2026-07-17T22:52:47+08:00	elky	1	no	usage_observability	style(usage): make fast badge background transparent
+aether	88a057b8d92804966c2426ef85f1fe3f001180a0	2026-07-17T22:56:54+08:00	elky	1	no	usage_observability	fix(usage): force fast badge background transparent
+aether	e558f55cd937dd6128a330cc46e7341727d3fc2e	2026-07-18T00:05:22+08:00	elky	1	no	frontend_product	style(frontend): refine badges and cycle stats
+aether	a6c6f14b09797bbc8a4086f95b6f6abe7475d582	2026-07-18T00:13:35+08:00	elky	1	no	routing_scheduler	style(frontend): align pool cycle stats values
+aether	6c33b8d8fb55ee2a707d1306bef49cc910b924b3	2026-07-18T00:33:20+08:00	fawney19	2	yes	runtime_performance	Merge pull request #682 from MMEXA/codex/codex-prompt-cache-identity-20260717
+aether	0355c28683c14c5efbb7389c866696df3a26932e	2026-07-18T02:40:34+08:00	MMEXA	1	no	auth_security	fix(data): 解耦候选记录的 API Key 历史身份
+aether	405ca3e66ab5287f070af713627f3700ca9844a1	2026-07-18T03:26:53+08:00	MMEXA	1	no	delivery_operations	fix(ci): 恢复非流式错误体边界并适配新版 Clippy
+aether	4d9a648202ef04248308560413b71c1b3bc4b949	2026-07-18T03:37:31+08:00	MMEXA	1	no	other	test(gateway): 统一流错误测试的格式层入口
+aether	98fbf029fc36a2d8a2733ea48e9a737540183229	2026-07-18T04:42:45+08:00	MMEXA	1	no	auth_security	fix(data): 解耦 API Key 历史统计身份
+aether	e31df5989a61e6de377e41bccd3e4dc6016f8c79	2026-07-18T05:38:38+08:00	MMEXA	2	yes	usage_observability	merge(main): 解决 usage 展示与生命周期同步冲突
+aether	f9c343eb07472ca7928376d1bb4aa19c65c0d178	2026-07-18T05:55:06+08:00	MMEXA	1	no	other	fix(gateway): 适配 Rust 1.95 整除检查
+aether	ac3796af84526b8aa12846f513dcab946a801961	2026-07-18T06:31:40+08:00	MMEXA	1	no	other	fix(gateway): 恢复响应边界并统一格式入口
+aether	e3d97b573b06274b47abf3ed383fa4475722bc6f	2026-07-18T16:55:42+08:00	elky	1	no	billing_wallet	fix(usage): align fast-tier pricing and model metadata
+aether	0c3f51bcecf45d8975605e87d5793b88f483b154	2026-07-18T19:26:14+08:00	MMEXA	2	yes	usage_observability	merge(main): 解决 usage 模型展示契约冲突
+aether	03b7d573e0f99d1b82ee489b1fd5dad17dcb3a20	2026-07-18T21:20:35+08:00	elky	2	yes	auth_security	Merge PR #683: decouple API key historical identity
+aether	8fbda84acb1acc57c372725c52b668b17679bb01	2026-07-18T21:58:21+08:00	elky	1	no	auth_security	fix(data): preserve API key history end to end
+aether	95053f9502e394a6ba6bbda92131a07bef9b9b62	2026-07-18T22:06:32+08:00	elky	2	yes	other	Merge PR #672: 支持账号批量配置与可用模型管理
+aether	644ae9c1bf079fb31e178c4843b5553b0b941fcc	2026-07-19T16:09:20+08:00	elky	1	no	routing_scheduler	feat(pool): add table-driven account batch actions
+aether	ce226a30109a861f0339361e52b6eaff9a53f918	2026-07-19T16:12:37+08:00	MMEXA	2	yes	other	Merge 0c3f51bcecf45d8975605e87d5793b88f483b154 into 644ae9c1bf079fb31e178c4843b5553b0b941fcc
+aether	d562c594c31fd1ae2665df6ede13b2b80927480f	2026-07-19T16:42:32+08:00	elky	1	no	frontend_product	fix(frontend): preserve compact scope and detail badge
+aether	5d575f15909a716030490528b3f352f934f1948a	2026-07-19T19:07:04+08:00	elky	1	no	auth_security	test(stats): treat bulk API key snapshots as authoritative
+aether	9725f9abae939bb758bcfac3238edf20f2f309d9	2026-07-19T22:00:12+08:00	elky	1	no	billing_wallet	fix(frontend): clarify processing tier pricing
+aether	e0dbb233f79f959f8b747bc9260b62b461431652	2026-07-19T22:21:46+08:00	elky	1	no	stream_execution	fix(frontend): avoid misleading cache TTL fallback label
+aether	f8778c4a23bbb81a783566b6150b173147ab7b4e	2026-07-19T23:27:19+08:00	elky	1	no	stream_execution	feat(gateway): configure cyber policy failover
+aether	c34ec7c1ee99972b791b47378f05f91eb54634a0	2026-07-20T15:51:01+08:00	ZheFox	1	no	other	fix(gateway): apply group policy to admin-owned keys
+aether	7756c0913f2e0089575d019f1ca90d9867f35c52	2026-07-20T15:52:06+08:00	ZheFox	2	yes	other	Merge pull request #685 from zhefox/main
+aether	b61c590bdb5b5adacb0fc1ae815872c0459ebd1f	2026-07-21T20:57:48+08:00	AAEE86	1	no	provider_protocol	feat(codex): support agent identity accounts
+aether	fc92c4f4310f8611fe41f8ad93730a28dd46310c	2026-07-22T02:09:34+08:00	elky	1	no	stream_execution	perf(gateway): scale request hot paths for 20k streams
+aether	c82537536703d65584227190085aef5fcb07488d	2026-07-22T09:20:11+08:00	ZheFox	2	yes	other	Merge pull request #688 from AAEE86/feat/agent-identity-support
+aether	a4350a482a0928fc019ec3b6429479777a96cb8f	2026-07-22T10:11:07+08:00	AAEE86	1	no	provider_protocol	feat(codex): enroll agent identity from session token
+aether	cd2fbeeead218f44cdaad36367abf36275a4cb74	2026-07-22T10:32:06+08:00	ZheFox	2	yes	other	Merge pull request #689 from AAEE86/feat/agent-identity-support
+aether	713010fa0a95bbaaa0173ecb1ac7f3e5f2383e03	2026-07-22T11:23:53+08:00	elky	1	no	auth_security	fix(gateway): restore auth role refresh and Rust checks
+aether	856605defa74edb28cbadb3c6df11948c66e53c4	2026-07-22T14:19:09+08:00	elky	1	no	provider_protocol	fix(model-directives): harden suffix configuration
+aether	07efcb5146e92ed7ec2c0a8d86627460ecf11f71	2026-07-22T14:19:34+08:00	elky	1	no	other	fix(data): repair legacy active flag synchronization
+aether	c7cc8fd7db185cdfdbc2e7fc453689ee469d62af	2026-07-22T14:19:58+08:00	elky	1	no	stream_execution	test(provider): simplify agent identity assertions
+aether	fdbc2607ec5164af4000cd45d6f07f0b3a83b1aa	2026-07-22T20:19:29+08:00	elky	1	no	provider_protocol	feat(provider): add dedicated Codex Agent Identity flow
+aether	e49024d33b5ef8cadb0c6bb0e1c7aa084e1197cc	2026-07-22T20:26:49+08:00	elky	1	no	frontend_product	fix(frontend): shorten Agent Identity tab label
+aether	3606290ac88b5265978e79f5e211d6247009f889	2026-07-23T09:33:00+08:00	elky	1	no	auth_security	fix(provider): harden Agent Identity OAuth lifecycle
+aether	7bf228a33c00f1fcc8e0f4750c57c14057714406	2026-07-23T11:21:55+08:00	ZheFox	1	no	provider_protocol	fix(provider): classify deleted Codex agent runtime as invalid
+aether	ec36cfbf7506ed67307b0250afa5049715672d01	2026-07-23T11:22:30+08:00	ZheFox	2	yes	other	Merge pull request #690 from zhefox/main
+aether	615ac99ad71951b3698d0868c3d4d5500ad9469a	2026-07-23T12:16:44+08:00	ZheFox	1	no	provider_protocol	fix(formats): ignore Responses client transport metadata
+aether	e186cc68485b61aadf01ebf2249fe865bd5b2e72	2026-07-23T12:17:46+08:00	ZheFox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	fb2009c65bb7726a5c16aa1b8c0e019d583276a6	2026-07-23T12:18:40+08:00	ZheFox	2	yes	other	Merge pull request #691 from zhefox/main
+aether	323273ff30d4bed19c1d62571c83957ec6d7f6b1	2026-07-23T13:29:28+08:00	ZheFox	1	no	provider_protocol	feat(models): sync global model prices from online catalog
+aether	1d2655432d56b5dd8f5aa01a49965dbcdc8b9cde	2026-07-23T15:18:08+08:00	ZheFox	1	no	billing_wallet	feat(models): track online pricing sources and unsupported fields
+aether	e7910751d9da1b333b203816218661598971f537	2026-07-23T15:19:48+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	b94ef91d07aad383ea1008e58482733eeebc5f82	2026-07-23T16:02:17+08:00	ZheFox	2	yes	other	Merge pull request #692 from zhefox/main
+aether	a0767d957c4c75a4a4047296030ab6843cbebc98	2026-07-23T16:16:42+08:00	elky	1	no	routing_scheduler	fix(frontend): synchronize pool account state
+aether	387134ca874f7536e0e7865cb03b8ae619c08d08	2026-07-24T01:45:38+08:00	elky	1	no	billing_wallet	fix(models): correct fast pricing and online sync
+aether	764e9fd131a57b2dea26965e98dd338511e0fb42	2026-07-25T11:16:59+08:00	elky	1	no	routing_scheduler	feat(frontend): improve provider detail drawer and pool actions
+aether	778cfb1a5c5e67dba8cd0545d9ceaa0497c63e35	2026-07-25T21:28:21+08:00	elky	1	no	other	feat(data): complete portable SQL backend parity
+aether	2ef7ac79bcb2e59ec2d81862fbb24e1c412d89f2	2026-07-25T21:28:51+08:00	elky	1	no	frontend_product	feat(frontend): add collapsible navigation sidebar
+aether	10d369f59c8ad26720aaa73250a178b4873bd2ae	2026-07-26T15:06:56+08:00	elky	1	no	provider_protocol	feat(providers): add provider transfer limits
+aether	79b70f7b5c5627d56343778fcc5f20134d248f27	2026-07-26T15:07:51+08:00	elky	1	no	frontend_product	fix(frontend): align sidebar collapse button
+aether	531cf110250579af2013baccea5bece4765a3442	2026-07-27T09:36:31+08:00	elky	1	no	provider_protocol	feat(gateway): harden provider request execution
+aether	550cc36760da04a192d7e3319c32a8a7ae0078f5	2026-07-27T15:53:28+08:00	elky	1	no	auth_security	feat(providers): expand OAuth account management
+aether	4148ab193101efa54c04d4332fb1136081a5b3d1	2026-07-27T22:06:28+08:00	elky	1	no	routing_scheduler	fix(routing): harden routed pool scheduling
+aether	f0f87b56a3e66ae2cbb3e7d3d94f627fcdfd482e	2026-07-28T11:32:11+08:00	ZheFox	1	no	auth_security	feat(providers): add credential-fenced OAuth key cleanup
+aether	0bf92ffffc6186137c4f99e3b2777b1ba9c686eb	2026-07-28T12:02:03+08:00	ZheFox	1	no	provider_protocol	feat(providers): advertise responses API agent capability
+aether	3043982486e692916dd90e1b1ca7d7df38cb96d2	2026-07-28T12:57:45+08:00	ZheFox	1	no	provider_protocol	fix(providers): derive Codex primary quota label from window
+aether	1b697b11114e847c4c7c263abe402ddfc90ee1f8	2026-07-28T13:29:30+08:00	ZheFox	1	no	provider_protocol	feat(providers): support FedRAMP Codex agent identity registration
+aether	9d9316e434a03cb58d9016881e063f31f6731506	2026-07-28T13:56:34+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	9a88f966d85e65a6a5b0afc44af12184d980be39	2026-07-28T13:58:33+08:00	ZheFox	2	yes	other	Merge pull request #695 from zhefox/main
+aether	581897ee74d1a7f29cb0d4b54218bc9e5d475a19	2026-07-28T17:40:41+08:00	ZheFox	1	no	provider_protocol	fix(formats): ignore responses client metadata across targets
+aether	2db32ea97e01d058c070355691c149a6deeef656	2026-07-28T17:40:46+08:00	ZheFox	2	yes	other	Merge branch 'main' of https://github.com/zhefox/Aether
+aether	e53abdaec2b9e07b5db33c39803357dc294da325	2026-07-28T18:12:28+08:00	ZheFox	2	yes	other	Merge branch 'fawney19:main' into main
+aether	37df5b93b1582165116fc1206dc1abefc15799eb	2026-07-28T18:12:59+08:00	ZheFox	2	yes	other	Merge pull request #696 from zhefox/main
+aether	6080f8cc882d90f537667d8d4f31737cb20c4b9d	2026-07-29T17:27:51+08:00	worker-2	1	no	runtime_performance	fix(gateway): stabilize worker task records
+aether	f8000012f71c1ddefe8ecc953f14836027936509	2026-07-29T21:55:43+08:00	zhefox	1	no	delivery_operations	fix(ci): stabilize cross-platform workflow checks
+aether	a97acc07fcf985ba427f949e70360f1d97f6aa37	2026-07-29T22:16:17+08:00	ZheFox	2	yes	other	Merge pull request #698 from zhefox/main
+aether	a04673a90d0d0ae9d07ab1533d6c6c93e07cb5b7	2026-07-30T01:03:05+08:00	elky	1	no	stream_execution	feat(gateway): harden failover and payload handling
+aether	d8902ea612df75a31a0abdb944e3d766892f1c66	2026-07-30T03:15:51+08:00	MMEXA	1	no	routing_scheduler	fix(gateway): buffer admin pool batch update bodies
+aether	e55793c76594625ec67f01ab400cdf4de3c20d53	2026-07-30T04:09:33+08:00	MMEXA	1	no	stream_execution	fix(ci): satisfy gateway clippy on upstream baseline
+aether	8cf9af79da3be1ff93f47f31552f02bf37f3e56d	2026-07-30T05:45:38+08:00	MMEXA	1	no	usage_observability	fix(ci): remove redundant usage policy update
+aether	d7d8db45bab8908cbb65f7720cdb6924d8ad17d6	2026-07-30T06:44:59+08:00	MMEXA	1	no	stream_execution	test(gateway): align tunnel error fixture with failover policy
+aether	6c733f75902f819e009d3eac90feb3fb2d5d7984	2026-07-30T06:44:59+08:00	MMEXA	1	no	usage_observability	fix(usage): preserve request diagnostics in event seeds
+aether	1ab4f079c9d688725d7644b0d6cc17bffb08e861	2026-07-30T09:12:11+08:00	elky	1	no	stream_execution	fix(gateway): restore failover and usage diagnostics
+aether	050eb7750872ccd8c3e5c2602c4be5e3b856f021	2026-07-30T17:19:54+08:00	elky	1	no	usage_observability	fix(ai): harden responses replay and failure diagnostics
+aether	20399b004dc3c2e8bfdda644e60d8a0dfa8cb805	2026-07-30T17:56:37+08:00	elky	2	yes	routing_scheduler	Merge PR #700: fix admin pool batch update body buffering
+aether	118f441029c4cb3f5ef443ef99a78c4de03cd52b	2026-07-30T19:26:52+08:00	ZheFox	1	no	provider_protocol	feat(gateway): persist OpenAI Responses continuation history
+aether	84022c4d488261ea8d40676e56ac2565af926550	2026-07-30T19:40:39+08:00	ZheFox	2	yes	stream_execution	Merge upstream/main into main
+aether	ef5f36cc2b54aeee6564e05914cc7090789d7d77	2026-07-30T20:13:36+08:00	ZheFox	1	no	other	fix(ai): satisfy response history clippy checks
+aether	ff47d8d48ac6dc7defa9c97a052b46d49b39f79b	2026-07-30T20:34:41+08:00	ZheFox	1	no	other	fix(gateway): route response history through ai seam
+aether	12057db476ca145a3a721d5d223e85fc871719ba	2026-07-30T21:08:34+08:00	ZheFox	2	yes	other	Merge pull request #701 from zhefox/main
+aether	6ecfe0f0a1d4660ce056d8969577b9855c7fd5e2	2026-07-30T21:20:06+08:00	MMEXA	1	no	auth_security	fix(gateway): reconcile auth mismatch formats on key update
+aether	beb003b7ad024678486fb490866f47e2e7ee9da0	2026-07-31T00:50:33+08:00	elky	1	no	provider_protocol	feat(models): add external catalog proxy selection
+aether	6688ee26db89bd7d22db75ab6950362bf5a56d45	2026-07-31T10:28:37+08:00	fawney19	2	yes	auth_security	Merge pull request #702 from MMEXA/fix/reconcile-auth-channel-mismatch-formats
+aether	082407fa513c0022870e71b87ec308f5bf77ca84	2026-07-31T11:11:14+08:00	elky	2	yes	runtime_performance	Merge PR #697: prevent duplicate worker registrations
+aether	06f5d3c8c0fec4599767749f6b321ec640ebb3da	2026-07-31T11:32:07+08:00	elky	1	no	runtime_performance	fix(gateway): complete worker registration cleanup
+aether	0318808db98a342066c1c32640f29f4c1ee89cd8	2026-07-31T13:35:08+08:00	elky	1	no	provider_protocol	fix(providers): allow transfer limits on creation
+aether	669f4bddc59c880d4cf1b854da4fcd1024e14ab7	2026-08-03T18:47:35+08:00	zhefox	1	no	routing_scheduler	fix: align Responses routing and model permissions
+aether	aedff9a7042664417786aacc1935891c6677ccbe	2026-08-03T19:22:51+08:00	zhefox	1	no	provider_protocol	fix(provider): validate mapped model reasoning effort
+aether	1aab31a148a2705320f7c1f6cfa0b59a87301f49	2026-08-03T19:31:04+08:00	ZheFox	2	yes	other	Merge pull request #710 from zhefox/main
+aether	4d6756987387ffd71df258941e8a44042027a378	2026-08-05T13:55:38+08:00	zhefox	1	no	provider_protocol	fix(gateway): support claude_code cross-format Claude messages
+aether	908d4f260353a81ad0c81303effd680d4b180e8b	2026-08-05T13:58:46+08:00	zhefox	1	no	provider_protocol	style(provider): apply rustfmt to claude_code tests
+aether	985ff3c36a8090d3f5b41318c358f7beec0a95d8	2026-08-05T14:34:20+08:00	zhefox	1	no	provider_protocol	test(gateway): align claude_code endpoint reconciliation
+aether	3a759fae8922de11b83cc98df4a79eb15a79a237	2026-08-05T14:53:03+08:00	ZheFox	2	yes	provider_protocol	Merge pull request #712 from zhefox/fix/claude-code-conversion-api-key-toggle
+aether	29fa4aed19c594bc4d7dca33d17bdb7a0bf1955e	2026-08-12T16:53:59+08:00	elky	1	no	routing_scheduler	perf(gateway): raise default server pool floor
+aether	edb8362adc019cc4dcd1aac68aa6904629d981f8	2026-08-12T16:54:52+08:00	elky	1	no	provider_protocol	fix(provider): omit default model test temperature
+aether	654c4f69789f02d08e926a77338f1b94f34f8658	2026-08-12T16:55:34+08:00	elky	1	no	auth_security	fix(auth): preserve turnstile while typing email

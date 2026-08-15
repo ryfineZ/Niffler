@@ -1,0 +1,84 @@
+group	niffler_only	aether_only	both_changed_same	both_changed_diverged
+.dockerignore	1			
+.env.example				1
+.github	6			3
+.gitignore				1
+Cargo.lock				1
+Cargo.toml				1
+Dockerfile.app				1
+Dockerfile.app.local				1
+Dockerfile.app.release-local		1		
+LICENSE	1			
+Makefile		1		
+README.md				1
+apps/aether-gateway	121	321		277
+apps/aether-tunnel	3	11		10
+billing_findings.md	1			
+billing_progress.md	1			
+billing_review_plan.md	1			
+crates/aether-admin	1	4		7
+crates/aether-admission-core		6		
+crates/aether-ai		146		
+crates/aether-ai-formats	1	94		16
+crates/aether-ai-serving		23		2
+crates/aether-billing		2		4
+crates/aether-cache		1		
+crates/aether-contracts		6		
+crates/aether-data	91	717	1	119
+crates/aether-data-contracts	2	19		9
+crates/aether-data-query		2		
+crates/aether-data-schema		7		1
+crates/aether-gateway		26		
+crates/aether-model-fetch	2			4
+crates/aether-oauth	1	8		3
+crates/aether-pool-core	1	1		1
+crates/aether-provider		87		
+crates/aether-provider-pool	1	8		9
+crates/aether-provider-transport		40		10
+crates/aether-routing-core		5		
+crates/aether-runtime		41		
+crates/aether-runtime-state		10		
+crates/aether-scheduler-core		6		5
+crates/aether-task		8		
+crates/aether-task-runtime		2		
+crates/aether-testing		39		
+crates/aether-testkit		26		1
+crates/aether-usage		24		
+crates/aether-usage-runtime		10		7
+crates/aether-video-tasks-core		2		
+crates/aether-wallet	1			
+deploy	2			
+deploy.sh				1
+docker-compose.local.yml	1			
+docker-compose.release-local.yml		1		
+docker-compose.single-node.yml				1
+docker-compose.yml				1
+docs	95	9		5
+findings.md	1			
+frontend	15	1		4
+frontend/src/App.vue	1			
+frontend/src/__tests__	1			
+frontend/src/api	8	20		18
+frontend/src/components	38	10		14
+frontend/src/composables	11	1		4
+frontend/src/config	2	2		1
+frontend/src/constants	1			
+frontend/src/features	91	142		78
+frontend/src/i18n	3	5		1
+frontend/src/layouts	2	2		1
+frontend/src/main.ts				1
+frontend/src/mocks		6		2
+frontend/src/router	1	7		1
+frontend/src/stores		2		2
+frontend/src/style.css	1			
+frontend/src/test	2			
+frontend/src/tests		1		
+frontend/src/utils	13	19		11
+frontend/src/views	62	35		54
+install.sh				1
+package-lock.json	1			
+progress.md	1			
+scripts	44			2
+task_plan.md	1			
+tools		9		
+update.sh		1		
