@@ -1,0 +1,26 @@
+[Unit]
+Description=Niffler DMIT entry monitor
+After=network-online.target caddy.service wg-quick@wg0.service vnstat.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=NIFFLER_MONITOR_CONFIG_FILE=/var/lib/niffler-monitor-control/monitor.env
+ExecStart=/usr/local/sbin/niffler-entry-monitor run
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RuntimeDirectory=niffler-entry-monitor
+RuntimeDirectoryMode=0700
+StateDirectory=niffler-entry-monitor
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/niffler-monitor-control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

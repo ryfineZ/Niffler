@@ -1,0 +1,240 @@
+#!/bin/bash
+
+set -euo pipefail
+
+MODE="${1:-run}"
+CONFIG_FILE="${NIFFLER_MONITOR_CONFIG_FILE:-/var/lib/niffler-monitor-control/monitor.env}"
+TELEGRAM_FILE="/etc/niffler-entry-monitor/telegram.env"
+STATE_DIR="/var/lib/niffler-entry-monitor"
+declare -a SUMMARY_LINES=()
+declare -a ALERT_LINES=()
+SUMMARY_ISSUE_COUNT=0
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+validate_secure_file() {
+    local path="$1"
+
+    [ -f "$path" ] && [ ! -L "$path" ] || die "secure file is missing: $path"
+    [ "$(stat -c '%a' "$path")" = "600" ] || die "secure file must use mode 600: $path"
+}
+
+load_state() {
+    local name="$1"
+    local path="$STATE_DIR/$name.state"
+
+    PREVIOUS_STATE="unknown"
+    PREVIOUS_COUNT=0
+    [ -f "$path" ] || return 0
+    PREVIOUS_STATE="$(awk -F= '$1 == "STATE" {print $2}' "$path")"
+    PREVIOUS_COUNT="$(awk -F= '$1 == "FAILURE_COUNT" {print $2}' "$path")"
+    [[ "$PREVIOUS_COUNT" =~ ^[0-9]+$ ]] || PREVIOUS_COUNT=0
+}
+
+save_state() {
+    local name="$1"
+    local state="$2"
+    local count="$3"
+    local temporary="$STATE_DIR/.$name.$$"
+
+    printf 'STATE=%s\nFAILURE_COUNT=%s\n' "$state" "$count" > "$temporary"
+    chmod 0600 "$temporary"
+    mv "$temporary" "$STATE_DIR/$name.state"
+}
+
+evaluate_binary() {
+    local name="$1"
+    local label="$2"
+    local healthy="$3"
+    local detail="$4"
+    local count
+
+    SUMMARY_LINES+=("$label：$detail")
+    if [ "$healthy" != "1" ]; then
+        SUMMARY_ISSUE_COUNT=$((SUMMARY_ISSUE_COUNT + 1))
+    fi
+    [ "$MODE" = "run" ] || return 0
+    load_state "$name"
+    if [ "$healthy" = "1" ]; then
+        if [ "$PREVIOUS_STATE" = "failed" ]; then
+            ALERT_LINES+=("$label 已恢复正常。")
+        fi
+        save_state "$name" ok 0
+        return
+    fi
+
+    if [ "$PREVIOUS_STATE" = "failed" ]; then
+        count="$MONITOR_FAILURE_THRESHOLD"
+    else
+        count=$((PREVIOUS_COUNT + 1))
+    fi
+    if [ "$count" -ge "$MONITOR_FAILURE_THRESHOLD" ]; then
+        if [ "$PREVIOUS_STATE" != "failed" ]; then
+            ALERT_LINES+=("$label连续 $MONITOR_FAILURE_THRESHOLD 次检查异常，可能影响大陆用户访问。")
+        fi
+        save_state "$name" failed "$MONITOR_FAILURE_THRESHOLD"
+    else
+        save_state "$name" pending "$count"
+    fi
+}
+
+evaluate_level() {
+    local name="$1"
+    local label="$2"
+    local state="$3"
+    local detail="$4"
+    local action="$5"
+
+    SUMMARY_LINES+=("$label：$detail")
+    if [ "$state" != "ok" ]; then
+        SUMMARY_ISSUE_COUNT=$((SUMMARY_ISSUE_COUNT + 1))
+    fi
+    [ "$MODE" = "run" ] || return 0
+    load_state "$name"
+    if [ "$state" != "$PREVIOUS_STATE" ]; then
+        case "$state" in
+            warning|critical)
+                ALERT_LINES+=("$label：$detail。$action")
+                ;;
+            ok)
+                if [ "$PREVIOUS_STATE" = "warning" ] || [ "$PREVIOUS_STATE" = "critical" ]; then
+                    ALERT_LINES+=("$label已恢复正常：$detail。")
+                fi
+                ;;
+        esac
+    fi
+    save_state "$name" "$state" 0
+}
+
+send_message() {
+    local title="$1"
+    shift
+    local message
+
+    message="$(printf '%s\n' "$title" '服务器：大陆优化入口（DMIT）' "$@" "时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')")"
+    curl --silent --show-error --fail \
+        --connect-timeout 10 --max-time 20 --retry 2 --retry-all-errors \
+        --request POST \
+        --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+        --data-urlencode "text=$message" \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" >/dev/null
+}
+
+write_report() {
+    local directory
+    local temporary
+
+    directory="$(dirname "$MONITOR_REPORT_FILE")"
+    if [ ! -d "$directory" ]; then
+        install -d -m 0700 "$directory"
+    fi
+    temporary="$(mktemp "$directory/.status.XXXXXX")"
+    {
+        printf '%s\n' '大陆优化入口（DMIT）'
+        printf '%s\n' "${SUMMARY_LINES[@]}"
+        if [ "$SUMMARY_ISSUE_COUNT" -eq 0 ]; then
+            printf '结论：所有检查均正常\n'
+        else
+            printf '结论：发现 %s 项需要处理\n' "$SUMMARY_ISSUE_COUNT"
+        fi
+        printf '检查时间：%s\n' "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
+    } > "$temporary"
+    chmod 0644 "$temporary"
+    mv "$temporary" "$MONITOR_REPORT_FILE"
+}
+
+[ "$EUID" -eq 0 ] || die "must run as root"
+[ "$MODE" = "run" ] || [ "$MODE" = "test" ] || die "mode must be run or test"
+validate_secure_file "$CONFIG_FILE"
+validate_secure_file "$TELEGRAM_FILE"
+set -a
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+# shellcheck disable=SC1090
+source "$TELEGRAM_FILE"
+set +a
+install -d -m 0700 "$STATE_DIR"
+
+read -r disk_usage disk_available_kb < <(df -Pk / | awk 'NR == 2 {gsub(/%/, "", $5); print $5, $4}')
+disk_available_gb="$(awk -v kb="$disk_available_kb" 'BEGIN {printf "%.1f", kb / 1048576}')"
+if [ "$disk_usage" -ge "$MONITOR_DISK_CRITICAL_PERCENT" ]; then
+    disk_state=critical
+    disk_detail="空间严重不足，已使用 ${disk_usage}%，剩余 ${disk_available_gb} GB"
+elif [ "$disk_usage" -ge "$MONITOR_DISK_WARNING_PERCENT" ]; then
+    disk_state=warning
+    disk_detail="空间偏少，已使用 ${disk_usage}%，剩余 ${disk_available_gb} GB"
+else
+    disk_state=ok
+    disk_detail="正常，已使用 ${disk_usage}%，剩余 ${disk_available_gb} GB"
+fi
+evaluate_level disk 系统盘 "$disk_state" "$disk_detail" "请清理日志或扩容。"
+
+if systemctl is-active --quiet caddy; then
+    evaluate_binary caddy 入口代理 1 "运行正常"
+else
+    evaluate_binary caddy 入口代理 0 "未正常运行"
+fi
+
+if systemctl is-active --quiet wg-quick@wg0; then
+    latest_handshake="$(wg show wg0 latest-handshakes | awk 'NR == 1 {print $2}')"
+    now="$(date +%s)"
+    if [[ "$latest_handshake" =~ ^[0-9]+$ ]] && [ "$latest_handshake" -gt 0 ] && [ $((now - latest_handshake)) -lt 180 ]; then
+        evaluate_binary wireguard 私网通道 1 "连接正常"
+    else
+        evaluate_binary wireguard 私网通道 0 "超过 3 分钟没有完成握手"
+    fi
+else
+    evaluate_binary wireguard 私网通道 0 "未正常运行"
+fi
+
+if curl --silent --show-error --fail --connect-timeout 5 --max-time 15 \
+    --resolve "$MONITOR_ENTRY_RESOLVE" "$MONITOR_ENTRY_URL" | jq -e '.status == "ok"' >/dev/null; then
+    evaluate_binary origin 回源访问 1 "可以正常访问 hd0526"
+else
+    evaluate_binary origin 回源访问 0 "暂时无法访问 hd0526"
+fi
+
+current_day=$((10#$(TZ=Asia/Shanghai date +%d)))
+if [ "$current_day" -ge "$MONITOR_TRAFFIC_CYCLE_DAY" ]; then
+    cycle_month="$(TZ=Asia/Shanghai date +%Y%m)"
+else
+    cycle_month="$(TZ=Asia/Shanghai date -d '1 month ago' +%Y%m)"
+fi
+cycle_start=$((10#${cycle_month}$(printf '%02d' "$MONITOR_TRAFFIC_CYCLE_DAY")))
+traffic_bytes="$(
+    vnstat --json d 40 -i "$MONITOR_TRAFFIC_INTERFACE" 2>/dev/null |
+        jq -r --argjson start "$cycle_start" \
+            '[.interfaces[0].traffic.day[]? | select((.date.year * 10000 + .date.month * 100 + .date.day) >= $start) | (.rx + .tx)] | add // 0' \
+            2>/dev/null || printf '0'
+)"
+if [[ "$traffic_bytes" =~ ^[0-9]+$ ]]; then
+    traffic_gb="$(awk -v bytes="$traffic_bytes" 'BEGIN {printf "%.1f", bytes / 1000000000}')"
+    traffic_remaining_gb="$(awk -v used="$traffic_gb" 'BEGIN {remaining = 5000 - used; if (remaining < 0) remaining = 0; printf "%.1f", remaining}')"
+    if awk -v used="$traffic_gb" -v limit="$MONITOR_TRAFFIC_CRITICAL_GB" 'BEGIN {exit !(used >= limit)}'; then
+        traffic_state=critical
+        traffic_detail="流量即将用尽，本计费周期已使用 ${traffic_gb} GB，距 5 TB 限额约剩 ${traffic_remaining_gb} GB"
+    elif awk -v used="$traffic_gb" -v limit="$MONITOR_TRAFFIC_WARNING_GB" 'BEGIN {exit !(used >= limit)}'; then
+        traffic_state=warning
+        traffic_detail="流量使用偏高，本计费周期已使用 ${traffic_gb} GB，距 5 TB 限额约剩 ${traffic_remaining_gb} GB"
+    else
+        traffic_state=ok
+        traffic_detail="正常，本计费周期已使用 ${traffic_gb} GB，距 5 TB 限额约剩 ${traffic_remaining_gb} GB"
+    fi
+    evaluate_level traffic 入口流量 "$traffic_state" "$traffic_detail" "5 TB 用尽后会限速到 8 Mbit/s，请升级流量或分流。"
+else
+    evaluate_binary traffic 入口流量统计 0 "暂时无法读取"
+fi
+
+write_report
+
+if [ "$MODE" = "test" ]; then
+    send_message '[Niffler 入口监控测试消息]' '说明：这是部署后的人工检查，不代表刚发生故障。' "${SUMMARY_LINES[@]}"
+    echo "DMIT entry monitor test delivered"
+elif [ "${#ALERT_LINES[@]}" -gt 0 ]; then
+    send_message '[Niffler 大陆入口需要处理]' "${ALERT_LINES[@]}"
+fi
+
+echo "DMIT entry monitor completed: ${#ALERT_LINES[@]} notification changes"

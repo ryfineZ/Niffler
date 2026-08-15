@@ -11,7 +11,8 @@ STATE_DIR="${NIFFLER_BOT_STATE_DIR:-/var/lib/niffler-monitor-bot}"
 OFFSET_FILE="$STATE_DIR/update-offset"
 LOCK_FILE="$STATE_DIR/controller.lock"
 SSH_CONFIG="${NIFFLER_MONITOR_SSH_CONFIG:-/etc/niffler-monitor-bot/ssh_config}"
-REMOTE_ALIAS="${NIFFLER_MONITOR_REMOTE_ALIAS:-hd0526-monitor}"
+HD0526_ALIAS="${NIFFLER_MONITOR_HD0526_ALIAS:-hd0526-monitor}"
+DMIT_ALIAS="${NIFFLER_MONITOR_DMIT_ALIAS:-dmit-monitor}"
 declare -a TEMP_FILES=()
 
 die() {
@@ -93,7 +94,7 @@ set_bot_commands() {
     local response_file
     local curl_config
     local http_code
-    local commands='[{"command":"status","description":"查看两台服务器状态"},{"command":"settings","description":"查看当前监控阈值"},{"command":"set_disk_warning","description":"设置磁盘预警值"},{"command":"set_disk_critical","description":"设置磁盘严重值"},{"command":"set_failures","description":"设置连续失败次数"},{"command":"help","description":"查看命令帮助"}]'
+    local commands='[{"command":"status","description":"查看三台服务器状态"},{"command":"settings","description":"查看当前监控阈值"},{"command":"set_disk_warning","description":"设置磁盘预警值"},{"command":"set_disk_critical","description":"设置磁盘严重值"},{"command":"set_failures","description":"设置连续失败次数"},{"command":"help","description":"查看命令帮助"}]'
 
     response_file="$(mktemp "$STATE_DIR/commands-response.XXXXXX")"
     curl_config="$(mktemp "$STATE_DIR/commands-curl.XXXXXX")"
@@ -119,15 +120,36 @@ write_offset() {
     mv "$temporary_file" "$OFFSET_FILE"
 }
 
+remote_alias_for_target() {
+    case "$1" in
+        hd0526) printf '%s' "$HD0526_ALIAS" ;;
+        dmit) printf '%s' "$DMIT_ALIAS" ;;
+        *) die "target does not use remote SSH" ;;
+    esac
+}
+
+settings_command() {
+    local target="$1"
+    local remote_command
+    shift
+
+    if [ "$target" = "rn01" ]; then
+        "$LOCAL_SETTINGS_SCRIPT" "$@"
+    else
+        if [ "${1:-}" = "show" ] && [ "$#" -eq 1 ]; then
+            remote_command="settings"
+        else
+            remote_command="$*"
+        fi
+        ssh -F "$SSH_CONFIG" "$(remote_alias_for_target "$target")" "$remote_command"
+    fi
+}
+
 settings_text() {
     local target="$1"
     local values
 
-    if [ "$target" = "rn01" ]; then
-        values="$("$LOCAL_SETTINGS_SCRIPT" show)"
-    else
-        values="$(ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" settings)"
-    fi
+    values="$(settings_command "$target" show)"
     printf '%s\n' "$values" | awk -F= -v target="$target" '
         $1 == "disk_warning" { warning = $2 }
         $1 == "disk_critical" { critical = $2 }
@@ -141,35 +163,39 @@ settings_text() {
 
 status_text() {
     "$MONITOR_SCRIPT" report
-    ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" status
+    ssh -F "$SSH_CONFIG" "$HD0526_ALIAS" status
+    ssh -F "$SSH_CONFIG" "$DMIT_ALIAS" status
 }
 
 help_text() {
     cat <<'EOF'
 可用命令：
-/status - 查看两台服务器当前状态
+/status - 查看三台服务器当前状态
 /settings - 查看当前监控阈值
-/set_disk_warning 85 - 设置磁盘预警值，同时修改两台服务器
-/set_disk_critical 92 - 设置磁盘严重值，同时修改两台服务器
-/set_failures 3 - 设置连续失败次数，同时修改两台服务器
+/set_disk_warning 85 - 设置磁盘预警值，同时修改三台服务器
+/set_disk_critical 92 - 设置磁盘严重值，同时修改三台服务器
+/set_failures 3 - 设置连续失败次数，同时修改三台服务器
 
-只修改一台服务器时，在数字后加 rn01 或 hd0526，例如：
-/set_disk_warning 85 hd0526
+只修改一台服务器时，在数字后加 rn01、hd0526 或 dmit，例如：
+/set_disk_warning 85 dmit
 EOF
 }
 
 validate_target() {
-    [ "$1" = "all" ] || [ "$1" = "rn01" ] || [ "$1" = "hd0526" ] ||
-        die "target must be all, rn01 or hd0526"
+    [ "$1" = "all" ] || [ "$1" = "rn01" ] || [ "$1" = "hd0526" ] || [ "$1" = "dmit" ] ||
+        die "target must be all, rn01, hd0526 or dmit"
 }
 
 set_setting() {
     local field="$1"
     local value="$2"
     local target="$3"
-    local previous_local=""
-    local previous_remote=""
+    local current_target
+    local failed_target=""
     local label
+    local -a targets=()
+    local -a applied_targets=()
+    local -A previous_values=()
 
     case "$field" in
         disk_warning) label="磁盘预警值" ;;
@@ -178,29 +204,28 @@ set_setting() {
         *) return 1 ;;
     esac
     validate_target "$target"
-    if [ "$target" = "all" ] || [ "$target" = "rn01" ]; then
-        "$LOCAL_SETTINGS_SCRIPT" validate "$field" "$value"
+    if [ "$target" = "all" ]; then
+        targets=(hd0526 dmit rn01)
+    else
+        targets=("$target")
     fi
-    if [ "$target" = "all" ] || [ "$target" = "hd0526" ]; then
-        ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" "validate $field $value"
-    fi
-    if [ "$target" = "all" ] || [ "$target" = "rn01" ]; then
-        previous_local="$("$LOCAL_SETTINGS_SCRIPT" get "$field")"
-    fi
-    if [ "$target" = "all" ] || [ "$target" = "hd0526" ]; then
-        previous_remote="$(ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" get "$field")"
-    fi
-
-    if [ "$target" = "all" ] || [ "$target" = "hd0526" ]; then
-        ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" "set $field $value"
-    fi
-    if [ "$target" = "all" ] || [ "$target" = "rn01" ]; then
-        if ! "$LOCAL_SETTINGS_SCRIPT" set "$field" "$value"; then
-            if [ -n "$previous_remote" ]; then
-                ssh -F "$SSH_CONFIG" "$REMOTE_ALIAS" "set $field $previous_remote" || true
-            fi
-            return 1
+    for current_target in "${targets[@]}"; do
+        settings_command "$current_target" validate "$field" "$value"
+        previous_values["$current_target"]="$(settings_command "$current_target" get "$field")"
+    done
+    for current_target in "${targets[@]}"; do
+        if settings_command "$current_target" set "$field" "$value" >/dev/null; then
+            applied_targets+=("$current_target")
+        else
+            failed_target="$current_target"
+            break
         fi
+    done
+    if [ -n "$failed_target" ]; then
+        for current_target in "${applied_targets[@]}"; do
+            settings_command "$current_target" set "$field" "${previous_values[$current_target]}" >/dev/null || true
+        done
+        return 1
     fi
     if [ "$field" = "failures" ]; then
         printf '%s已修改为 %s 次。\n' "$label" "$value"
@@ -242,7 +267,7 @@ process_update() {
             ;;
         /settings)
             [ -z "${argument:-}" ] || return 0
-            reply="$(settings_text rn01; settings_text hd0526)"
+            reply="$(settings_text rn01; settings_text hd0526; settings_text dmit)"
             ;;
         /set_disk_warning|/set_disk_critical|/set_failures)
             [ -n "${argument:-}" ] && [ -z "${extra:-}" ] || return 0

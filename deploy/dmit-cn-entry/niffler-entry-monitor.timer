@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Niffler DMIT entry monitor every minute
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=1m
+RandomizedDelaySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

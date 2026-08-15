@@ -1,0 +1,29 @@
+{
+	admin 127.0.0.1:2019
+}
+
+{$NIFFLER_ENTRY_ADDRESS:cn.niffler.org} {
+	encode gzip zstd
+
+	log {
+		output file /var/log/caddy/niffler-entry-access.log {
+			roll_size 100MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+	}
+
+	reverse_proxy https://10.89.0.1 {
+		header_up Host {$NIFFLER_UPSTREAM_HOST:niffler.org}
+		header_up X-Niffler-Entry dmit-lax-as3-pro-mini
+		flush_interval -1
+
+		transport http {
+			tls_server_name {$NIFFLER_UPSTREAM_TLS_SERVER_NAME:niffler.org}
+			dial_timeout 5s
+			response_header_timeout 30m
+			keepalive 2m
+		}
+	}
+}
