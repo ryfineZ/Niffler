@@ -1,0 +1,63 @@
+{
+	servers {
+		trusted_proxies static 10.89.0.2/32
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+	}
+}
+
+api.niffler.org {
+	encode gzip zstd
+	reverse_proxy niffler-frontdoor:8084
+}
+
+us2.niffler.org {
+	encode gzip zstd
+
+	@latency_probe path /__niffler_latency
+	handle @latency_probe {
+		header {
+			Access-Control-Allow-Origin "*"
+			Cache-Control "no-store, no-cache, must-revalidate"
+			Timing-Allow-Origin "*"
+		}
+		respond 204
+	}
+
+	handle {
+		reverse_proxy niffler-frontdoor:8084
+	}
+}
+
+niffler.org {
+	encode gzip zstd
+
+	@infinite_canvas_root path /InfiniteCanvas
+	redir @infinite_canvas_root /InfiniteCanvas/ 308
+
+	handle /InfiniteCanvas/* {
+		reverse_proxy infinitecanvas:3000
+	}
+
+	reverse_proxy niffler-frontdoor:8084
+}
+
+pay.dodododo.org {
+	tls internal
+	encode gzip zstd
+	reverse_proxy dodopay-web-1:3000
+}
+
+mailbox.no3realms.com {
+	encode gzip zstd
+
+	handle /redeem {
+		redir /redeem/ 308
+	}
+
+	handle_path /redeem/* {
+		reverse_proxy manual-redeem-web:8000
+	}
+
+	reverse_proxy mailbox-reader:8000
+}
