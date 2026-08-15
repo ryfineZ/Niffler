@@ -108,7 +108,7 @@
               <div class="flex items-start justify-between gap-3">
                 <div>
                   <div class="font-medium">
-                    {{ planTitle(item.plan_id) }}
+                    {{ planTitle(item) }}
                   </div>
                   <div class="mt-1 text-xs text-muted-foreground">
                     {{ formatDate(item.starts_at) }} - {{ formatDate(item.expires_at) }}
@@ -130,6 +130,55 @@
                   {{ label }}
                 </Badge>
               </div>
+              <div
+                v-if="quotaSummaryStatus === 'unavailable'"
+                class="mt-3 border-t border-border/60 pt-3 text-xs font-medium text-amber-700 dark:text-amber-300"
+              >
+                {{ t('planQuota.quotaUnavailable') }}
+              </div>
+              <dl
+                v-else-if="quotaSummaryFor(item)?.daily_total_usd != null"
+                class="mt-3 grid grid-cols-1 gap-2 border-t border-border/60 pt-3 text-xs sm:grid-cols-2 lg:grid-cols-4"
+              >
+                <div>
+                  <dt class="text-muted-foreground">
+                    {{ t('planQuota.todayRemaining') }}
+                  </dt>
+                  <dd
+                    class="mt-1 font-semibold tabular-nums"
+                    :class="dailyRemainingFor(item) <= 0 ? 'text-rose-600 dark:text-rose-300' : 'text-foreground'"
+                  >
+                    {{ formatUsd(dailyRemainingFor(item)) }} / {{ formatUsd(quotaSummaryFor(item)?.daily_total_usd ?? 0) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-muted-foreground">
+                    {{ t('planQuota.todayUsed') }}
+                  </dt>
+                  <dd class="mt-1 font-medium tabular-nums text-foreground">
+                    {{ formatUsd(quotaSummaryFor(item)?.daily_used_usd ?? 0) }}
+                  </dd>
+                </div>
+                <div v-if="hasTighterOverallQuota(item)">
+                  <dt class="text-muted-foreground">
+                    {{ t('planQuota.currentRemaining') }}
+                  </dt>
+                  <dd
+                    class="mt-1 font-semibold tabular-nums"
+                    :class="currentRemainingFor(item) <= 0 ? 'text-rose-600 dark:text-rose-300' : 'text-foreground'"
+                  >
+                    {{ formatUsd(currentRemainingFor(item)) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-muted-foreground">
+                    {{ t('planQuota.nextRefresh') }}
+                  </dt>
+                  <dd class="mt-1 font-medium tabular-nums text-foreground">
+                    {{ formatDateTime(quotaSummaryFor(item)?.daily_window_ends_at) }}
+                  </dd>
+                </div>
+              </dl>
             </div>
           </div>
           <EmptyState
@@ -263,6 +312,7 @@ import {
   type DailyQuotaEntitlement,
   type BillingPlan,
   type UserPlanEntitlement,
+  type UserPlanQuotaSummary,
 } from '@/api/billing'
 import { walletApi, type WalletBalanceResponse, type WalletRechargeOption } from '@/api/wallet'
 import {
@@ -293,6 +343,8 @@ const { success, error: showError } = useToast()
 const loading = ref(true)
 const plans = ref<BillingPlan[]>([])
 const entitlements = ref<UserPlanEntitlement[]>([])
+const quotaSummary = ref<UserPlanQuotaSummary | null>(null)
+const quotaSummaryStatus = ref<'ok' | 'unavailable'>('ok')
 const rechargeOptions = ref<WalletRechargeOption[]>([])
 const walletBalance = ref<WalletBalanceResponse | null>(null)
 const selectedPaymentOptionKey = ref('')
@@ -411,10 +463,14 @@ async function loadEntitlements() {
   try {
     const response = await billingApi.listEntitlements()
     entitlements.value = response.items
+    quotaSummary.value = response.quota_summary ?? null
+    quotaSummaryStatus.value = response.quota_summary_status ?? 'ok'
     window.dispatchEvent(new CustomEvent(BILLING_SUMMARY_REFRESH_EVENT))
   } catch (err) {
     log.error('加载套餐权益失败:', err)
     showError(parseApiError(err, t('billing.loadEntitlementsFailed')))
+    quotaSummary.value = null
+    quotaSummaryStatus.value = 'unavailable'
   }
 }
 
@@ -536,8 +592,30 @@ function submitPaymentForm(url: string, params: Record<string, unknown>) {
   document.body.removeChild(form)
 }
 
-function planTitle(planId: string): string {
-  return plans.value.find((plan) => plan.id === planId)?.title || planId
+function planTitle(item: UserPlanEntitlement): string {
+  return quotaSummaryFor(item)?.plan_title
+    || plans.value.find((plan) => plan.id === item.plan_id)?.title
+    || item.plan_id
+}
+
+function quotaSummaryFor(item: UserPlanEntitlement): UserPlanQuotaSummary | null {
+  return quotaSummary.value?.entitlement_id === item.id ? quotaSummary.value : null
+}
+
+function dailyRemainingFor(item: UserPlanEntitlement): number {
+  const summary = quotaSummaryFor(item)
+  if (!summary) return 0
+  const value = Number(summary.daily_remaining_usd ?? 0)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function currentRemainingFor(item: UserPlanEntitlement): number {
+  const value = Number(quotaSummaryFor(item)?.quota_remaining_usd ?? 0)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function hasTighterOverallQuota(item: UserPlanEntitlement): boolean {
+  return currentRemainingFor(item) + Number.EPSILON < dailyRemainingFor(item)
 }
 
 function hasMatchingActivePlan(plan: BillingPlan): boolean {
@@ -608,5 +686,16 @@ function formatDuration(unit: BillingDurationUnit, value: number): string {
 function formatDate(value: string | null | undefined): string {
   if (!value) return '-'
   return new Date(value).toLocaleDateString(locale.value)
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '-'
+  return new Date(value).toLocaleString(locale.value, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 </script>

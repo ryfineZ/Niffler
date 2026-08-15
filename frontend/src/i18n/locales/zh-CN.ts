@@ -563,4 +563,5 @@ export default {
     },
   },
   userGroupManagedInstructions: { title: '受管理提示词', hint: 'API Key 选择这个用户分组后，后续请求使用这里设置的专业规则。', profile: '配置', profilePlaceholder: '选择配置', mergeMode: '加入方式', mergePrepend: '始终加入', mergeIfMissing: '客户端未提供时加入', notConfigured: '未配置', disabled: '已关闭，不修改上游请求', prependSummary: '每次请求都会加入', ifMissingSummary: '仅在客户端没有指令时加入', orderManaged: '受管理提示词', orderClient: '客户端指令', orderImage: '图片规则', loadFailed: '读取提示词配置失败', unknownProfile: '配置 {profile} 已不存在，请重新选择' },
+  planQuota: { plan: '套餐', noPlan: '无套餐', noDailyQuota: '无每日额度', todayRemaining: '今日剩余', currentRemaining: '当前剩余', todayUsed: '今日已用', nextRefresh: '下次刷新', refreshAt: '刷新：{time}', expiresAt: '到期：{time}', quotaUnavailable: '额度暂时无法读取', planUnavailable: '套餐信息读取失败' },
 }

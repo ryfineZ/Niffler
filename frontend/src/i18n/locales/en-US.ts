@@ -563,4 +563,5 @@ export default {
     },
   },
   userGroupManagedInstructions: { title: 'Managed instructions', hint: 'New requests use this profile when the API key belongs to this user group.', profile: 'Profile', profilePlaceholder: 'Select a profile', mergeMode: 'Merge mode', mergePrepend: 'Always prepend', mergeIfMissing: 'Only when client instructions are missing', notConfigured: 'Not configured', disabled: 'Disabled; upstream requests are unchanged', prependSummary: 'Added to every request', ifMissingSummary: 'Added only when client instructions are absent', orderManaged: 'Managed instructions', orderClient: 'Client instructions', orderImage: 'Image rules', loadFailed: 'Failed to load instruction profiles', unknownProfile: 'Profile {profile} no longer exists. Select another profile.' },
+  planQuota: { plan: 'Plan', noPlan: 'No plan', noDailyQuota: 'No daily quota', todayRemaining: 'Remaining today', currentRemaining: 'Current remaining', todayUsed: 'Used today', nextRefresh: 'Next refresh', refreshAt: 'Refresh: {time}', expiresAt: 'Expires: {time}', quotaUnavailable: 'Quota is temporarily unavailable', planUnavailable: 'Plan information could not be loaded' },
 }

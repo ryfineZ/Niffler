@@ -763,6 +763,18 @@ impl<'a> AdminAppState<'a> {
         self.app.list_wallet_snapshots_by_user_ids(user_ids).await
     }
 
+    pub(crate) async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<
+        Option<Vec<aether_data_contracts::repository::billing::UserPlanQuotaSummaryRecord>>,
+        GatewayError,
+    > {
+        self.app
+            .list_active_user_plan_quota_summaries(user_ids)
+            .await
+    }
+
     pub(crate) async fn summarize_usage_total_tokens_by_api_key_ids(
         &self,
         api_key_ids: &[String],

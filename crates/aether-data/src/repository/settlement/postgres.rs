@@ -12,7 +12,7 @@ use crate::error::SqlxResultExt;
 use crate::repository::billing::quota::{
     entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
     quota_base_amount, quota_debit_amount, usage_quota_grants_from_entitlement,
-    StoredUsageQuotaWindow, UsageQuotaGrant, QUOTA_SCOPE_FIVE_HOUR,
+    StoredUsageQuotaWindow, StoredUsageQuotaWindows, UsageQuotaGrant,
 };
 use crate::repository::usage::postgres::provider_contribution::sync_provider_api_key_usage_contribution_for_request_in_tx;
 use crate::DataLayerError;
@@ -409,14 +409,13 @@ FOR UPDATE
         {
             continue;
         }
-        let stored_five_hour =
-            find_usage_quota_window_postgres(tx, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR).await?;
+        let stored_windows = find_usage_quota_windows_postgres(tx, &entitlement_id).await?;
         grants.extend(usage_quota_grants_from_entitlement(
             &entitlement_id,
             &entitlements,
             now,
             entitlement_started_at,
-            stored_five_hour.as_ref(),
+            Some(&stored_windows),
         )?);
     }
     if input.admitted_entitlement_ids.is_none() {
@@ -527,37 +526,37 @@ ON CONFLICT (user_entitlement_id, request_id) DO NOTHING
     })
 }
 
-async fn find_usage_quota_window_postgres(
+async fn find_usage_quota_windows_postgres(
     tx: &mut crate::driver::postgres::PostgresTransaction,
     entitlement_id: &str,
-    scope: &str,
-) -> Result<Option<StoredUsageQuotaWindow>, DataLayerError> {
-    let row = sqlx::query(
+) -> Result<StoredUsageQuotaWindows, DataLayerError> {
+    let rows = sqlx::query(
         r#"
 SELECT
+  window_scope,
   window_key,
   window_started_at,
-  window_ends_at,
-  CAST(used_usd AS DOUBLE PRECISION) AS used_usd
+  window_ends_at
 FROM entitlement_usage_windows
 WHERE user_entitlement_id = $1
-  AND window_scope = $2
-LIMIT 1
         "#,
     )
     .bind(entitlement_id)
-    .bind(scope)
-    .fetch_optional(&mut **tx)
+    .fetch_all(&mut **tx)
     .await
     .map_postgres_err()?;
-    row.map(|row| {
-        Ok(StoredUsageQuotaWindow {
-            window_key: row.try_get("window_key").map_postgres_err()?,
-            window_started_at: row.try_get("window_started_at").map_postgres_err()?,
-            window_ends_at: row.try_get("window_ends_at").map_postgres_err()?,
-        })
-    })
-    .transpose()
+    let mut windows = StoredUsageQuotaWindows::new();
+    for row in rows {
+        windows.insert(
+            row.try_get("window_scope").map_postgres_err()?,
+            StoredUsageQuotaWindow {
+                window_key: row.try_get("window_key").map_postgres_err()?,
+                window_started_at: row.try_get("window_started_at").map_postgres_err()?,
+                window_ends_at: row.try_get("window_ends_at").map_postgres_err()?,
+            },
+        );
+    }
+    Ok(windows)
 }
 
 async fn upsert_usage_quota_window_postgres(

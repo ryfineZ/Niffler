@@ -12,7 +12,7 @@ use crate::error::SqlResultExt;
 use crate::repository::billing::quota::{
     entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
     quota_base_amount, quota_debit_amount, usage_quota_grants_from_entitlement,
-    StoredUsageQuotaWindow, UsageQuotaGrant, QUOTA_SCOPE_FIVE_HOUR,
+    StoredUsageQuotaWindow, StoredUsageQuotaWindows, UsageQuotaGrant,
 };
 use crate::DataLayerError;
 
@@ -303,14 +303,13 @@ ORDER BY expires_at ASC, created_at ASC, id ASC
         {
             continue;
         }
-        let stored_five_hour =
-            find_usage_quota_window_sqlite(tx, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR).await?;
+        let stored_windows = find_usage_quota_windows_sqlite(tx, &entitlement_id).await?;
         grants.extend(usage_quota_grants_from_entitlement(
             &entitlement_id,
             &entitlements,
             now,
             entitlement_started_at,
-            stored_five_hour.as_ref(),
+            Some(&stored_windows),
         )?);
     }
     if input.admitted_entitlement_ids.is_none() {
@@ -421,45 +420,45 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     })
 }
 
-async fn find_usage_quota_window_sqlite(
+async fn find_usage_quota_windows_sqlite(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     entitlement_id: &str,
-    scope: &str,
-) -> Result<Option<StoredUsageQuotaWindow>, DataLayerError> {
-    let row = sqlx::query(
+) -> Result<StoredUsageQuotaWindows, DataLayerError> {
+    let rows = sqlx::query(
         r#"
-SELECT window_key, window_started_at, window_ends_at, used_usd
+SELECT window_scope, window_key, window_started_at, window_ends_at
 FROM entitlement_usage_windows
 WHERE user_entitlement_id = ?
-  AND window_scope = ?
-LIMIT 1
         "#,
     )
     .bind(entitlement_id)
-    .bind(scope)
-    .fetch_optional(&mut **tx)
+    .fetch_all(&mut **tx)
     .await
     .map_sql_err()?;
-    row.map(|row| {
-        Ok(StoredUsageQuotaWindow {
-            window_key: row.try_get("window_key").map_sql_err()?,
-            window_started_at: chrono::DateTime::from_timestamp(
-                row.try_get::<i64, _>("window_started_at").map_sql_err()?,
-                0,
-            )
-            .ok_or_else(|| {
-                DataLayerError::UnexpectedValue("invalid quota window start".to_string())
-            })?,
-            window_ends_at: chrono::DateTime::from_timestamp(
-                row.try_get::<i64, _>("window_ends_at").map_sql_err()?,
-                0,
-            )
-            .ok_or_else(|| {
-                DataLayerError::UnexpectedValue("invalid quota window end".to_string())
-            })?,
-        })
-    })
-    .transpose()
+    let mut windows = StoredUsageQuotaWindows::new();
+    for row in rows {
+        windows.insert(
+            row.try_get("window_scope").map_sql_err()?,
+            StoredUsageQuotaWindow {
+                window_key: row.try_get("window_key").map_sql_err()?,
+                window_started_at: chrono::DateTime::from_timestamp(
+                    row.try_get::<i64, _>("window_started_at").map_sql_err()?,
+                    0,
+                )
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("invalid quota window start".to_string())
+                })?,
+                window_ends_at: chrono::DateTime::from_timestamp(
+                    row.try_get::<i64, _>("window_ends_at").map_sql_err()?,
+                    0,
+                )
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("invalid quota window end".to_string())
+                })?,
+            },
+        );
+    }
+    Ok(windows)
 }
 
 async fn upsert_usage_quota_window_sqlite(

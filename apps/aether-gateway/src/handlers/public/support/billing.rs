@@ -207,6 +207,31 @@ fn entitlement_payload(
     })
 }
 
+fn quota_summary_payload(
+    summary: &aether_data_contracts::repository::billing::UserPlanQuotaSummaryRecord,
+) -> serde_json::Value {
+    json!({
+        "user_id": summary.user_id,
+        "entitlement_id": summary.entitlement_id,
+        "plan_id": summary.plan_id,
+        "plan_title": summary.plan_title,
+        "starts_at": unix_secs_to_rfc3339(summary.starts_at_unix_secs),
+        "expires_at": unix_secs_to_rfc3339(summary.expires_at_unix_secs),
+        "quota_total_usd": summary.quota_total_usd,
+        "quota_used_usd": summary.quota_used_usd,
+        "quota_remaining_usd": summary.quota_remaining_usd,
+        "daily_total_usd": summary.daily_total_usd,
+        "daily_used_usd": summary.daily_used_usd,
+        "daily_remaining_usd": summary.daily_remaining_usd,
+        "daily_window_started_at": summary
+            .daily_window_started_at_unix_secs
+            .and_then(unix_secs_to_rfc3339),
+        "daily_window_ends_at": summary
+            .daily_window_ends_at_unix_secs
+            .and_then(unix_secs_to_rfc3339),
+    })
+}
+
 fn compute_plan_payment_amounts(
     plan: &aether_data_contracts::repository::billing::BillingPlanRecord,
     pay_currency: &str,
@@ -266,7 +291,12 @@ pub(super) async fn handle_billing_entitlements(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let entitlements = match state.list_user_plan_entitlements(&auth.user.id).await {
+    let user_ids = [auth.user.id.clone()];
+    let (entitlements_result, quota_summaries_result) = tokio::join!(
+        state.list_user_plan_entitlements(&auth.user.id),
+        state.list_active_user_plan_quota_summaries(&user_ids),
+    );
+    let entitlements = match entitlements_result {
         Ok(Some(value)) => value,
         Ok(None) => return billing_storage_unavailable_response(),
         Err(err) => {
@@ -275,6 +305,18 @@ pub(super) async fn handle_billing_entitlements(
                 format!("billing entitlement lookup failed: {err:?}"),
                 false,
             )
+        }
+    };
+    let (quota_summary, quota_summary_status) = match quota_summaries_result {
+        Ok(Some(value)) => (value.first().map(quota_summary_payload), "ok"),
+        Ok(None) => (None, "unavailable"),
+        Err(err) => {
+            tracing::error!(
+                user_id = %auth.user.id,
+                error = ?err,
+                "billing quota summary lookup failed"
+            );
+            (None, "unavailable")
         }
     };
     let now = Utc::now().timestamp().max(0) as u64;
@@ -291,7 +333,13 @@ pub(super) async fn handle_billing_entitlements(
             payload
         })
         .collect::<Vec<_>>();
-    Json(json!({"items": items, "total": items.len()})).into_response()
+    Json(json!({
+        "items": items,
+        "total": items.len(),
+        "quota_summary": quota_summary,
+        "quota_summary_status": quota_summary_status,
+    }))
+    .into_response()
 }
 
 pub(super) async fn handle_billing_plan_checkout(
@@ -783,7 +831,9 @@ pub(super) async fn maybe_build_local_billing_response(
 
 #[cfg(test)]
 mod tests {
-    use aether_data_contracts::repository::billing::BillingPlanRecord;
+    use aether_data_contracts::repository::billing::{
+        BillingPlanRecord, UserPlanQuotaSummaryRecord,
+    };
     use serde_json::json;
 
     fn billing_plan(price_amount: f64, price_currency: &str) -> BillingPlanRecord {
@@ -828,5 +878,30 @@ mod tests {
             super::compute_dodopay_plan_payment_amounts(&cny_plan, "USD", 7.2),
             Err("套餐币种与支付网关币种不匹配")
         );
+    }
+
+    #[test]
+    fn quota_summary_payload_includes_daily_refresh_and_remaining_quota() {
+        let payload = super::quota_summary_payload(&UserPlanQuotaSummaryRecord {
+            user_id: "user-1".to_string(),
+            entitlement_id: "ent-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            plan_title: "GPT Pro 月套餐".to_string(),
+            starts_at_unix_secs: 1_755_283_329,
+            expires_at_unix_secs: 1_757_875_329,
+            quota_total_usd: 80.0,
+            quota_used_usd: 20.0,
+            quota_remaining_usd: 60.0,
+            daily_total_usd: Some(80.0),
+            daily_used_usd: Some(20.0),
+            daily_remaining_usd: Some(60.0),
+            daily_window_started_at_unix_secs: Some(1_755_283_329),
+            daily_window_ends_at_unix_secs: Some(1_755_369_729),
+        });
+
+        assert_eq!(payload["plan_title"], "GPT Pro 月套餐");
+        assert_eq!(payload["quota_remaining_usd"], 60.0);
+        assert_eq!(payload["daily_remaining_usd"], 60.0);
+        assert!(payload["daily_window_ends_at"].is_string());
     }
 }

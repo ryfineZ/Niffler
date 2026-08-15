@@ -1,7 +1,7 @@
 import apiClient from './client'
 import { cachedRequest } from '@/utils/cache'
 import type { UserSession as SessionRecord } from '@/types/session'
-import type { BillingPlan, UserPlanEntitlement } from './billing'
+import type { BillingPlan, UserPlanEntitlement, UserPlanQuotaSummary } from './billing'
 import type { AdminWallet } from './admin-wallets'
 
 export type UserRole = 'admin' | 'audit_admin' | 'user'
@@ -78,6 +78,8 @@ export interface User {
   request_count?: number
   total_tokens?: number
   wallet?: AdminWallet | null
+  plan?: UserPlanQuotaSummary | null
+  plan_summary_status?: 'ok' | 'unavailable'
 }
 
 export interface CreateUserRequest {

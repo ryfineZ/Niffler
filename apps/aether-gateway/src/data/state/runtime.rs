@@ -30,8 +30,8 @@ use super::{
     StoredWalletDailyUsageLedgerPage, StoredWalletSnapshot, UpdateAnnouncementRecord,
     UpdatePendingPaymentOrderGatewayInput, UpsertBackgroundTaskEvent, UpsertBackgroundTaskRun,
     UpsertUsageRecord, UpsertVideoTask, UsageSettlementInput, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, VideoTaskLookupKey,
-    VideoTaskModelCount, VideoTaskQueryFilter, VideoTaskStatusCount,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
+    VideoTaskLookupKey, VideoTaskModelCount, VideoTaskQueryFilter, VideoTaskStatusCount,
     WalletDailyUsageAggregationInput, WalletDailyUsageAggregationResult, WalletLookupKey,
     WalletMutationOutcome,
 };
@@ -2023,6 +2023,20 @@ impl GatewayDataState {
     ) -> Result<Option<Vec<UserPlanEntitlementRecord>>, DataLayerError> {
         match &self.billing_reader {
             Some(repository) => repository.list_user_plan_entitlements(user_id).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, DataLayerError> {
+        match &self.billing_reader {
+            Some(repository) => {
+                repository
+                    .list_active_user_plan_quota_summaries(user_ids)
+                    .await
+            }
             None => Ok(None),
         }
     }

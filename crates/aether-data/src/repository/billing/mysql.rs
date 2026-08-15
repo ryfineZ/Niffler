@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use sqlx::{mysql::MySqlRow, Row};
+use sqlx::{mysql::MySqlRow, MySql, QueryBuilder, Row};
 
 use super::{
-    quota::{usage_quota_grants_from_entitlement, StoredUsageQuotaWindow, QUOTA_SCOPE_FIVE_HOUR},
+    quota::{
+        usage_quota_grants_from_entitlement, LoadedUserPlanQuotaSummary, StoredUsageQuotaWindow,
+        StoredUsageQuotaWindows,
+    },
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
     BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
     PaymentGatewayConfigWriteInput, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
 };
 use crate::driver::mysql::MysqlPool;
 use crate::error::SqlResultExt;
@@ -1190,6 +1193,158 @@ WHERE id = ?
             .await
     }
 
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, DataLayerError> {
+        if user_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let now_unix_secs = current_unix_secs_i64();
+        let mut entitlements_query = QueryBuilder::<MySql>::new(
+            r#"
+SELECT
+  upe.user_id,
+  upe.id AS entitlement_id,
+  upe.plan_id,
+  bp.title AS plan_title,
+  upe.starts_at,
+  upe.expires_at,
+  upe.entitlements_snapshot
+FROM user_plan_entitlements upe
+JOIN billing_plans bp ON bp.id = upe.plan_id
+WHERE upe.user_id IN (
+            "#,
+        );
+        {
+            let mut separated = entitlements_query.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        entitlements_query
+            .push(") AND upe.status = 'active' AND upe.starts_at <= ")
+            .push_bind(now_unix_secs)
+            .push(" AND upe.expires_at > ")
+            .push_bind(now_unix_secs)
+            .push(" ORDER BY upe.user_id ASC, upe.expires_at ASC, upe.created_at ASC, upe.id ASC");
+        let entitlement_rows = entitlements_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_sql_err()?;
+        let entitlement_ids = entitlement_rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("entitlement_id"))
+            .collect::<Result<Vec<_>, _>>()
+            .map_sql_err()?;
+        if entitlement_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        let mut usage_query = QueryBuilder::<MySql>::new(
+            r#"
+SELECT
+  user_entitlement_id,
+  window_scope,
+  window_key,
+  used_usd,
+  window_started_at,
+  window_ends_at
+FROM entitlement_usage_windows
+WHERE user_entitlement_id IN (
+            "#,
+        );
+        {
+            let mut separated = usage_query.separated(", ");
+            for entitlement_id in &entitlement_ids {
+                separated.push_bind(entitlement_id);
+            }
+        }
+        usage_query.push(")");
+        let usage_rows = usage_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_sql_err()?;
+        let mut usage_by_entitlement = BTreeMap::<String, BTreeMap<(String, String), f64>>::new();
+        let mut stored_windows_by_entitlement = BTreeMap::<String, StoredUsageQuotaWindows>::new();
+        for row in usage_rows {
+            let entitlement_id: String = row.try_get("user_entitlement_id").map_sql_err()?;
+            let scope: String = row.try_get("window_scope").map_sql_err()?;
+            let window_key: String = row.try_get("window_key").map_sql_err()?;
+            let used_usd: f64 = row.try_get("used_usd").map_sql_err()?;
+            usage_by_entitlement
+                .entry(entitlement_id.clone())
+                .or_default()
+                .insert((scope.clone(), window_key.clone()), used_usd);
+            let started_at_unix_secs: i64 = row.try_get("window_started_at").map_sql_err()?;
+            let ends_at_unix_secs: i64 = row.try_get("window_ends_at").map_sql_err()?;
+            if let (Some(window_started_at), Some(window_ends_at)) = (
+                chrono::DateTime::from_timestamp(started_at_unix_secs, 0),
+                chrono::DateTime::from_timestamp(ends_at_unix_secs, 0),
+            ) {
+                stored_windows_by_entitlement
+                    .entry(entitlement_id)
+                    .or_default()
+                    .insert(
+                        scope,
+                        StoredUsageQuotaWindow {
+                            window_key,
+                            window_started_at,
+                            window_ends_at,
+                        },
+                    );
+            }
+        }
+
+        let now = chrono::DateTime::from_timestamp(now_unix_secs, 0).ok_or_else(|| {
+            DataLayerError::UnexpectedValue("invalid current timestamp".to_string())
+        })?;
+        let mut loaded_summaries = Vec::with_capacity(entitlement_rows.len());
+        for row in entitlement_rows {
+            let user_id: String = row.try_get("user_id").map_sql_err()?;
+            let entitlement_id: String = row.try_get("entitlement_id").map_sql_err()?;
+            let plan_id: String = row.try_get("plan_id").map_sql_err()?;
+            let plan_title: String = row.try_get("plan_title").map_sql_err()?;
+            let starts_at_unix_secs: i64 = row.try_get("starts_at").map_sql_err()?;
+            let expires_at_unix_secs: i64 = row.try_get("expires_at").map_sql_err()?;
+            let starts_at =
+                chrono::DateTime::from_timestamp(starts_at_unix_secs, 0).ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("invalid entitlement start".to_string())
+                })?;
+            let entitlements = parse_json(
+                row.try_get::<Option<String>, _>("entitlements_snapshot")
+                    .map_sql_err()?,
+            )?
+            .unwrap_or_else(|| serde_json::json!([]));
+            let grants = usage_quota_grants_from_entitlement(
+                &entitlement_id,
+                &entitlements,
+                now,
+                starts_at,
+                stored_windows_by_entitlement.get(&entitlement_id),
+            )?;
+            loaded_summaries.push(LoadedUserPlanQuotaSummary {
+                user_id,
+                usage_by_window: usage_by_entitlement
+                    .remove(&entitlement_id)
+                    .unwrap_or_default(),
+                entitlement_id,
+                plan_id,
+                plan_title,
+                starts_at_unix_secs: starts_at_unix_secs.max(0) as u64,
+                expires_at_unix_secs: expires_at_unix_secs.max(0) as u64,
+                grants,
+            });
+        }
+        let summaries = loaded_summaries
+            .into_iter()
+            .map(LoadedUserPlanQuotaSummary::into_record)
+            .collect();
+        Ok(Some(summaries))
+    }
+
     async fn find_user_daily_quota_availability_for_global_model(
         &self,
         user_id: &str,
@@ -1260,15 +1415,14 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             {
                 continue;
             }
-            let stored_five_hour =
-                find_usage_quota_window_mysql(&self.pool, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR)
-                    .await?;
+            let stored_windows =
+                find_usage_quota_windows_mysql(&self.pool, &entitlement_id).await?;
             grants.extend(usage_quota_grants_from_entitlement(
                 &entitlement_id,
                 &entitlements,
                 now,
                 entitlement_started_at,
-                stored_five_hour.as_ref(),
+                Some(&stored_windows),
             )?);
         }
         let mut grouped_limits: BTreeMap<String, (Option<f64>, Option<f64>, f64)> = BTreeMap::new();
@@ -1277,32 +1431,21 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             allow_wallet_overage &= grant.allow_wallet_overage;
             let used = sqlx::query_scalar::<_, f64>(
                 r#"
-SELECT COALESCE(
-  (
-    SELECT used_usd
-    FROM entitlement_usage_windows
-    WHERE user_entitlement_id = ?
-      AND window_scope = ?
-      AND window_key = ?
-    LIMIT 1
-  ),
-  (
-    SELECT COALESCE(SUM(amount_usd), 0)
-    FROM entitlement_usage_ledgers
-    WHERE user_entitlement_id = ?
-      AND usage_date = ?
-  )
-)
+SELECT used_usd
+FROM entitlement_usage_windows
+WHERE user_entitlement_id = ?
+  AND window_scope = ?
+  AND window_key = ?
+LIMIT 1
                 "#,
             )
             .bind(&grant.entitlement_id)
             .bind(grant.scope)
             .bind(&grant.window_key)
-            .bind(&grant.entitlement_id)
-            .bind(&grant.window_key)
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await
-            .map_sql_err()?;
+            .map_sql_err()?
+            .unwrap_or(0.0);
             let remaining = (grant.limit_usd - used).max(0.0);
             let entry = grouped_limits
                 .entry(grant.entitlement_id.clone())
@@ -1533,45 +1676,46 @@ fn json_to_string(value: &serde_json::Value) -> Result<String, DataLayerError> {
     })
 }
 
-async fn find_usage_quota_window_mysql(
+async fn find_usage_quota_windows_mysql(
     pool: &MysqlPool,
     entitlement_id: &str,
-    scope: &str,
-) -> Result<Option<StoredUsageQuotaWindow>, DataLayerError> {
-    let row = sqlx::query(
+) -> Result<StoredUsageQuotaWindows, DataLayerError> {
+    let rows = sqlx::query(
         r#"
-SELECT window_key, window_started_at, window_ends_at, used_usd
+SELECT window_scope, window_key, window_started_at, window_ends_at
 FROM entitlement_usage_windows
 WHERE user_entitlement_id = ?
-  AND window_scope = ?
-LIMIT 1
         "#,
     )
     .bind(entitlement_id)
-    .bind(scope)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
     .map_sql_err()?;
-    row.map(|row| {
-        Ok(StoredUsageQuotaWindow {
-            window_key: row.try_get("window_key").map_sql_err()?,
-            window_started_at: chrono::DateTime::from_timestamp(
-                row.try_get::<i64, _>("window_started_at").map_sql_err()?,
-                0,
-            )
-            .ok_or_else(|| {
-                DataLayerError::UnexpectedValue("invalid quota window start".to_string())
-            })?,
-            window_ends_at: chrono::DateTime::from_timestamp(
-                row.try_get::<i64, _>("window_ends_at").map_sql_err()?,
-                0,
-            )
-            .ok_or_else(|| {
-                DataLayerError::UnexpectedValue("invalid quota window end".to_string())
-            })?,
-        })
-    })
-    .transpose()
+    let mut windows = StoredUsageQuotaWindows::new();
+    for row in rows {
+        let scope: String = row.try_get("window_scope").map_sql_err()?;
+        windows.insert(
+            scope,
+            StoredUsageQuotaWindow {
+                window_key: row.try_get("window_key").map_sql_err()?,
+                window_started_at: chrono::DateTime::from_timestamp(
+                    row.try_get::<i64, _>("window_started_at").map_sql_err()?,
+                    0,
+                )
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("invalid quota window start".to_string())
+                })?,
+                window_ends_at: chrono::DateTime::from_timestamp(
+                    row.try_get::<i64, _>("window_ends_at").map_sql_err()?,
+                    0,
+                )
+                .ok_or_else(|| {
+                    DataLayerError::UnexpectedValue("invalid quota window end".to_string())
+                })?,
+            },
+        );
+    }
+    Ok(windows)
 }
 
 fn read_count_mysql(row: &MySqlRow) -> Result<u64, DataLayerError> {

@@ -195,6 +195,134 @@ afterEach(() => {
 })
 
 describe('BillingPlans debt purchase', () => {
+  it('shows remaining daily quota and the server-provided refresh time', async () => {
+    apiMocks.listEntitlements.mockResolvedValueOnce({
+      items: [{
+        id: 'entitlement-1',
+        user_id: 'user-1',
+        plan_id: 'plan-1',
+        payment_order_id: 'order-plan-1',
+        status: 'active',
+        starts_at: '2026-08-15T05:35:29Z',
+        expires_at: '2026-09-15T05:35:29Z',
+        allowed_provider_ids: ['provider-1'],
+        entitlements: [{ type: 'daily_quota', daily_quota_usd: 10 }],
+        active: true,
+        created_at: '2026-08-15T05:35:29Z',
+      }],
+      total: 1,
+      quota_summary: {
+        user_id: 'user-1',
+        entitlement_id: 'entitlement-1',
+        plan_id: 'plan-1',
+        plan_title: '标准套餐',
+        starts_at: '2026-08-15T05:35:29Z',
+        expires_at: '2026-09-15T05:35:29Z',
+        quota_total_usd: 10,
+        quota_used_usd: 3.5,
+        quota_remaining_usd: 6.5,
+        daily_total_usd: 10,
+        daily_used_usd: 3.5,
+        daily_remaining_usd: 6.5,
+        daily_window_started_at: '2026-08-15T05:35:29Z',
+        daily_window_ends_at: '2026-08-16T05:35:29Z',
+      },
+      quota_summary_status: 'ok',
+    })
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(BillingPlans)
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+
+    expect(root.textContent).toContain('今日剩余')
+    expect(root.textContent).toContain('$6.50 / $10.00')
+    expect(root.textContent).toContain('今日已用')
+    expect(root.textContent).toContain('$3.50')
+    expect(root.textContent).toContain('下次刷新')
+  })
+
+  it('keeps daily quota separate from a tighter overall quota and uses the server plan title', async () => {
+    apiMocks.listEntitlements.mockResolvedValueOnce({
+      items: [{
+        id: 'entitlement-retired',
+        user_id: 'user-1',
+        plan_id: 'retired-plan',
+        payment_order_id: 'order-retired',
+        status: 'active',
+        starts_at: '2026-08-15T05:35:29Z',
+        expires_at: '2026-09-15T05:35:29Z',
+        allowed_provider_ids: ['provider-1'],
+        entitlements: [{ type: 'daily_quota', daily_quota_usd: 80 }],
+        active: true,
+        created_at: '2026-08-15T05:35:29Z',
+      }],
+      total: 1,
+      quota_summary: {
+        user_id: 'user-1',
+        entitlement_id: 'entitlement-retired',
+        plan_id: 'retired-plan',
+        plan_title: '已下架套餐',
+        starts_at: '2026-08-15T05:35:29Z',
+        expires_at: '2026-09-15T05:35:29Z',
+        quota_total_usd: 80,
+        quota_used_usd: 80,
+        quota_remaining_usd: 0,
+        daily_total_usd: 80,
+        daily_used_usd: 10,
+        daily_remaining_usd: 70,
+        daily_window_started_at: '2026-08-15T05:35:29Z',
+        daily_window_ends_at: '2026-08-16T05:35:29Z',
+      },
+      quota_summary_status: 'ok',
+    })
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(BillingPlans)
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+
+    expect(root.textContent).toContain('已下架套餐')
+    expect(root.textContent).toContain('$70.00 / $80.00')
+    expect(root.textContent).toContain('今日已用')
+    expect(root.textContent).toContain('$10.00')
+    expect(root.textContent).toContain('当前剩余')
+    expect(root.textContent).toContain('$0.00')
+  })
+
+  it('keeps the active plan visible when its quota summary is temporarily unavailable', async () => {
+    apiMocks.listEntitlements.mockResolvedValueOnce({
+      items: [{
+        id: 'entitlement-1',
+        user_id: 'user-1',
+        plan_id: 'plan-1',
+        payment_order_id: 'order-plan-1',
+        status: 'active',
+        starts_at: '2026-08-15T05:35:29Z',
+        expires_at: '2026-09-15T05:35:29Z',
+        allowed_provider_ids: ['provider-1'],
+        entitlements: [{ type: 'daily_quota', daily_quota_usd: 10 }],
+        active: true,
+        created_at: '2026-08-15T05:35:29Z',
+      }],
+      total: 1,
+      quota_summary: null,
+      quota_summary_status: 'unavailable',
+    })
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(BillingPlans)
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+
+    expect(root.textContent).toContain('标准套餐')
+    expect(root.textContent).toContain('额度暂时无法读取')
+    expect(root.textContent).not.toContain('今日剩余')
+  })
+
   it('shows the exact breakdown before opening payment for a wallet in debt', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)

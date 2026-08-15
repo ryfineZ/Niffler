@@ -327,6 +327,7 @@
             <col :style="{ width: userTableColumnWidths.select }">
             <col :style="{ width: userTableColumnWidths.user }">
             <col :style="{ width: userTableColumnWidths.wallet }">
+            <col :style="{ width: userTableColumnWidths.plan }">
             <col :style="{ width: userTableColumnWidths.stats }">
             <col :style="{ width: userTableColumnWidths.created }">
             <col :style="{ width: userTableColumnWidths.status }">
@@ -370,6 +371,15 @@
                 @resize-start="handleUserTableColumnResizeStart"
               >
                 {{ t('userManagement.wallet') }}
+              </SortableTableHead>
+              <SortableTableHead
+                class="h-11 px-3 font-semibold"
+                :sortable="false"
+                resize-column-key="plan"
+                :resizable="true"
+                @resize-start="handleUserTableColumnResizeStart"
+              >
+                {{ t('planQuota.plan') }}
               </SortableTableHead>
               <SortableTableHead
                 class="h-11 px-3 font-semibold"
@@ -514,6 +524,82 @@
                       <span class="font-medium tabular-nums text-foreground">${{ getUserWalletConsumed(user).toFixed(2) }}</span>
                     </span>
                   </div>
+                </div>
+              </TableCell>
+              <TableCell class="px-3 py-3">
+                <div
+                  v-if="user.plan_summary_status === 'unavailable'"
+                  class="text-xs font-medium text-amber-700 dark:text-amber-300"
+                >
+                  {{ t('planQuota.planUnavailable') }}
+                </div>
+                <div
+                  v-else-if="user.plan"
+                  class="space-y-1 text-[11px]"
+                >
+                  <div
+                    class="truncate text-sm font-semibold text-foreground"
+                    :title="user.plan.plan_title"
+                  >
+                    {{ user.plan.plan_title }}
+                  </div>
+                  <div
+                    v-if="user.plan.daily_total_usd != null"
+                    class="flex items-center gap-1 text-muted-foreground"
+                  >
+                    <span>{{ t('planQuota.todayRemaining') }}</span>
+                    <span
+                      class="font-medium tabular-nums"
+                      :class="getUserPlanRemaining(user) <= 0 ? 'text-rose-600' : 'text-foreground'"
+                    >
+                      {{ formatCurrencyValue(getUserPlanRemaining(user)) }} / {{ formatCurrencyValue(getUserPlanTotal(user)) }}
+                    </span>
+                  </div>
+                  <div
+                    v-else-if="user.plan.quota_total_usd > 0"
+                    class="flex items-center gap-1 text-muted-foreground"
+                  >
+                    <span>{{ t('planQuota.currentRemaining') }}</span>
+                    <span
+                      class="font-medium tabular-nums"
+                      :class="getUserPlanRemaining(user) <= 0 ? 'text-rose-600' : 'text-foreground'"
+                    >
+                      {{ formatCurrencyValue(getUserPlanRemaining(user)) }} / {{ formatCurrencyValue(getUserPlanTotal(user)) }}
+                    </span>
+                  </div>
+                  <div
+                    v-else
+                    class="text-muted-foreground"
+                  >
+                    {{ t('planQuota.noDailyQuota') }}
+                  </div>
+                  <div
+                    v-if="hasTighterOverallQuota(user)"
+                    class="flex items-center gap-1 text-muted-foreground"
+                  >
+                    <span>{{ t('planQuota.currentRemaining') }}</span>
+                    <span
+                      class="font-medium tabular-nums"
+                      :class="getUserPlanCurrentRemaining(user) <= 0 ? 'text-rose-600' : 'text-foreground'"
+                    >
+                      {{ formatCurrencyValue(getUserPlanCurrentRemaining(user)) }}
+                    </span>
+                  </div>
+                  <div
+                    v-if="user.plan.daily_window_ends_at"
+                    class="text-muted-foreground"
+                  >
+                    {{ t('planQuota.refreshAt', { time: formatDateTime(user.plan.daily_window_ends_at) }) }}
+                  </div>
+                  <div class="text-muted-foreground">
+                    {{ t('planQuota.expiresAt', { time: formatDateTime(user.plan.expires_at) }) }}
+                  </div>
+                </div>
+                <div
+                  v-else
+                  class="text-xs text-muted-foreground"
+                >
+                  {{ t('planQuota.noPlan') }}
                 </div>
               </TableCell>
               <TableCell class="px-3 py-3">
@@ -787,6 +873,65 @@
                       ${{ getUserWalletConsumed(user).toFixed(2) }}
                     </p>
                   </div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border border-border/60 bg-muted/40 p-3.5 text-xs">
+                <div
+                  v-if="user.plan_summary_status === 'unavailable'"
+                  class="font-medium text-amber-700 dark:text-amber-300"
+                >
+                  {{ t('planQuota.planUnavailable') }}
+                </div>
+                <div
+                  v-else-if="user.plan"
+                  class="space-y-2"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div>
+                      <p class="text-[11px] text-muted-foreground">
+                        {{ t('planQuota.plan') }}
+                      </p>
+                      <p class="mt-0.5 font-semibold text-foreground">
+                        {{ user.plan.plan_title }}
+                      </p>
+                    </div>
+                    <div
+                      v-if="user.plan.daily_total_usd != null || user.plan.quota_total_usd > 0"
+                      class="text-right"
+                    >
+                      <p class="text-[11px] text-muted-foreground">
+                        {{ user.plan.daily_total_usd != null ? t('planQuota.todayRemaining') : t('planQuota.currentRemaining') }}
+                      </p>
+                      <p
+                        class="mt-0.5 font-semibold tabular-nums"
+                        :class="getUserPlanRemaining(user) <= 0 ? 'text-rose-600' : 'text-foreground'"
+                      >
+                        {{ formatCurrencyValue(getUserPlanRemaining(user)) }} / {{ formatCurrencyValue(getUserPlanTotal(user)) }}
+                      </p>
+                    </div>
+                    <p
+                      v-else
+                      class="text-right text-[11px] text-muted-foreground"
+                    >
+                      {{ t('planQuota.noDailyQuota') }}
+                    </p>
+                  </div>
+                  <div class="flex flex-wrap justify-between gap-x-3 gap-y-1 border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
+                    <span v-if="hasTighterOverallQuota(user)">
+                      {{ t('planQuota.currentRemaining') }}：{{ formatCurrencyValue(getUserPlanCurrentRemaining(user)) }}
+                    </span>
+                    <span v-if="user.plan.daily_window_ends_at">
+                      {{ t('planQuota.refreshAt', { time: formatDateTime(user.plan.daily_window_ends_at) }) }}
+                    </span>
+                    <span>{{ t('planQuota.expiresAt', { time: formatDateTime(user.plan.expires_at) }) }}</span>
+                  </div>
+                </div>
+                <div
+                  v-else
+                  class="text-muted-foreground"
+                >
+                  {{ t('planQuota.noPlan') }}
                 </div>
               </div>
 
@@ -1916,11 +2061,12 @@ const userStatusFilterOptions = computed(() => [
   { value: 'active', label: t('userManagement.active') },
   { value: 'inactive', label: t('userManagement.disabled') },
 ])
-type UserTableColumnKey = 'select' | 'user' | 'wallet' | 'stats' | 'created' | 'status' | 'actions'
+type UserTableColumnKey = 'select' | 'user' | 'wallet' | 'plan' | 'stats' | 'created' | 'status' | 'actions'
 const userTableColumns: ResizableTableColumn<UserTableColumnKey>[] = [
   { key: 'select', width: '40px', minWidth: 40 },
   { key: 'user', width: '320px', minWidth: 260 },
   { key: 'wallet', width: '210px', minWidth: 180 },
+  { key: 'plan', width: '260px', minWidth: 220 },
   { key: 'stats', width: '150px', minWidth: 140 },
   { key: 'created', width: '140px', minWidth: 128 },
   { key: 'status', width: '100px', minWidth: 92 },
@@ -1930,7 +2076,7 @@ const {
   columnWidths: userTableColumnWidths,
   startResize: handleUserTableColumnResizeStart,
 } = useResizableTableColumns<UserTableColumnKey>({
-  storageKey: 'admin-users-table-column-widths-v2',
+  storageKey: 'admin-users-table-column-widths-v3',
   columns: userTableColumns,
   defaultMinWidth: 96,
 })
@@ -2262,6 +2408,29 @@ function getUserWalletConsumed(user: User): number {
   return getUserWallet(user.id)?.total_consumed ?? 0
 }
 
+function getUserPlanTotal(user: User): number {
+  const value = user.plan?.daily_total_usd ?? user.plan?.quota_total_usd ?? 0
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function getUserPlanRemaining(user: User): number {
+  if (!user.plan) return 0
+  const value = user.plan.daily_remaining_usd == null
+    ? Number(user.plan.quota_remaining_usd ?? 0)
+    : Number(user.plan.daily_remaining_usd)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function getUserPlanCurrentRemaining(user: User): number {
+  const value = Number(user.plan?.quota_remaining_usd ?? 0)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function hasTighterOverallQuota(user: User): boolean {
+  return user.plan?.daily_remaining_usd != null
+    && getUserPlanCurrentRemaining(user) + Number.EPSILON < getUserPlanRemaining(user)
+}
+
 function getUserWalletStatus(userId: string): string | null {
   return getUserWallet(userId)?.status ?? null
 }
@@ -2563,6 +2732,7 @@ async function grantPlanToSelectedUser() {
       initial_remaining_quota_usd: initialRemainingQuotaUsd,
     })
     userPlanEntitlements.value = response.items
+    await refreshUsers()
     grantReason.value = ''
     grantInitialRemainingQuotaUsd.value = ''
     applyDefaultGrantPlanTimeWindow()
@@ -2621,6 +2791,7 @@ async function updateUserPlanEntitlement(): Promise<void> {
       }
     )
     userPlanEntitlements.value = response.items
+    await refreshUsers()
     showEditUserPlanDialog.value = false
     editingUserPlanEntitlement.value = null
     success(t('userManagement.planSaved'))
@@ -2645,6 +2816,7 @@ async function cancelUserPlanEntitlement(item: AdminUserPlanEntitlement): Promis
   try {
     const response = await usersApi.cancelUserPlanEntitlement(selectedUser.value.id, item.id)
     userPlanEntitlements.value = response.items
+    await refreshUsers()
     success(t('userManagement.planCancelled'))
   } catch (err) {
     error(parseApiError(err, t('userManagement.cancelPlanFailed')))

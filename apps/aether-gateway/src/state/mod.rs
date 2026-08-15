@@ -26,6 +26,7 @@ pub(crate) use self::admin_types::{
     AdminWalletRefundRecord, AdminWalletTransactionRecord, BillingPlanRecord,
     BillingPlanWriteInput, PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput,
     UserDailyQuotaAvailabilityRecord, UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanQuotaSummaryRecord,
 };
 pub use self::app::AppState;
 pub(crate) use self::cache::{

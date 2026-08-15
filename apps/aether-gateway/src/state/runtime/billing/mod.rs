@@ -3,7 +3,7 @@ use super::super::{
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput, AppState,
     BillingPlanRecord, BillingPlanWriteInput, GatewayError, LocalMutationOutcome,
     PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
 };
 
 mod admin;
