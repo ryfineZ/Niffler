@@ -79,6 +79,7 @@
                   <CheckCircle2 class="h-4 w-4 text-emerald-500" />{{ proof }}
                 </span>
               </div>
+              <PublicEndpointLatency />
             </div>
 
             <div class="hero-visual relative flex min-h-[360px] flex-col justify-between overflow-hidden bg-[#26231f] px-7 py-5 text-[#f7f3ea] sm:px-10 sm:py-6 lg:px-12 lg:py-7">
@@ -589,6 +590,7 @@ import { usePublicLoginDialog } from '@/composables/usePublicLoginDialog'
 import { getPublicGlobalModels, type PublicGlobalModel } from '@/api/public-models'
 import { getInfiniteCanvasUrl } from '@/utils/infiniteCanvasUrl'
 import ApiNetworkVisual from '@/components/home/ApiNetworkVisual.vue'
+import PublicEndpointLatency from '@/components/home/PublicEndpointLatency.vue'
 import HomeCinematicVisual, {
   type HomeCinematicScene,
   type HomeScrollDirection,
