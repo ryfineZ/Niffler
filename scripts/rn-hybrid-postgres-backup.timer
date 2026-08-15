@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Niffler rn-hybrid PostgreSQL backup every day
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=10m
+Unit=niffler-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

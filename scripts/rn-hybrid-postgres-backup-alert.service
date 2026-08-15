@@ -1,0 +1,17 @@
+[Unit]
+Description=Send Niffler rn-hybrid PostgreSQL backup failure alert to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="NIFFLER_BACKUP_SERVER_LABEL=数据库服务器（rn-hybrid）"
+Environment=NIFFLER_BACKUP_LOG_HOST=rn-hybrid
+ExecStart=/usr/local/sbin/niffler-postgres-backup-alert failure
+User=root
+Group=root
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+TimeoutStartSec=1m

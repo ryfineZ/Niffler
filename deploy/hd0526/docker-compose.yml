@@ -1,0 +1,76 @@
+services:
+  frontdoor:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    container_name: niffler-frontdoor
+    env_file:
+      - .env
+    environment:
+      AETHER_MAX_REQUEST_BODY_MB: "256"
+      APP_PORT: ${APP_PORT:-8084}
+      AETHER_GATEWAY_NODE_ROLE: frontdoor
+      AETHER_GATEWAY_STATIC_DIR: /srv/frontend
+      AETHER_GATEWAY_AUTO_PREPARE_DATABASE: "false"
+      AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS: "10"
+      AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS: "30000"
+      AETHER_GATEWAY_DATA_POSTGRES_REQUIRE_SSL: "true"
+    ports:
+      - "127.0.0.1:${APP_PORT:-8084}:${APP_PORT:-8084}"
+    volumes:
+      - ./logs/frontdoor:/app/logs
+    healthcheck:
+      test: ["CMD", "aether-gateway", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  background:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    container_name: niffler-background
+    env_file:
+      - .env
+      - .env.background
+    environment:
+      APP_PORT: ${BACKGROUND_APP_PORT:-8085}
+      AETHER_GATEWAY_NODE_ROLE: background
+      AETHER_GATEWAY_STATIC_DIR: /srv/frontend
+      AETHER_GATEWAY_AUTO_PREPARE_DATABASE: "false"
+      AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS: "5"
+      AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS: "30000"
+      AETHER_GATEWAY_DATA_POSTGRES_REQUIRE_SSL: "true"
+    volumes:
+      - ./logs/background:/app/logs
+    healthcheck:
+      test: ["CMD", "aether-gateway", "--healthcheck", "--app-port", "8085"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      frontdoor:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: niffler-caddy
+    depends_on:
+      frontdoor:
+        condition: service_healthy
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    networks:
+      - default
+      - dodopay
+    restart: unless-stopped
+
+networks:
+  dodopay:
+    external: true
+    name: dodopay_default
