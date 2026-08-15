@@ -111,7 +111,7 @@ async fn perform_usage_cleanup_once_with_options(
     }
     if respect_auto_enabled
         && override_older_than.is_none()
-        && !system_config_bool(data, "enable_auto_cleanup", true).await?
+        && !usage_detail_auto_cleanup_enabled(data).await?
     {
         return Ok(UsageCleanupSummary::default());
     }
@@ -126,6 +126,13 @@ async fn perform_usage_cleanup_once_with_options(
         cleanup_execution_mode(options.mode),
     )
     .await
+}
+
+pub(super) async fn usage_detail_auto_cleanup_enabled(
+    data: &GatewayDataState,
+) -> Result<bool, DataLayerError> {
+    Ok(system_config_bool(data, "enable_auto_cleanup", true).await?
+        && system_config_bool(data, "enable_usage_detail_cleanup", true).await?)
 }
 
 pub(crate) async fn preview_manual_usage_cleanup(

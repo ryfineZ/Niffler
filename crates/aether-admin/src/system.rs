@@ -1489,6 +1489,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "header_retention_days" => Some(json!(30)),
         "log_retention_days" => Some(json!(365)),
         "enable_auto_cleanup" => Some(json!(true)),
+        "enable_usage_detail_cleanup" => Some(json!(true)),
         "cleanup_batch_size" => Some(json!(1000)),
         "request_candidates_retention_days" => Some(json!(30)),
         "request_candidates_cleanup_batch_size" => Some(json!(5000)),
@@ -2651,6 +2652,10 @@ mod tests {
         assert_eq!(
             admin_system_config_default_value("header_retention_days"),
             Some(json!(30))
+        );
+        assert_eq!(
+            admin_system_config_default_value("enable_usage_detail_cleanup"),
+            Some(json!(true))
         );
         assert_eq!(
             admin_system_config_default_value("codex_oauth_identity_convergence_enabled"),

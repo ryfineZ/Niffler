@@ -30,8 +30,8 @@ use super::{
     stats_aggregation_target_day, stats_daily_catch_up_pause_after_success,
     stats_hourly_aggregation_target_hour, summarize_database_pool, usage_cleanup_settings,
     usage_cleanup_window, usage_cleanup_window_for_mode, usage_cleanup_window_with_override,
-    wallet_daily_usage_aggregation_target, AppState, DbMaintenanceRunSummary,
-    FailedPendingUsageRow, GatewayDataState, ManualUsageCleanupMode,
+    usage_detail_auto_cleanup_enabled, wallet_daily_usage_aggregation_target, AppState,
+    DbMaintenanceRunSummary, FailedPendingUsageRow, GatewayDataState, ManualUsageCleanupMode,
     ProxyNodeMetricsCleanupSettings, ProxyUpgradeRolloutProbeConfig, StalePendingUsageRow,
     UsageCleanupSettings, USAGE_CLEANUP_HOUR, USAGE_CLEANUP_MINUTE,
     WALLET_DAILY_USAGE_AGGREGATION_HOUR, WALLET_DAILY_USAGE_AGGREGATION_MINUTE,
@@ -607,6 +607,25 @@ async fn cleanup_audit_logs_respects_auto_cleanup_toggle() {
     .expect("audit cleanup should short-circuit");
 
     assert_eq!(deleted, 0);
+}
+
+#[tokio::test]
+async fn usage_detail_cleanup_has_an_independent_toggle() {
+    let disabled = GatewayDataState::disabled().with_system_config_values_for_tests([
+        ("enable_auto_cleanup".to_string(), json!(true)),
+        ("enable_usage_detail_cleanup".to_string(), json!(false)),
+    ]);
+    assert!(!usage_detail_auto_cleanup_enabled(&disabled)
+        .await
+        .expect("usage detail cleanup toggle should load"));
+
+    let enabled = GatewayDataState::disabled().with_system_config_values_for_tests([
+        ("enable_auto_cleanup".to_string(), json!(true)),
+        ("enable_usage_detail_cleanup".to_string(), json!(true)),
+    ]);
+    assert!(usage_detail_auto_cleanup_enabled(&enabled)
+        .await
+        .expect("usage detail cleanup toggle should load"));
 }
 
 #[tokio::test]
