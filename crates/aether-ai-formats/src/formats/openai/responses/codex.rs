@@ -145,23 +145,66 @@ fn codex_openai_responses_has_client_image_tool(
         .into_iter()
         .flatten()
         .filter_map(Value::as_object)
-        .any(|tool| {
-            let tool_type = tool
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim();
-            let name = tool
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim();
-            (tool_type.eq_ignore_ascii_case("namespace") && name.eq_ignore_ascii_case("image_gen"))
-                || (matches!(
-                    tool_type.to_ascii_lowercase().as_str(),
-                    "function" | "custom"
-                ) && name.eq_ignore_ascii_case("image_gen.imagegen"))
-        })
+        .any(codex_openai_responses_is_client_image_tool)
+}
+
+fn codex_openai_responses_is_client_image_tool(tool: &serde_json::Map<String, Value>) -> bool {
+    let tool_type = tool
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let name = tool
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    (tool_type.eq_ignore_ascii_case("namespace") && name.eq_ignore_ascii_case("image_gen"))
+        || (matches!(
+            tool_type.to_ascii_lowercase().as_str(),
+            "function" | "custom"
+        ) && name.eq_ignore_ascii_case("image_gen.imagegen"))
+}
+
+fn codex_openai_responses_prefers_hosted_image_tool(
+    body_object: &serde_json::Map<String, Value>,
+) -> bool {
+    body_object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|model| model.eq_ignore_ascii_case("gpt-5.6-sol"))
+}
+
+fn codex_openai_responses_tool_choice_references_client_image_tool(
+    body_object: &serde_json::Map<String, Value>,
+) -> bool {
+    match body_object.get("tool_choice") {
+        Some(Value::String(name)) => {
+            let name = name.trim();
+            name.eq_ignore_ascii_case("image_gen")
+                || name.eq_ignore_ascii_case("image_gen.imagegen")
+        }
+        Some(Value::Object(choice)) => codex_openai_responses_is_client_image_tool(choice),
+        _ => false,
+    }
+}
+
+fn replace_codex_openai_responses_client_image_tools(
+    body_object: &mut serde_json::Map<String, Value>,
+) {
+    let replace_tool_choice =
+        codex_openai_responses_tool_choice_references_client_image_tool(body_object);
+    if let Some(tools) = body_object.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.retain(|tool| {
+            !tool
+                .as_object()
+                .is_some_and(codex_openai_responses_is_client_image_tool)
+        });
+    }
+    if replace_tool_choice {
+        body_object.insert("tool_choice".to_string(), json!("auto"));
+    }
 }
 
 fn normalize_codex_openai_image_generation_tool(tool: &mut serde_json::Map<String, Value>) {
@@ -646,12 +689,18 @@ pub fn apply_openai_responses_image_generation_bridge_body_edits(
     };
 
     normalize_codex_openai_image_generation_tools(body_object);
-    if codex_openai_responses_image_bridge_enabled(
+    let image_bridge_enabled = codex_openai_responses_image_bridge_enabled(
         provider_api_format,
         body_object,
         enable_image_generation_tool,
-    ) && !codex_openai_responses_has_client_image_tool(body_object)
+    );
+    if image_bridge_enabled
+        && codex_openai_responses_prefers_hosted_image_tool(body_object)
+        && codex_openai_responses_has_client_image_tool(body_object)
     {
+        replace_codex_openai_responses_client_image_tools(body_object);
+    }
+    if image_bridge_enabled && !codex_openai_responses_has_client_image_tool(body_object) {
         ensure_codex_openai_responses_image_generation_tool(body_object);
         ensure_codex_openai_responses_auto_tool_choice(body_object);
         apply_codex_image_generation_bridge_instructions(body_object);
@@ -1055,6 +1104,7 @@ mod tests {
         apply_codex_image_generation_bridge_instructions,
         apply_codex_openai_responses_chat_body_edits,
         apply_codex_openai_responses_special_body_edits,
+        apply_codex_openai_responses_special_body_edits_with_bridge_config,
         apply_codex_openai_responses_special_body_edits_with_bridge_model,
         apply_openai_responses_compact_special_body_edits,
         codex_hosted_image_generation_tool_allowed, split_codex_image_generation_bridge_suffix,
@@ -1072,6 +1122,130 @@ mod tests {
             false,
             "openai:responses"
         ));
+    }
+
+    #[test]
+    fn sol_replaces_client_image_tools_with_hosted_image_generation() {
+        let mut provider_request_body = json!({
+            "model": "gpt-5.6-sol",
+            "input": "Create an image of a glass city",
+            "stream": true,
+            "tool_choice": "auto",
+            "client_metadata": {
+                "ws_request_header_x_openai_internal_codex_responses_lite": true,
+                "x-codex-installation-id": "install-123"
+            },
+            "tools": [
+                {"type": "function", "name": "read_file"},
+                {"type": "namespace", "name": "image_gen"},
+                {"type": "custom", "name": "image_gen.imagegen"},
+                {"type": "tool_search", "execution": "client"}
+            ]
+        });
+
+        apply_codex_openai_responses_special_body_edits_with_bridge_config(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+            None,
+            true,
+        );
+
+        let tools = provider_request_body["tools"]
+            .as_array()
+            .expect("tools should remain an array");
+        assert_eq!(
+            tools,
+            &vec![
+                json!({"type": "function", "name": "read_file"}),
+                json!({"type": "tool_search", "execution": "client"}),
+                json!({
+                    "type": "image_generation",
+                    "output_format": "png"
+                }),
+            ]
+        );
+        assert_eq!(provider_request_body["tool_choice"], json!("auto"));
+        assert!(provider_request_body["instructions"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Responses native `image_generation` tool"));
+        assert!(provider_request_body["client_metadata"]
+            .get("ws_request_header_x_openai_internal_codex_responses_lite")
+            .is_none());
+        assert_eq!(
+            provider_request_body["client_metadata"]["x-codex-installation-id"],
+            json!("install-123")
+        );
+    }
+
+    #[test]
+    fn sol_replaces_explicit_client_image_tool_choice_with_auto() {
+        let mut provider_request_body = json!({
+            "model": "gpt-5.6-sol",
+            "input": "Create an image",
+            "tools": [{
+                "type": "function",
+                "name": "image_gen.imagegen"
+            }],
+            "tool_choice": {
+                "type": "function",
+                "name": "image_gen.imagegen"
+            }
+        });
+
+        apply_codex_openai_responses_special_body_edits_with_bridge_config(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+            None,
+            true,
+        );
+
+        assert_eq!(provider_request_body["tool_choice"], json!("auto"));
+        assert_eq!(
+            provider_request_body["tools"],
+            json!([{
+                "type": "image_generation",
+                "output_format": "png"
+            }])
+        );
+    }
+
+    #[test]
+    fn sol_preserves_client_image_tool_when_hosted_generation_is_disabled() {
+        let mut provider_request_body = json!({
+            "model": "gpt-5.6-sol",
+            "input": "Create an image",
+            "tools": [{
+                "type": "namespace",
+                "name": "image_gen"
+            }],
+            "tool_choice": "auto"
+        });
+
+        apply_codex_openai_responses_special_body_edits_with_bridge_config(
+            &mut provider_request_body,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+            None,
+            false,
+        );
+
+        assert_eq!(
+            provider_request_body["tools"],
+            json!([{
+                "type": "namespace",
+                "name": "image_gen"
+            }])
+        );
+        assert_eq!(provider_request_body["tool_choice"], json!("auto"));
     }
 
     #[test]

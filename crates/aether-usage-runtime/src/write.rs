@@ -5700,6 +5700,10 @@ mod tests {
         );
         headers.insert("user-agent".to_string(), "codex-tui/0.1".to_string());
         headers.insert(
+            "x-openai-actor-authorization".to_string(),
+            "niffler-native-image".to_string(),
+        );
+        headers.insert(
             "x-api-key".to_string(),
             "sk-proj-1234567890abcdef".to_string(),
         );
@@ -5726,6 +5730,12 @@ mod tests {
         assert_eq!(
             object.get("user-agent").and_then(|v| v.as_str()),
             Some("codex-tui/0.1"),
+        );
+        assert_eq!(
+            object
+                .get("x-openai-actor-authorization")
+                .and_then(|v| v.as_str()),
+            Some("niffler-native-image"),
         );
     }
 

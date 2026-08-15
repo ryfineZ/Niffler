@@ -219,6 +219,67 @@ fn codex_request_with_client_image_namespace_does_not_inject_hosted_image_tool()
 }
 
 #[test]
+fn sol_request_replaces_client_image_tools_and_preserves_other_tools() {
+    let body_json = json!({
+        "model": "gpt-5.6-sol",
+        "input": "Create an image of a quiet mountain observatory",
+        "stream": true,
+        "tool_choice": "auto",
+        "client_metadata": {
+            "ws_request_header_x_openai_internal_codex_responses_lite": true
+        },
+        "tools": [
+            {"type": "function", "name": "read_file", "parameters": {"type": "object"}},
+            {"type": "namespace", "name": "image_gen"},
+            {"type": "function", "name": "image_gen.imagegen", "parameters": {"type": "object"}},
+            {"type": "custom", "name": "apply_patch"},
+            {"type": "tool_search", "execution": "client"}
+        ]
+    });
+
+    let provider_request_body = build_local_openai_responses_request_body(
+        &body_json,
+        "gpt-5.6-sol",
+        true,
+        false,
+        "codex",
+        "openai:responses",
+        None,
+        Some("key-123"),
+        &HeaderMap::new(),
+        false,
+        None,
+        true,
+    )
+    .expect("sol request with client image tools should build");
+
+    let tools = provider_request_body["tools"]
+        .as_array()
+        .expect("tools should remain present");
+    assert_eq!(
+        tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["read_file", "apply_patch"]
+    );
+    assert_eq!(
+        tools
+            .iter()
+            .filter_map(|tool| tool.get("type").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["function", "custom", "tool_search", "image_generation"]
+    );
+    assert!(provider_request_body["client_metadata"]
+        .get("ws_request_header_x_openai_internal_codex_responses_lite")
+        .is_none());
+    assert!(provider_request_body["instructions"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Responses native `image_generation` tool"));
+}
+
+#[test]
 fn codex_lite_request_preserves_supported_client_tools_and_adds_hosted_image_tool() {
     let body_json = json!({
         "model": "gpt-5.6-sol",
