@@ -448,7 +448,7 @@ impl RequestCandidateWriteRepository for InMemoryRequestCandidateRepository {
         candidate: UpsertRequestCandidateRecord,
         admission: BillingRequestAdmissionInput,
     ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
-        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        super::admission::validate_candidate_admission_identity(&candidate, &admission)?;
         let created_at_unix_ms = super::admission::current_unix_ms();
         let record = {
             let mut admissions = self
@@ -457,8 +457,10 @@ impl RequestCandidateWriteRepository for InMemoryRequestCandidateRepository {
                 .expect("billing admission repository lock");
             if let Some(stored) = admissions.get(&admission.request_id) {
                 super::admission::validate_stored_admission_matches_input(stored, &admission)?;
+                super::admission::validate_candidate_provider(&candidate, &stored.to_input())?;
                 stored.clone()
             } else {
+                super::admission::validate_candidate_provider(&candidate, &admission)?;
                 let record = super::admission::admission_record_from_input(
                     admission.clone(),
                     created_at_unix_ms,

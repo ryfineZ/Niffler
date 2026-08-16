@@ -1,5 +1,6 @@
 pub(crate) use super::super::admin::provider::pool::config::{
     admin_provider_pool_cache_affinity_enabled, admin_provider_pool_config_from_config_value,
+    admin_provider_pool_lru_runtime_enabled,
 };
 pub(crate) use super::super::admin::provider::pool::runtime::{
     admin_provider_pool_key_hard_error_reason, read_admin_provider_pool_key_cooldown_reason,

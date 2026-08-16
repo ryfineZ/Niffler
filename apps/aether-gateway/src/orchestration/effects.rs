@@ -33,6 +33,7 @@ use crate::handlers::shared::provider_pool::{
     admin_provider_pool_key_hard_error_reason, record_admin_provider_pool_error,
     record_admin_provider_pool_stream_timeout, record_admin_provider_pool_success,
     release_admin_provider_pool_key_lease, AdminProviderPoolConfig,
+    AdminProviderPoolSchedulingPreset,
 };
 use crate::orchestration::local_execution_candidate_metadata_from_report_context;
 use crate::scheduler::affinity::SCHEDULER_AFFINITY_TTL;
@@ -319,11 +320,12 @@ async fn resolve_pool_feedback_context(
         }
     };
 
-    let Some(pool_config) =
+    let Some(mut pool_config) =
         admin_provider_pool_config_from_config_value(transport.provider.config.as_ref())
     else {
         return None;
     };
+    apply_pool_scheduling_presets_override(&mut pool_config, context.report_context);
 
     let sticky_session_token = pool_feedback_request_body(plan, context.report_context)
         .and_then(extract_pool_sticky_session_token);
@@ -333,6 +335,29 @@ async fn resolve_pool_feedback_context(
         sticky_session_token,
         provider_type: transport.provider.provider_type,
     })
+}
+
+fn apply_pool_scheduling_presets_override(
+    pool_config: &mut AdminProviderPoolConfig,
+    report_context: Option<&Value>,
+) {
+    let Some(presets) = local_execution_candidate_metadata_from_report_context(report_context)
+        .pool_scheduling_presets_override
+    else {
+        return;
+    };
+    pool_config.scheduling_presets = presets
+        .into_iter()
+        .map(|preset| AdminProviderPoolSchedulingPreset {
+            preset: preset.preset,
+            enabled: preset.enabled,
+            mode: preset.mode,
+        })
+        .collect();
+    pool_config.lru_enabled = pool_config
+        .scheduling_presets
+        .iter()
+        .any(|preset| preset.enabled && preset.preset.eq_ignore_ascii_case("lru"));
 }
 
 async fn resolve_pool_success_hard_state(
@@ -996,13 +1021,18 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        apply_local_execution_effect, local_candidate_failure_should_record_pool_error,
-        LocalAdaptiveRateLimitEffect, LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect,
-        LocalExecutionEffect, LocalExecutionEffectContext, LocalHealthFailureEffect,
-        LocalHealthSuccessEffect, LocalOAuthInvalidationEffect, LocalPoolErrorEffect,
+        apply_local_execution_effect, apply_pool_scheduling_presets_override,
+        local_candidate_failure_should_record_pool_error, LocalAdaptiveRateLimitEffect,
+        LocalAdaptiveSuccessEffect, LocalAttemptFailureEffect, LocalExecutionEffect,
+        LocalExecutionEffectContext, LocalHealthFailureEffect, LocalHealthSuccessEffect,
+        LocalOAuthInvalidationEffect, LocalPoolErrorEffect,
     };
     use crate::ai_serving::{provider_key_pool_score_id, provider_key_pool_score_scope};
     use crate::data::{GatewayDataConfig, GatewayDataState};
+    use crate::handlers::shared::provider_pool::{
+        admin_provider_pool_cache_affinity_enabled, admin_provider_pool_config_from_config_value,
+        admin_provider_pool_lru_runtime_enabled,
+    };
     use crate::orchestration::LocalFailoverClassification;
     use crate::scheduler::affinity::SCHEDULER_AFFINITY_TTL;
     use crate::AppState;
@@ -1021,6 +1051,56 @@ mod tests {
             }
             Err(err) => panic!("redis server should start: {err}"),
         }
+    }
+
+    #[test]
+    fn pool_success_feedback_uses_the_request_routing_pool_override() {
+        let mut cache_affinity_config =
+            admin_provider_pool_config_from_config_value(Some(&json!({
+                "pool_advanced": {
+                    "scheduling_presets": [
+                        {"preset": "cache_affinity", "enabled": true}
+                    ]
+                }
+            })))
+            .expect("cache-affinity pool config should parse");
+        apply_pool_scheduling_presets_override(
+            &mut cache_affinity_config,
+            Some(&json!({
+                "pool_scheduling_presets_override": [
+                    {"preset": "load_balance", "enabled": true}
+                ]
+            })),
+        );
+        assert!(!admin_provider_pool_cache_affinity_enabled(
+            &cache_affinity_config
+        ));
+        assert!(!admin_provider_pool_lru_runtime_enabled(
+            &cache_affinity_config
+        ));
+
+        let mut load_balance_config = admin_provider_pool_config_from_config_value(Some(&json!({
+            "pool_advanced": {
+                "scheduling_presets": [
+                    {"preset": "load_balance", "enabled": true}
+                ]
+            }
+        })))
+        .expect("load-balance pool config should parse");
+        apply_pool_scheduling_presets_override(
+            &mut load_balance_config,
+            Some(&json!({
+                "pool_scheduling_presets_override": [
+                    {"preset": "cache_affinity", "enabled": true}
+                ]
+            })),
+        );
+        assert!(admin_provider_pool_cache_affinity_enabled(
+            &load_balance_config
+        ));
+        assert!(admin_provider_pool_lru_runtime_enabled(
+            &load_balance_config
+        ));
     }
 
     fn sample_plan() -> ExecutionPlan {

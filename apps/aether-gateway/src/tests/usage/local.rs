@@ -13,7 +13,7 @@ use super::{
     UsageRuntimeConfig, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
 use crate::constants::{
-    EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_OVERLOADED,
+    CONTROL_REQUEST_ID_HEADER, EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_OVERLOADED,
     LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER,
 };
 use aether_data_contracts::repository::usage::UsageBodyCaptureState;
@@ -65,10 +65,32 @@ where
     let timeout = std::time::Duration::from_secs(60);
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        stored = repository
+        let exact = repository
             .find_by_request_id(request_id)
             .await
             .expect("usage lookup should succeed");
+        stored = if exact
+            .as_ref()
+            .is_some_and(|usage| usage.status == expected_status)
+        {
+            exact
+        } else {
+            repository
+                .list_recent_usage_audits(None, 100)
+                .await
+                .expect("recent usage lookup should succeed")
+                .into_iter()
+                .find(|usage| {
+                    usage.status == expected_status
+                        && usage
+                            .request_metadata
+                            .as_ref()
+                            .and_then(|value| value.get("trace_id"))
+                            .and_then(|value| value.as_str())
+                            == Some(request_id)
+                })
+                .or(exact)
+        };
         if stored
             .as_ref()
             .is_some_and(|usage| usage.status == expected_status)
@@ -203,6 +225,84 @@ async fn gateway_records_usage_for_unauthenticated_ai_runtime_miss() {
             .and_then(|value| value.as_str()),
         Some("missing_auth_context")
     );
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_keeps_same_trace_calls_as_distinct_usage_records() {
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+    let execution_runtime = Router::new();
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
+        .with_data_state_for_tests(GatewayDataState::with_usage_repository_for_tests(
+            Arc::clone(&usage_repository),
+        ))
+        .with_usage_runtime_for_tests(UsageRuntimeConfig {
+            enabled: true,
+            ..UsageRuntimeConfig::default()
+        });
+    let gateway = build_router_with_state(gateway_state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{gateway_url}/v1/videos"))
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(TRACE_ID_HEADER, "trace-shared-by-two-calls")
+        .body("{\"model\":\"sora-2\"}")
+        .send()
+        .await
+        .expect("first request should complete");
+    let first_request_id = first
+        .headers()
+        .get("x-aether-control-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("first response should expose its request id")
+        .to_string();
+    assert_eq!(
+        first
+            .headers()
+            .get(TRACE_ID_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("trace-shared-by-two-calls")
+    );
+
+    let second = client
+        .post(format!("{gateway_url}/v1/videos"))
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(TRACE_ID_HEADER, "trace-shared-by-two-calls")
+        .body("{\"model\":\"sora-2\"}")
+        .send()
+        .await
+        .expect("second request should complete");
+    let second_request_id = second
+        .headers()
+        .get("x-aether-control-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("second response should expose its request id")
+        .to_string();
+    assert_eq!(
+        second
+            .headers()
+            .get(TRACE_ID_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("trace-shared-by-two-calls")
+    );
+
+    assert_ne!(first_request_id, second_request_id);
+    for request_id in [&first_request_id, &second_request_id] {
+        let stored = wait_for_usage_status(usage_repository.as_ref(), request_id, "failed").await;
+        assert_eq!(
+            stored
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("trace_id"))
+                .and_then(|value| value.as_str()),
+            Some("trace-shared-by-two-calls")
+        );
+    }
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
@@ -537,8 +637,15 @@ async fn gateway_records_usage_for_ai_request_rejected_by_local_request_concurre
     execution_runtime_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_handles_local_openai_chat_sync_report_with_local_reporting_when_usage_runtime_enabled(
+#[test]
+fn gateway_handles_local_openai_chat_sync_report_with_local_reporting_when_usage_runtime_enabled() {
+    run_async_test_on_large_stack(
+        "gateway-local-openai-chat-sync-report",
+        gateway_handles_local_openai_chat_sync_report_with_local_reporting_when_usage_runtime_enabled_impl(),
+    );
+}
+
+async fn gateway_handles_local_openai_chat_sync_report_with_local_reporting_when_usage_runtime_enabled_impl(
 ) {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
@@ -823,11 +930,17 @@ async fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_im
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string();
 
     let mut stored_usage = None;
     for _ in 0..50 {
         stored_usage = usage_repository
-            .find_by_request_id("trace-openai-chat-local-report-sync-deep-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored_usage
@@ -873,8 +986,15 @@ async fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_im
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_preserves_full_request_body_despite_legacy_size_setting() {
+#[test]
+fn gateway_preserves_full_request_body_despite_legacy_size_setting() {
+    run_async_test_on_large_stack(
+        "gateway-full-request-body-legacy-setting",
+        gateway_preserves_full_request_body_despite_legacy_size_setting_impl(),
+    );
+}
+
+async fn gateway_preserves_full_request_body_despite_legacy_size_setting_impl() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
@@ -1161,8 +1281,16 @@ async fn gateway_strips_request_and_response_bodies_when_request_record_level_is
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_records_failed_usage_when_all_local_openai_chat_candidates_exhaust_after_retryable_sync_failure(
+#[test]
+fn gateway_records_failed_usage_when_all_local_openai_chat_candidates_exhaust_after_retryable_sync_failure(
+) {
+    run_async_test_on_large_stack(
+        "gateway-openai-chat-all-services-failed-usage",
+        gateway_records_failed_usage_when_all_local_openai_chat_candidates_exhaust_after_retryable_sync_failure_impl(),
+    );
+}
+
+async fn gateway_records_failed_usage_when_all_local_openai_chat_candidates_exhaust_after_retryable_sync_failure_impl(
 ) {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());

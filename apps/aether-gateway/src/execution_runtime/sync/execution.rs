@@ -70,8 +70,9 @@ use crate::orchestration::{
 };
 use crate::provider_pool_demand::acquire_provider_pool_in_flight_guard;
 use crate::request_candidate_runtime::{
-    ensure_execution_request_candidate_slot, submit_local_request_candidate_extra_data,
-    submit_local_request_candidate_status, RequestCandidateRuntimeWriter,
+    bind_execution_plan_to_request_id, ensure_execution_request_candidate_slot,
+    submit_local_request_candidate_extra_data, submit_local_request_candidate_status,
+    RequestCandidateRuntimeWriter,
 };
 use crate::usage::{spawn_sync_report, submit_sync_report};
 use crate::video_tasks::VideoTaskSyncReportMode;
@@ -1278,6 +1279,7 @@ async fn execute_execution_runtime_sync_impl(
     allow_json_heartbeat: bool,
     progress_snapshot: Option<Arc<Mutex<OpenAiImageSyncProgressSnapshot>>>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
+    bind_execution_plan_to_request_id(&mut plan, &mut report_context, trace_id);
     if allow_json_heartbeat
         && should_enable_openai_image_sync_json_heartbeat(plan_kind, &plan, report_context.as_ref())
     {
@@ -1294,7 +1296,28 @@ async fn execute_execution_runtime_sync_impl(
         .map(Some);
     }
 
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await?;
+    let candidate_started_unix_secs = current_request_candidate_unix_ms();
+    let initial_lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
+    state
+        .usage_runtime
+        .record_pending(state.data.as_ref(), initial_lifecycle_seed);
+    if let Err(error) =
+        ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await
+    {
+        record_sync_attempt_forced_terminal_state(
+            state.clone(),
+            plan,
+            report_context,
+            candidate_started_unix_secs,
+            UsageEventType::Failed,
+            RequestCandidateStatus::Failed,
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            "execution_candidate_preparation_failed",
+            format!("Local sync candidate preparation failed: {error:?}"),
+        )
+        .await;
+        return Err(error);
+    }
     let plan_request_id = plan.request_id.clone();
     let plan_request_id_for_log = short_request_id(plan_request_id.as_str());
     let plan_candidate_id = plan.candidate_id.clone();
@@ -1309,11 +1332,6 @@ async fn execute_execution_runtime_sync_impl(
         .and_then(|context| context.candidate_index)
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
-    let candidate_started_unix_secs = current_request_candidate_unix_ms();
-    let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
-    state
-        .usage_runtime
-        .record_pending(state.data.as_ref(), lifecycle_seed);
     submit_local_request_candidate_status(
         state,
         &plan,
@@ -2006,11 +2024,9 @@ async fn execute_execution_runtime_sync_impl(
     )
     .await;
 
-    let request_id_owned = result.request_id;
+    let _execution_result_request_id = result.request_id;
     let candidate_id_owned = result.candidate_id;
-    let request_id = (!request_id_owned.trim().is_empty())
-        .then_some(request_id_owned.as_str())
-        .or(Some(plan_request_id.as_str()));
+    let request_id = Some(plan_request_id.as_str());
     let request_id_for_log = short_request_id(request_id.unwrap_or("-"));
     let candidate_id = candidate_id_owned
         .as_deref()
@@ -2378,10 +2394,17 @@ async fn execute_sync_via_remote_execution_runtime(
     report_context: Option<&serde_json::Value>,
     candidate_started_unix_secs: u64,
 ) -> Result<RemoteSyncFallbackOutcome, GatewayError> {
+    let execution_trace_id = report_context
+        .and_then(serde_json::Value::as_object)
+        .and_then(|context| context.get("trace_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(trace_id);
     let response = match post_sync_plan_to_remote_execution_runtime(
         state,
         remote_execution_runtime_base_url,
-        Some(trace_id),
+        Some(execution_trace_id),
         plan,
     )
     .await

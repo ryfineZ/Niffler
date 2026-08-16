@@ -74,6 +74,10 @@ pub(super) async fn maybe_build_local_video_create_decision_payload_for_candidat
         mapped_model: Some(&resolved.mapped_model),
         candidate_group_id: eligible.orchestration.candidate_group_id.as_deref(),
         pool_key_lease: eligible.orchestration.pool_key_lease.as_ref(),
+        pool_scheduling_presets_override: eligible
+            .orchestration
+            .pool_scheduling_presets_override
+            .as_deref(),
         ranking: eligible.ranking.as_ref(),
         upstream_url: None,
         header_rules: transport.endpoint.header_rules.as_ref(),

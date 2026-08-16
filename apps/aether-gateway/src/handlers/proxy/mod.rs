@@ -10,6 +10,7 @@ use crate::ai_serving::api::{
     aggregate_openai_chat_stream_sync_response, aggregate_openai_responses_stream_sync_response,
     maybe_bridge_standard_sync_json_to_stream,
 };
+use crate::ai_serving::with_request_billing_scope;
 use crate::api::response::{
     build_client_response, build_client_response_from_parts, build_local_http_error_response,
     build_local_overloaded_response,
@@ -40,7 +41,8 @@ use crate::executor::{
     beautify_local_execution_client_error_message, build_local_execution_runtime_miss_context,
     maybe_execute_stream_request, maybe_execute_sync_request,
     record_failed_usage_for_exhausted_request, record_failed_usage_for_runtime_miss_request,
-    record_platform_handled_usage, record_platform_rejection_usage, LocalExecutionRequestOutcome,
+    record_platform_handled_usage, record_platform_pending_usage, record_platform_rejection_usage,
+    LocalExecutionRequestOutcome, RequestAttemptRegistry,
 };
 use crate::frontdoor_loop_guard::{
     frontdoor_self_loop_public_ai_path, request_has_execution_runtime_loop_guard,
@@ -68,9 +70,12 @@ use crate::{
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{self, header::HeaderName, header::HeaderValue, Response};
+use axum::response::IntoResponse;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
 use std::{collections::BTreeMap, time::Instant};
+use std::{future::Future, pin::Pin};
 use tracing::{debug, info, warn};
 
 const OPENAI_CHAT_LOCAL_EXECUTION_RUNTIME_MISS_DETAIL: &str =
@@ -210,7 +215,7 @@ async fn record_ai_platform_rejection_usage(
 ) {
     record_platform_rejection_usage(
         state,
-        &request_context.trace_id,
+        &request_context.request_id,
         started_at,
         request_context.control_decision.as_ref(),
         uri,
@@ -239,7 +244,7 @@ async fn record_ai_platform_handled_usage(
 ) {
     record_platform_handled_usage(
         state,
-        &request_context.trace_id,
+        &request_context.request_id,
         started_at,
         request_context.control_decision.as_ref(),
         uri,
@@ -687,6 +692,14 @@ async fn maybe_forward_public_request_to_tunnel_owner(
             message: format!("owner gateway affinity forward failed: {err}"),
         })?;
 
+    let owner_request_id = upstream_response
+        .headers()
+        .get(crate::constants::CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
     let mut response = build_sync_aware_affinity_forward_response(
         request_context,
         &parts.headers,
@@ -700,6 +713,16 @@ async fn maybe_forward_public_request_to_tunnel_owner(
         HeaderValue::from_str(owner.gateway_instance_id.as_str())
             .map_err(|err| GatewayError::Internal(err.to_string()))?,
     );
+    if let Some(owner_request_id) = owner_request_id {
+        response.headers_mut().insert(
+            HeaderName::from_static(crate::constants::CONTROL_REQUEST_ID_HEADER),
+            HeaderValue::from_str(owner_request_id.as_str())
+                .map_err(|err| GatewayError::Internal(err.to_string()))?,
+        );
+        response
+            .extensions_mut()
+            .insert(TrustedGatewayRequestIdentity);
+    }
     Ok(Some(response))
 }
 
@@ -1016,23 +1039,114 @@ async fn build_sync_aware_affinity_forward_response(
     )
 }
 
-pub(crate) async fn proxy_request(
+pub(crate) fn proxy_request(
     State(state): State<AppState>,
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
     request: Request,
+) -> Pin<Box<dyn Future<Output = Result<Response<Body>, GatewayError>> + Send>> {
+    Box::pin(proxy_request_scoped(state, remote_addr, request))
+}
+
+async fn proxy_request_scoped(
+    state: AppState,
+    remote_addr: std::net::SocketAddr,
+    request: Request,
 ) -> Result<Response<Body>, GatewayError> {
     let started_at = Instant::now();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let trace_id = extract_or_generate_trace_id(request.headers());
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let headers = request.headers().clone();
+    let failure_context = Arc::new(Mutex::new(None::<GatewayPublicRequestContext>));
+    let outcome = with_request_billing_scope(Box::pin(proxy_request_inner(
+        state.clone(),
+        remote_addr,
+        request,
+        started_at,
+        request_id.clone(),
+        trace_id.clone(),
+        Arc::clone(&failure_context),
+    )))
+    .await;
+    match outcome {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            let error_message = format!("{error:?}");
+            let response = error.into_response();
+            let resolved_context = failure_context
+                .lock()
+                .expect("gateway failure context lock")
+                .clone();
+            if let Some(request_context) = resolved_context.as_ref() {
+                record_ai_platform_rejection_usage(
+                    &state,
+                    request_context,
+                    &started_at,
+                    &uri,
+                    &headers,
+                    None,
+                    response.status().as_u16(),
+                    "gateway_request_failed",
+                    error_message.as_str(),
+                    EXECUTION_PATH_LOCAL_INVALID_REQUEST,
+                )
+                .await;
+            } else {
+                record_pre_context_ai_platform_rejection_usage(
+                    &state,
+                    &request_id,
+                    &started_at,
+                    &method,
+                    &uri,
+                    &headers,
+                    response.status().as_u16(),
+                    "gateway_request_failed",
+                    error_message.as_str(),
+                    EXECUTION_PATH_LOCAL_INVALID_REQUEST,
+                )
+                .await;
+            }
+            Ok(finalize_gateway_response(
+                &state,
+                response,
+                &request_id,
+                &trace_id,
+                &remote_addr,
+                &method,
+                uri.path_and_query()
+                    .map(|value| value.as_str())
+                    .unwrap_or("/"),
+                resolved_context
+                    .as_ref()
+                    .and_then(|context| context.control_decision.as_ref()),
+                EXECUTION_PATH_LOCAL_INVALID_REQUEST,
+                &started_at,
+                None,
+            ))
+        }
+    }
+}
+
+async fn proxy_request_inner(
+    state: AppState,
+    remote_addr: std::net::SocketAddr,
+    request: Request,
+    started_at: Instant,
+    request_id: String,
+    trace_id: String,
+    failure_context: Arc<Mutex<Option<GatewayPublicRequestContext>>>,
+) -> Result<Response<Body>, GatewayError> {
     let mut request_permit = match state.try_acquire_request_permit().await {
         Ok(permit) => permit,
         Err(RequestAdmissionError::Local(aether_runtime::ConcurrencyError::Saturated {
             gate,
             limit,
         })) => {
-            let trace_id = extract_or_generate_trace_id(request.headers());
             let response = build_local_overloaded_response(&trace_id, None, gate, limit)?;
             record_pre_context_ai_platform_rejection_usage(
                 &state,
-                &trace_id,
+                &request_id,
                 &started_at,
                 request.method(),
                 request.uri(),
@@ -1046,6 +1160,7 @@ pub(crate) async fn proxy_request(
             return Ok(finalize_gateway_response(
                 &state,
                 response,
+                &request_id,
                 &trace_id,
                 &remote_addr,
                 request.method(),
@@ -1071,11 +1186,10 @@ pub(crate) async fn proxy_request(
         | Err(RequestAdmissionError::Distributed(
             aether_runtime_state::RuntimeSemaphoreError::Unavailable { gate, limit, .. },
         )) => {
-            let trace_id = extract_or_generate_trace_id(request.headers());
             let response = build_local_overloaded_response(&trace_id, None, gate, limit)?;
             record_pre_context_ai_platform_rejection_usage(
                 &state,
-                &trace_id,
+                &request_id,
                 &started_at,
                 request.method(),
                 request.uri(),
@@ -1089,6 +1203,7 @@ pub(crate) async fn proxy_request(
             return Ok(finalize_gateway_response(
                 &state,
                 response,
+                &request_id,
                 &trace_id,
                 &remote_addr,
                 request.method(),
@@ -1109,6 +1224,7 @@ pub(crate) async fn proxy_request(
     };
     let request_admission_ms = started_at.elapsed().as_millis() as u64;
     let (mut parts, body) = request.into_parts();
+    parts.extensions.insert(RequestAttemptRegistry::default());
     let redaction_slot = crate::privacy::RedactionSessionSlot::default();
     parts.extensions.insert(redaction_slot.clone());
     parts
@@ -1117,8 +1233,7 @@ pub(crate) async fn proxy_request(
             &parts.headers,
             &remote_addr,
         ));
-    let trace_id = extract_or_generate_trace_id(&parts.headers);
-    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+    state.clear_local_execution_runtime_miss_diagnostic(&request_id);
     if request_hits_execution_loop_guard(&parts) {
         warn!(
             event_name = "frontdoor_execution_loop_detected",
@@ -1142,6 +1257,7 @@ pub(crate) async fn proxy_request(
         return Ok(finalize_gateway_response(
             &state,
             response,
+            &request_id,
             &trace_id,
             &remote_addr,
             &parts.method,
@@ -1157,33 +1273,22 @@ pub(crate) async fn proxy_request(
         ));
     }
     let request_context_started_at = Instant::now();
-    let mut request_context = match crate::control::resolve_public_request_context(
+    let mut request_context = match crate::control::resolve_public_request_context_with_request_id(
         &state,
         &parts.method,
         &parts.uri,
         &parts.headers,
+        &request_id,
         &trace_id,
     )
     .await
     {
         Ok(request_context) => request_context,
-        Err(err) => {
-            record_pre_context_ai_platform_rejection_usage(
-                &state,
-                &trace_id,
-                &started_at,
-                &parts.method,
-                &parts.uri,
-                &parts.headers,
-                http::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                "request_context_resolution_failed",
-                "网关解析请求失败",
-                EXECUTION_PATH_LOCAL_INVALID_REQUEST,
-            )
-            .await;
-            return Err(err);
-        }
+        Err(err) => return Err(err),
     };
+    *failure_context
+        .lock()
+        .expect("gateway failure context lock") = Some(request_context.clone());
     maybe_promote_management_token_admin_principal(
         &state,
         &remote_addr,
@@ -1515,6 +1620,16 @@ pub(crate) async fn proxy_request(
         ));
     }
 
+    record_platform_pending_usage(
+        &state,
+        &request_id,
+        control_decision,
+        &parts.uri,
+        &parts.headers,
+        buffered_body.as_ref(),
+    )
+    .await?;
+
     if let Some(rejection) = trusted_auth_local_rejection(control_decision, &parts.headers) {
         let (reason, message) = auth_rejection_usage_reason(&rejection);
         let response = build_niffler_platform_auth_rejection_response(
@@ -1718,7 +1833,7 @@ pub(crate) async fn proxy_request(
         if let Some(rejection) = prepare_niffler_billing_reservation_for_request(
             &state,
             control_decision,
-            &trace_id,
+            &request_id,
             &parts.uri,
             &parts.headers,
             buffered_body,
@@ -1762,7 +1877,7 @@ pub(crate) async fn proxy_request(
                 &state,
                 &parts,
                 buffered_body,
-                &trace_id,
+                &request_id,
                 control_decision,
             )
             .await?;
@@ -1786,7 +1901,7 @@ pub(crate) async fn proxy_request(
                         execution_runtime_response,
                         &redaction_slot,
                     )?;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state.clear_local_execution_runtime_miss_diagnostic(&request_id);
                     return Ok(finalize_gateway_response_with_context(
                         &state,
                         execution_runtime_response,
@@ -1803,8 +1918,14 @@ pub(crate) async fn proxy_request(
                 LocalExecutionRequestOutcome::NoPath => {}
             }
         }
-        match maybe_execute_sync_request(&state, &parts, buffered_body, &trace_id, control_decision)
-            .await?
+        match maybe_execute_sync_request(
+            &state,
+            &parts,
+            buffered_body,
+            &request_id,
+            control_decision,
+        )
+        .await?
         {
             LocalExecutionRequestOutcome::Responded(execution_runtime_response) => {
                 let execution_runtime_response = restore_redacted_sync_execution_response(
@@ -1812,7 +1933,7 @@ pub(crate) async fn proxy_request(
                     &redaction_slot,
                 )
                 .await?;
-                state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                state.clear_local_execution_runtime_miss_diagnostic(&request_id);
                 return Ok(finalize_gateway_response_with_context(
                     &state,
                     execution_runtime_response,
@@ -1833,7 +1954,7 @@ pub(crate) async fn proxy_request(
                 &state,
                 &parts,
                 buffered_body,
-                &trace_id,
+                &request_id,
                 control_decision,
             )
             .await?
@@ -1843,7 +1964,7 @@ pub(crate) async fn proxy_request(
                         execution_runtime_response,
                         &redaction_slot,
                     )?;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state.clear_local_execution_runtime_miss_diagnostic(&request_id);
                     return Ok(finalize_gateway_response_with_context(
                         &state,
                         execution_runtime_response,
@@ -1865,7 +1986,7 @@ pub(crate) async fn proxy_request(
                 &state,
                 &parts,
                 buffered_body.clone(),
-                &trace_id,
+                &request_id,
                 control_decision,
                 stream_request,
             )
@@ -1902,7 +2023,7 @@ pub(crate) async fn proxy_request(
                             .await?
                     };
                     let mut control_response = control_response;
-                    state.clear_local_execution_runtime_miss_diagnostic(&trace_id);
+                    state.clear_local_execution_runtime_miss_diagnostic(&request_id);
                     control_response.headers_mut().insert(
                         HeaderName::from_static(DEPENDENCY_REASON_HEADER),
                         HeaderValue::from_static(reason.as_label_value()),
@@ -1924,9 +2045,9 @@ pub(crate) async fn proxy_request(
             }
         }
         let local_execution_runtime_miss_diagnostic =
-            state.take_local_execution_runtime_miss_diagnostic(&trace_id);
+            state.take_local_execution_runtime_miss_diagnostic(&request_id);
         let local_execution_runtime_miss_context =
-            build_local_execution_runtime_miss_context(&state, &trace_id, control_decision).await;
+            build_local_execution_runtime_miss_context(&state, &request_id, control_decision).await;
         let auth_api_key_concurrency_limited = diagnostic_is_auth_api_key_concurrency_limited(
             local_execution_runtime_miss_diagnostic.as_ref(),
         ) || local_execution_runtime_miss_context
@@ -2038,7 +2159,7 @@ pub(crate) async fn proxy_request(
         } else {
             record_failed_usage_for_runtime_miss_request(
                 &state,
-                &trace_id,
+                &request_id,
                 &started_at,
                 local_execution_runtime_miss_detail.as_str(),
                 local_execution_failure_path,
@@ -2688,4 +2809,5 @@ mod finalize;
 
 use self::finalize::{
     finalize_gateway_response, finalize_gateway_response_with_context, request_wants_stream,
+    TrustedGatewayRequestIdentity,
 };

@@ -100,6 +100,10 @@ impl InMemorySettlementRepository {
         repository
     }
 
+    pub fn insert_admission(&self, admission: BillingRequestAdmissionInput) {
+        self.insert_admissions([admission]);
+    }
+
     fn insert_admissions<I>(&self, admissions: I)
     where
         I: IntoIterator<Item = BillingRequestAdmissionInput>,

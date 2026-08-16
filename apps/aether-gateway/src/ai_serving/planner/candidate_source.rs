@@ -14,6 +14,9 @@ use aether_scheduler_core::{
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::ai_serving::planner::candidate_resolution::SkippedLocalExecutionCandidate;
 use crate::ai_serving::{GatewayAuthApiKeySnapshot, PlannerAppState};
@@ -58,6 +61,66 @@ pub(crate) struct BillingProviderRoutingScope {
     enforce: bool,
     wallet: Option<aether_data::repository::wallet::StoredWalletSnapshot>,
     quota: Option<UserDailyQuotaAvailabilityRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestBillingScopeIdentity {
+    user_id: String,
+    api_key_id: String,
+    global_model_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestBillingScopeEntry {
+    identity: RequestBillingScopeIdentity,
+    scope: BillingProviderRoutingScope,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RequestBillingScopeRegistry {
+    entry: Mutex<Option<RequestBillingScopeEntry>>,
+}
+
+tokio::task_local! {
+    static REQUEST_BILLING_SCOPE_REGISTRY: Arc<RequestBillingScopeRegistry>;
+}
+
+pub(crate) async fn with_request_billing_scope<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    REQUEST_BILLING_SCOPE_REGISTRY
+        .scope(Arc::new(RequestBillingScopeRegistry::default()), future)
+        .await
+}
+
+impl RequestBillingScopeRegistry {
+    async fn resolve<F, Fut>(
+        &self,
+        identity: RequestBillingScopeIdentity,
+        load: F,
+    ) -> Result<BillingProviderRoutingScope, GatewayError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<BillingProviderRoutingScope, GatewayError>>,
+    {
+        let mut entry = self.entry.lock().await;
+        if let Some(stored) = entry.as_ref() {
+            if stored.identity != identity {
+                return Err(GatewayError::Internal(
+                    "同一次调用的用户、密钥或模型发生变化，已停止重新计算收费条件".to_string(),
+                ));
+            }
+            return Ok(stored.scope.clone());
+        }
+
+        let scope = load().await?;
+        *entry = Some(RequestBillingScopeEntry {
+            identity,
+            scope: scope.clone(),
+        });
+        Ok(scope)
+    }
 }
 
 impl BillingProviderRoutingScope {
@@ -156,6 +219,30 @@ impl BillingProviderRoutingScope {
 }
 
 pub(crate) async fn resolve_billing_provider_routing_scope(
+    state: PlannerAppState<'_>,
+    auth_snapshot: &GatewayAuthApiKeySnapshot,
+    global_model_id: Option<&str>,
+) -> Result<BillingProviderRoutingScope, GatewayError> {
+    let identity = RequestBillingScopeIdentity {
+        user_id: auth_snapshot.user_id.clone(),
+        api_key_id: auth_snapshot.api_key_id.clone(),
+        global_model_id: global_model_id.map(ToOwned::to_owned),
+    };
+    if let Ok(registry) = REQUEST_BILLING_SCOPE_REGISTRY.try_with(Arc::clone) {
+        return registry
+            .resolve(identity, || {
+                resolve_billing_provider_routing_scope_uncached(
+                    state,
+                    auth_snapshot,
+                    global_model_id,
+                )
+            })
+            .await;
+    }
+    resolve_billing_provider_routing_scope_uncached(state, auth_snapshot, global_model_id).await
+}
+
+async fn resolve_billing_provider_routing_scope_uncached(
     state: PlannerAppState<'_>,
     auth_snapshot: &GatewayAuthApiKeySnapshot,
     global_model_id: Option<&str>,
@@ -1013,6 +1100,7 @@ mod tests {
     use aether_data_contracts::repository::candidate_selection::{
         MinimalCandidateSelectionReadRepository, StoredProviderModelMapping,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     fn scheduler_candidate(
@@ -1038,6 +1126,44 @@ mod tests {
             selected_provider_model_name: "gpt-5".to_string(),
             mapping_matched_model: None,
         }
+    }
+
+    #[tokio::test]
+    async fn request_billing_scope_registry_reuses_the_first_result() {
+        let registry = RequestBillingScopeRegistry::default();
+        let reads = AtomicUsize::new(0);
+        let identity = RequestBillingScopeIdentity {
+            user_id: "user-1".to_string(),
+            api_key_id: "key-1".to_string(),
+            global_model_id: Some("model-1".to_string()),
+        };
+
+        let first = registry
+            .resolve(identity.clone(), || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope {
+                    wallet_payment_allowed: true,
+                    enforce: true,
+                    ..BillingProviderRoutingScope::default()
+                })
+            })
+            .await
+            .expect("first scope should resolve");
+        let second = registry
+            .resolve(identity, || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope {
+                    wallet_payment_allowed: false,
+                    enforce: true,
+                    ..BillingProviderRoutingScope::default()
+                })
+            })
+            .await
+            .expect("stored scope should be reused");
+
+        assert!(first.wallet_payment_allowed);
+        assert!(second.wallet_payment_allowed);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]

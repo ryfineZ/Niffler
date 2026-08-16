@@ -101,6 +101,7 @@ pub(crate) async fn maybe_execute_stream_via_plan_fallback(
 
     execute_stream_plan_and_reports(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind.as_str(),

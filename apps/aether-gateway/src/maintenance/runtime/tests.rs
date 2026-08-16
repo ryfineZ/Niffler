@@ -28,9 +28,9 @@ use super::{
     spawn_stats_hourly_aggregation_worker, spawn_usage_cleanup_worker,
     spawn_wallet_daily_usage_aggregation_worker, start_proxy_upgrade_rollout,
     stats_aggregation_target_day, stats_daily_catch_up_pause_after_success,
-    stats_hourly_aggregation_target_hour, summarize_database_pool, usage_cleanup_settings,
-    usage_cleanup_window, usage_cleanup_window_for_mode, usage_cleanup_window_with_override,
-    usage_detail_auto_cleanup_enabled, wallet_daily_usage_aggregation_target, AppState,
+    stats_hourly_aggregation_target_hour, summarize_database_pool, usage_auto_cleanup_targets,
+    usage_cleanup_settings, usage_cleanup_window, usage_cleanup_window_for_mode,
+    usage_cleanup_window_with_override, wallet_daily_usage_aggregation_target, AppState,
     DbMaintenanceRunSummary, FailedPendingUsageRow, GatewayDataState, ManualUsageCleanupMode,
     ProxyNodeMetricsCleanupSettings, ProxyUpgradeRolloutProbeConfig, StalePendingUsageRow,
     UsageCleanupSettings, USAGE_CLEANUP_HOUR, USAGE_CLEANUP_MINUTE,
@@ -611,21 +611,55 @@ async fn cleanup_audit_logs_respects_auto_cleanup_toggle() {
 
 #[tokio::test]
 async fn usage_detail_cleanup_has_an_independent_toggle() {
+    let globally_disabled = GatewayDataState::disabled().with_system_config_values_for_tests([
+        ("enable_auto_cleanup".to_string(), json!(false)),
+        ("enable_usage_detail_cleanup".to_string(), json!(true)),
+    ]);
+    assert_eq!(
+        usage_auto_cleanup_targets(
+            &globally_disabled,
+            aether_data_contracts::repository::usage::UsageCleanupTargets::all_policy_targets(),
+        )
+        .await
+        .expect("automatic cleanup targets should load"),
+        None
+    );
+
     let disabled = GatewayDataState::disabled().with_system_config_values_for_tests([
         ("enable_auto_cleanup".to_string(), json!(true)),
         ("enable_usage_detail_cleanup".to_string(), json!(false)),
     ]);
-    assert!(!usage_detail_auto_cleanup_enabled(&disabled)
-        .await
-        .expect("usage detail cleanup toggle should load"));
+    let disabled_targets = usage_auto_cleanup_targets(
+        &disabled,
+        aether_data_contracts::repository::usage::UsageCleanupTargets::all_policy_targets(),
+    )
+    .await
+    .expect("automatic cleanup targets should load")
+    .expect("global automatic cleanup remains enabled");
+    assert_eq!(
+        disabled_targets,
+        aether_data_contracts::repository::usage::UsageCleanupTargets {
+            detail_body: false,
+            compressed_body: false,
+            headers: false,
+            records: false,
+            expired_keys: true,
+        }
+    );
 
     let enabled = GatewayDataState::disabled().with_system_config_values_for_tests([
         ("enable_auto_cleanup".to_string(), json!(true)),
         ("enable_usage_detail_cleanup".to_string(), json!(true)),
     ]);
-    assert!(usage_detail_auto_cleanup_enabled(&enabled)
+    assert_eq!(
+        usage_auto_cleanup_targets(
+            &enabled,
+            aether_data_contracts::repository::usage::UsageCleanupTargets::all_policy_targets(),
+        )
         .await
-        .expect("usage detail cleanup toggle should load"));
+        .expect("automatic cleanup targets should load"),
+        Some(aether_data_contracts::repository::usage::UsageCleanupTargets::all_policy_targets())
+    );
 }
 
 #[tokio::test]

@@ -332,7 +332,7 @@ impl RequestCandidateWriteRepository for SqliteRequestCandidateRepository {
         candidate: UpsertRequestCandidateRecord,
         admission: BillingRequestAdmissionInput,
     ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
-        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        super::admission::validate_candidate_admission_identity(&candidate, &admission)?;
         let mut tx = self.pool.begin().await.map_sql_err()?;
         let existing = sqlx::query(&format!(
             "{CANDIDATE_COLUMNS} WHERE request_id = ? AND candidate_index = ? AND retry_index = ? LIMIT 1"
@@ -346,7 +346,7 @@ impl RequestCandidateWriteRepository for SqliteRequestCandidateRepository {
         .as_ref()
         .map(map_candidate_row)
         .transpose()?;
-        let merged = merge_candidate(candidate, existing)?;
+        let merged = merge_candidate(candidate.clone(), existing)?;
         let now = super::admission::current_unix_ms();
         sqlx::query(
             r#"
@@ -412,6 +412,7 @@ LIMIT 1
         .map_sql_err()
         .and_then(|row| map_billing_admission_row(&row))?;
         super::admission::validate_stored_admission_matches_input(&stored_admission, &admission)?;
+        super::admission::validate_candidate_provider(&candidate, &stored_admission.to_input())?;
         upsert_merged_candidate(&mut tx, &merged).await?;
         tx.commit().await.map_sql_err()?;
         Ok((merged, stored_admission))
@@ -1177,13 +1178,36 @@ INSERT INTO billing_request_admissions (
             .await
             .expect("plan-funded retry within the provider scope should reuse admission");
 
+        let mut refreshed_snapshot = stored_admission.to_input();
+        refreshed_snapshot.funding_source = BillingFundingSource::Wallet;
+        refreshed_snapshot.wallet_balance_at_admission = Some(0.25);
+        refreshed_snapshot.wallet_overage_allowed = false;
+        refreshed_snapshot.entitlement_ids.clear();
+        refreshed_snapshot.entitlement_provider_scopes.clear();
+        refreshed_snapshot.allowed_provider_ids.clear();
+        let mut refreshed_candidate = sample_upsert(
+            "candidate-admission-refreshed-snapshot",
+            RequestCandidateStatus::Pending,
+            None,
+            1_000_125,
+        );
+        refreshed_candidate.retry_index = 2;
+        refreshed_candidate.provider_id = Some("provider-2".to_string());
+        refreshed_candidate.endpoint_id = Some("endpoint-2".to_string());
+        let (_, reused_admission) = repository
+            .upsert_with_billing_admission(refreshed_candidate, refreshed_snapshot)
+            .await
+            .expect("retry should keep the first billing decision when balances change");
+        assert_eq!(reused_admission.funding_source, BillingFundingSource::Plan);
+        assert_eq!(reused_admission.wallet_balance_at_admission, Some(1.0));
+
         let mut outside_scope_candidate = sample_upsert(
             "candidate-admission-outside-scope",
             RequestCandidateStatus::Pending,
             None,
             1_000_150,
         );
-        outside_scope_candidate.retry_index = 2;
+        outside_scope_candidate.retry_index = 3;
         outside_scope_candidate.provider_id = Some("provider-3".to_string());
         outside_scope_candidate.endpoint_id = Some("endpoint-3".to_string());
         let outside_scope = repository
@@ -1199,7 +1223,7 @@ INSERT INTO billing_request_admissions (
             None,
             1_000_200,
         );
-        conflicting_candidate.retry_index = 3;
+        conflicting_candidate.retry_index = 4;
         let conflict = repository
             .upsert_with_billing_admission(conflicting_candidate, conflicting)
             .await;
@@ -1211,7 +1235,7 @@ INSERT INTO billing_request_admissions (
                 .fetch_one(&pool)
                 .await
                 .expect("candidate count should query");
-        assert_eq!(candidate_count, 2);
+        assert_eq!(candidate_count, 3);
     }
 
     fn sample_upsert(

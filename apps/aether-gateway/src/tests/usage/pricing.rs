@@ -484,10 +484,32 @@ where
     let timeout = std::time::Duration::from_secs(30);
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        stored = repository
+        let exact = repository
             .find_by_request_id(request_id)
             .await
             .expect("usage lookup should succeed");
+        stored = if exact
+            .as_ref()
+            .is_some_and(|usage| usage.status == expected_status)
+        {
+            exact
+        } else {
+            repository
+                .list_recent_usage_audits(None, 100)
+                .await
+                .expect("recent usage lookup should succeed")
+                .into_iter()
+                .find(|usage| {
+                    usage.status == expected_status
+                        && usage
+                            .request_metadata
+                            .as_ref()
+                            .and_then(|value| value.get("trace_id"))
+                            .and_then(|value| value.as_str())
+                            == Some(request_id)
+                })
+                .or(exact)
+        };
         if stored
             .as_ref()
             .is_some_and(|usage| usage.status == expected_status)
@@ -772,6 +794,24 @@ async fn assert_candidate_success(
             .list_by_request_id(request_id)
             .await
             .expect("request candidate trace should read");
+        let stored_candidates = if stored_candidates.is_empty() {
+            repository
+                .list_recent(100)
+                .await
+                .expect("recent request candidates should read")
+                .into_iter()
+                .filter(|candidate| {
+                    candidate
+                        .extra_data
+                        .as_ref()
+                        .and_then(|value| value.get("trace_id"))
+                        .and_then(|value| value.as_str())
+                        == Some(request_id)
+                })
+                .collect()
+        } else {
+            stored_candidates
+        };
         if stored_candidates
             .first()
             .is_some_and(|candidate| candidate.status == RequestCandidateStatus::Success)

@@ -20,7 +20,7 @@ use aether_pool_core::{
     POOL_TEMPORARY_UNAVAILABLE_SKIP_REASON,
 };
 use aether_provider_pool::ProviderPoolService;
-use aether_routing_core::{RankingOverlay, ResolvedRoutingPolicy};
+use aether_routing_core::{RankingOverlay, ResolvedRoutingPolicy, RoutingSchedulingPreset};
 use tracing::{info, warn};
 
 use crate::ai_serving::{
@@ -39,7 +39,7 @@ use crate::handlers::shared::provider_pool::{
     admin_provider_pool_quota_probe_active_members_key,
     read_admin_provider_pool_key_cooldown_reason,
     read_admin_provider_pool_key_model_cooldown_reason, AdminProviderPoolConfig,
-    AdminProviderPoolRuntimeState,
+    AdminProviderPoolRuntimeState, AdminProviderPoolSchedulingPreset,
 };
 use crate::handlers::shared::{parse_catalog_auth_config_json, provider_key_health_summary};
 use crate::maintenance::spawn_pool_quota_probe_replenish_for_request;
@@ -95,6 +95,7 @@ async fn schedule_pool_page_candidates(
     state: PlannerAppState<'_>,
     candidates: Vec<EligibleLocalExecutionCandidate>,
     sticky_session_token: Option<&str>,
+    effective_pool_config: Option<&AdminProviderPoolConfig>,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
@@ -106,7 +107,10 @@ async fn schedule_pool_page_candidates(
     let mut provider_runtime_requirements =
         BTreeMap::<String, (AdminProviderPoolConfig, BTreeSet<String>)>::new();
     for candidate in &candidates {
-        let Some(pool_config) = pool_config_for_candidate(candidate) else {
+        let Some(pool_config) = effective_pool_config
+            .cloned()
+            .or_else(|| pool_config_for_candidate(candidate))
+        else {
             continue;
         };
         let entry = provider_runtime_requirements
@@ -142,6 +146,7 @@ async fn schedule_pool_page_candidates(
         &mut runtime_by_provider,
         &candidates,
         &key_context_by_id,
+        &pool_config_by_provider,
     );
     spawn_active_probe_member_evictions_for_request(state, &preflight_evictions);
     burst_provider_ids.extend(preflight_evictions.keys().cloned());
@@ -155,10 +160,11 @@ async fn schedule_pool_page_candidates(
         }
     }
 
-    let outcome = apply_local_execution_pool_scheduler_with_runtime_map_outcome(
+    let outcome = apply_local_execution_pool_scheduler_with_runtime_map_outcome_and_pool_configs(
         candidates,
         &runtime_by_provider,
         &key_context_by_id,
+        &pool_config_by_provider,
     );
     let scheduled = outcome.candidates;
     let skipped = outcome.skipped;
@@ -238,10 +244,15 @@ fn prune_unschedulable_active_probe_members_for_request(
     runtime_by_provider: &mut BTreeMap<String, AdminProviderPoolRuntimeState>,
     candidates: &[EligibleLocalExecutionCandidate],
     key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+    pool_config_by_provider: &BTreeMap<String, AdminProviderPoolConfig>,
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut evicted = BTreeMap::<String, BTreeSet<String>>::new();
     for candidate in candidates {
-        let Some(pool_config) = pool_config_for_candidate(candidate) else {
+        let Some(pool_config) = pool_config_by_provider
+            .get(&candidate.candidate.provider_id)
+            .cloned()
+            .or_else(|| pool_config_for_candidate(candidate))
+        else {
             continue;
         };
         if !should_enforce_active_probe_sealed_pool(&pool_config) {
@@ -328,6 +339,8 @@ async fn expand_pool_group_candidate(
 pub(crate) struct PoolKeyCursor<'a> {
     state: PlannerAppState<'a>,
     group: EligibleLocalExecutionCandidate,
+    effective_pool_config: Option<AdminProviderPoolConfig>,
+    pool_scheduling_presets_override: Option<Vec<RoutingSchedulingPreset>>,
     sticky_session_token: Option<String>,
     requested_model: Option<String>,
     request_auth_channel: Option<String>,
@@ -342,6 +355,7 @@ pub(crate) struct PoolKeyCursor<'a> {
     max_scanned_keys: u32,
     score_top_n: u32,
     score_phase_loaded: bool,
+    ordered_strategy_scan: bool,
     skip_reason_counts: BTreeMap<&'static str, u32>,
     next_pool_key_index: u32,
     sticky_candidate_loaded: bool,
@@ -379,15 +393,23 @@ impl<'a> PoolKeyCursor<'a> {
         request_auth_channel: Option<&str>,
         routing_policy: Option<&ResolvedRoutingPolicy>,
     ) -> Self {
-        let pool_key_order = pool_key_candidate_order_for_group(&group, routing_policy);
+        let pool_scheduling_presets_override =
+            pool_scheduling_presets_override_for_group(&group, routing_policy);
+        let effective_pool_config =
+            effective_pool_config_for_group(&group, pool_scheduling_presets_override.as_deref());
+        let normalized_presets =
+            normalized_pool_scheduling_presets_for_group(&group, effective_pool_config.as_ref());
+        let pool_key_order =
+            pool_key_candidate_order_for_group(effective_pool_config.as_ref(), &normalized_presets);
+        let ordered_strategy_scan =
+            pool_has_explicit_ordered_strategy(effective_pool_config.as_ref(), &normalized_presets);
         let routing_overlay = routing_policy.map(|policy| policy.ranking_overlay.clone());
-        let pool_config = pool_config_for_candidate(&group);
-        let score_top_n = pool_config
+        let score_top_n = effective_pool_config
             .as_ref()
             .map(|config| config.score_top_n)
             .unwrap_or(u64::from(aether_dispatch_core::DEFAULT_POOL_PAGE_SIZE))
             .clamp(1, u64::from(u32::MAX)) as u32;
-        let max_scanned_keys = pool_config
+        let max_scanned_keys = effective_pool_config
             .as_ref()
             .map(|config| config.score_fallback_scan_limit)
             .unwrap_or(u64::from(aether_dispatch_core::DEFAULT_POOL_MAX_SCAN))
@@ -397,6 +419,8 @@ impl<'a> PoolKeyCursor<'a> {
         Self {
             state,
             group,
+            effective_pool_config,
+            pool_scheduling_presets_override,
             sticky_session_token: sticky_session_token.map(str::to_string),
             requested_model: requested_model.map(str::to_string),
             request_auth_channel: request_auth_channel.map(str::to_string),
@@ -410,7 +434,8 @@ impl<'a> PoolKeyCursor<'a> {
             page_size: window_config.page_size,
             max_scanned_keys: max_scanned_keys.max(window_config.window_size),
             score_top_n,
-            score_phase_loaded: false,
+            score_phase_loaded: ordered_strategy_scan,
+            ordered_strategy_scan,
             skip_reason_counts: BTreeMap::new(),
             next_pool_key_index: 0,
             sticky_candidate_loaded: false,
@@ -665,7 +690,7 @@ impl<'a> PoolKeyCursor<'a> {
     }
 
     async fn sticky_candidate(&mut self) -> Option<EligibleLocalExecutionCandidate> {
-        let pool_config = pool_config_for_candidate(&self.group)?;
+        let pool_config = self.effective_pool_config.clone()?;
         if !admin_provider_pool_cache_affinity_enabled(&pool_config) {
             return None;
         }
@@ -708,7 +733,20 @@ impl<'a> PoolKeyCursor<'a> {
         }
 
         let candidate = pool_candidate_from_catalog_key(&self.group, key);
-        self.build_eligible_candidate(candidate).await
+        let candidate = self.build_eligible_candidate(candidate).await?;
+        let (mut scheduled, mut skipped) = schedule_pool_page_candidates(
+            self.state,
+            vec![candidate],
+            self.sticky_session_token.as_deref(),
+            self.effective_pool_config.as_ref(),
+        )
+        .await;
+        self.record_skipped_candidates(&skipped);
+        self.skipped_candidates.append(&mut skipped);
+        let mut candidate = scheduled.pop()?;
+        candidate.orchestration.pool_scheduling_presets_override =
+            self.pool_scheduling_presets_override.clone();
+        Some(candidate)
     }
 
     async fn refill_queued_candidates(&mut self) -> bool {
@@ -716,8 +754,9 @@ impl<'a> PoolKeyCursor<'a> {
 
         loop {
             let mut candidates = Vec::new();
-            // Keep pool expansion bounded; the cursor freezes one small window at a time.
-            while candidates.len() < refill_target {
+            // Ordered strategies need one bounded global comparison; distribution-only
+            // pools keep freezing one small window at a time.
+            while self.ordered_strategy_scan || candidates.len() < refill_target {
                 let Some(mut page_candidates) = self.next_page_candidates().await else {
                     break;
                 };
@@ -732,6 +771,7 @@ impl<'a> PoolKeyCursor<'a> {
                 self.state,
                 candidates,
                 self.sticky_session_token.as_deref(),
+                self.effective_pool_config.as_ref(),
             )
             .await;
             self.record_skipped_candidates(&skipped);
@@ -741,7 +781,13 @@ impl<'a> PoolKeyCursor<'a> {
                 continue;
             }
 
-            scheduled.truncate(refill_target);
+            if !self.ordered_strategy_scan {
+                scheduled.truncate(refill_target);
+            }
+            for candidate in &mut scheduled {
+                candidate.orchestration.pool_scheduling_presets_override =
+                    self.pool_scheduling_presets_override.clone();
+            }
             self.queued_candidates.extend(scheduled.drain(..));
             return true;
         }
@@ -1288,10 +1334,25 @@ fn apply_local_execution_pool_scheduler_with_runtime_map_outcome(
     runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
     key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
 ) -> PoolSchedulerApplyOutcome {
+    apply_local_execution_pool_scheduler_with_runtime_map_outcome_and_pool_configs(
+        candidates,
+        runtime_by_provider,
+        key_context_by_id,
+        &BTreeMap::new(),
+    )
+}
+
+fn apply_local_execution_pool_scheduler_with_runtime_map_outcome_and_pool_configs(
+    candidates: Vec<EligibleLocalExecutionCandidate>,
+    runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
+    key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+    pool_config_by_provider: &BTreeMap<String, AdminProviderPoolConfig>,
+) -> PoolSchedulerApplyOutcome {
     let (scheduled, skipped) = run_local_execution_pool_scheduler_with_runtime_map(
         candidates.clone(),
         runtime_by_provider,
         key_context_by_id,
+        pool_config_by_provider,
         true,
     );
     let mut active_probe_evicted_members_by_provider =
@@ -1319,6 +1380,7 @@ fn apply_local_execution_pool_scheduler_with_runtime_map_outcome(
         candidates,
         runtime_by_provider,
         key_context_by_id,
+        pool_config_by_provider,
         false,
     );
     merge_active_probe_evictions(
@@ -1382,6 +1444,7 @@ fn run_local_execution_pool_scheduler_with_runtime_map(
     candidates: Vec<EligibleLocalExecutionCandidate>,
     runtime_by_provider: &BTreeMap<String, AdminProviderPoolRuntimeState>,
     key_context_by_id: &BTreeMap<String, PoolCatalogKeyContext>,
+    pool_config_by_provider: &BTreeMap<String, AdminProviderPoolConfig>,
     enforce_active_probe_seal: bool,
 ) -> (
     Vec<EligibleLocalExecutionCandidate>,
@@ -1398,7 +1461,10 @@ fn run_local_execution_pool_scheduler_with_runtime_map(
             .get(&candidate.candidate.key_id)
             .cloned()
             .unwrap_or_default();
-        let admin_pool_config = pool_config_for_candidate(&candidate);
+        let admin_pool_config = pool_config_by_provider
+            .get(&candidate.candidate.provider_id)
+            .cloned()
+            .or_else(|| pool_config_for_candidate(&candidate));
 
         if let Some(config) = admin_pool_config.as_ref() {
             if enforce_active_probe_seal && should_enforce_active_probe_sealed_pool(config) {
@@ -1480,48 +1546,17 @@ fn should_trigger_active_probe_burst_for_request(
 }
 
 fn pool_key_candidate_order_for_group(
-    group: &EligibleLocalExecutionCandidate,
-    routing_policy: Option<&ResolvedRoutingPolicy>,
+    pool_config: Option<&AdminProviderPoolConfig>,
+    presets: &[PoolSchedulingPreset],
 ) -> StoredPoolKeyCandidateOrder {
-    let Some(pool_config) = pool_config_for_candidate(group) else {
-        return StoredPoolKeyCandidateOrder::InternalPriority;
-    };
-    let override_presets = routing_policy
-        .and_then(|policy| {
-            policy
-                .pool_policy_overrides
-                .get(group.candidate.provider_id.as_str())
-        })
-        .filter(|override_policy| !override_policy.scheduling_presets.is_empty());
-    let presets = match override_presets {
-        Some(override_policy) => override_policy
-            .scheduling_presets
-            .iter()
-            .map(|preset| PoolSchedulingPreset {
-                preset: preset.preset.clone(),
-                enabled: preset.enabled,
-                mode: preset.mode.clone(),
-            })
-            .collect::<Vec<_>>(),
-        None => pool_config
-            .scheduling_presets
-            .iter()
-            .map(|preset| PoolSchedulingPreset {
-                preset: preset.preset.clone(),
-                enabled: preset.enabled,
-                mode: preset.mode.clone(),
-            })
-            .collect::<Vec<_>>(),
-    };
-    let active_presets = ProviderPoolService::with_builtin_adapters()
-        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets)
-        .into_iter()
-        .map(|preset| preset.preset)
+    let active_presets = presets
+        .iter()
+        .map(|preset| preset.preset.as_str())
         .collect::<Vec<_>>();
     if let Some(distribution_mode) = active_presets
         .iter()
-        .find(|preset| pool_distribution_mode_preset(preset.as_str()))
-        .map(String::as_str)
+        .find(|preset| pool_distribution_mode_preset(preset))
+        .copied()
     {
         return match distribution_mode {
             "cache_affinity" => StoredPoolKeyCandidateOrder::CacheAffinity,
@@ -1533,16 +1568,103 @@ fn pool_key_candidate_order_for_group(
             _ => StoredPoolKeyCandidateOrder::InternalPriority,
         };
     }
-    if pool_config.lru_enabled {
+    if pool_config.is_some_and(|config| config.lru_enabled) {
         return StoredPoolKeyCandidateOrder::Lru;
     }
     StoredPoolKeyCandidateOrder::InternalPriority
 }
 
+fn pool_scheduling_presets_override_for_group(
+    group: &EligibleLocalExecutionCandidate,
+    routing_policy: Option<&ResolvedRoutingPolicy>,
+) -> Option<Vec<RoutingSchedulingPreset>> {
+    routing_policy
+        .and_then(|policy| {
+            policy
+                .pool_policy_overrides
+                .get(group.candidate.provider_id.as_str())
+        })
+        .map(|override_policy| override_policy.scheduling_presets.clone())
+        .filter(|presets| !presets.is_empty())
+}
+
+fn effective_pool_config_for_group(
+    group: &EligibleLocalExecutionCandidate,
+    pool_scheduling_presets_override: Option<&[RoutingSchedulingPreset]>,
+) -> Option<AdminProviderPoolConfig> {
+    let mut pool_config = pool_config_for_candidate(group)?;
+    if let Some(presets) = pool_scheduling_presets_override {
+        pool_config.scheduling_presets = presets
+            .iter()
+            .map(|preset| AdminProviderPoolSchedulingPreset {
+                preset: preset.preset.clone(),
+                enabled: preset.enabled,
+                mode: preset.mode.clone(),
+            })
+            .collect();
+        pool_config.lru_enabled = pool_config
+            .scheduling_presets
+            .iter()
+            .any(|preset| preset.enabled && preset.preset.eq_ignore_ascii_case("lru"));
+    }
+    Some(pool_config)
+}
+
+fn pool_has_explicit_ordered_strategy(
+    pool_config: Option<&AdminProviderPoolConfig>,
+    normalized_presets: &[PoolSchedulingPreset],
+) -> bool {
+    let normalized_names = normalized_presets
+        .iter()
+        .map(|preset| preset.preset.as_str())
+        .collect::<BTreeSet<_>>();
+    pool_config
+        .into_iter()
+        .flat_map(|config| &config.scheduling_presets)
+        .any(|preset| {
+            let preset_name = preset.preset.trim().to_ascii_lowercase();
+            preset.enabled
+                && pool_ordered_strategy_preset(preset_name.as_str())
+                && normalized_names.contains(preset_name.as_str())
+        })
+}
+
+fn normalized_pool_scheduling_presets_for_group(
+    group: &EligibleLocalExecutionCandidate,
+    pool_config: Option<&AdminProviderPoolConfig>,
+) -> Vec<PoolSchedulingPreset> {
+    let presets = pool_config
+        .into_iter()
+        .flat_map(|config| &config.scheduling_presets)
+        .map(|preset| PoolSchedulingPreset {
+            preset: preset.preset.clone(),
+            enabled: preset.enabled,
+            mode: preset.mode.clone(),
+        })
+        .collect::<Vec<_>>();
+    ProviderPoolService::with_builtin_adapters()
+        .normalize_scheduling_presets(group.transport.provider.provider_type.as_str(), &presets)
+}
+
+fn pool_ordered_strategy_preset(preset: &str) -> bool {
+    matches!(
+        preset,
+        "plus_first"
+            | "pro_first"
+            | "free_first"
+            | "team_first"
+            | "health_first"
+            | "latency_first"
+            | "cost_first"
+            | "quota_balanced"
+            | "recent_refresh"
+    )
+}
+
 fn pool_distribution_mode_preset(preset: &str) -> bool {
     matches!(
         preset,
-        "cache_affinity" | "load_balance" | "single_account" | "priority_first"
+        "lru" | "cache_affinity" | "load_balance" | "single_account" | "priority_first"
     )
 }
 
@@ -1602,11 +1724,16 @@ fn apply_pool_orchestration(
     orchestration: PoolCandidateOrchestration,
 ) -> EligibleLocalExecutionCandidate {
     let scheduler_affinity_epoch = candidate.orchestration.scheduler_affinity_epoch;
+    let pool_scheduling_presets_override = candidate
+        .orchestration
+        .pool_scheduling_presets_override
+        .clone();
     candidate.orchestration = LocalExecutionCandidateMetadata {
         candidate_group_id: orchestration.candidate_group_id,
         pool_key_index: orchestration.pool_key_index,
         pool_key_lease: None,
         scheduler_affinity_epoch,
+        pool_scheduling_presets_override,
     };
     candidate
 }
@@ -1631,7 +1758,7 @@ mod tests {
     use crate::data::GatewayDataState;
     use crate::handlers::shared::provider_pool::{
         record_admin_provider_pool_error, record_admin_provider_pool_model_cooldown,
-        AdminProviderPoolRuntimeState,
+        record_admin_provider_pool_success, AdminProviderPoolRuntimeState,
     };
     use crate::orchestration::LocalExecutionCandidateMetadata;
     use crate::{AppState, LocalExecutionRuntimeMissDiagnostic};
@@ -1654,7 +1781,8 @@ mod tests {
         GatewayProviderTransportProvider,
     };
     use aether_routing_core::{
-        RankingOverlay, ResolvedRoutingPolicy, RoutingSchedulingMode, RoutingSetPriorityMode,
+        RankingOverlay, ResolvedRoutingPolicy, RoutingPoolPolicyOverride, RoutingSchedulingMode,
+        RoutingSchedulingPreset, RoutingSetPriorityMode,
     };
     use aether_scheduler_core::SchedulerMinimalCandidateSelectionCandidate;
     use serde_json::json;
@@ -1807,6 +1935,7 @@ mod tests {
                 pool_key_index: Some(0),
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                pool_scheduling_presets_override: None,
             }
         );
         assert_eq!(reordered[1].orchestration.pool_key_index, Some(1));
@@ -1824,6 +1953,7 @@ mod tests {
                 pool_key_index: None,
                 pool_key_lease: None,
                 scheduler_affinity_epoch: None,
+                pool_scheduling_presets_override: None,
             }
         );
     }
@@ -2152,6 +2282,7 @@ mod tests {
         let evicted = prune_unschedulable_active_probe_members_for_request(
             &mut runtime_by_provider,
             &[key_hot],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -3153,6 +3284,279 @@ mod tests {
         assert!(skipped.iter().all(|candidate| {
             candidate.skip_reason == aether_pool_core::POOL_ACCOUNT_EXHAUSTED_SKIP_REASON
         }));
+    }
+
+    #[tokio::test]
+    async fn pool_key_cursor_applies_ordered_strategies_across_all_scanned_pages() {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "scheduling_presets": [
+                    {"preset": "cache_affinity", "enabled": true},
+                    {"preset": "quota_balanced", "enabled": true}
+                ]
+            }
+        }));
+        let (provider, endpoint, mut keys, rows) = large_pool_fixture(70, provider_config.clone());
+        for key in &mut keys {
+            let usage_ratio = if key.id == "key-00000" { 0.0 } else { 0.9 };
+            key.status_snapshot = Some(json!({
+                "quota": {
+                    "provider_type": "openai",
+                    "exhausted": false,
+                    "usage_ratio": usage_ratio
+                }
+            }));
+        }
+
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider],
+                    vec![endpoint],
+                    keys,
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        let group = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "pool-group",
+            10,
+            provider_config,
+        );
+        let mut cursor = PoolKeyCursor::new(PlannerAppState::new(&app), group, None, None, None);
+        cursor.window_size = 16;
+        cursor.page_size = 64;
+        cursor.max_scanned_keys = 70;
+
+        let candidate = cursor
+            .next_key()
+            .await
+            .expect("later pages should participate in ordered strategy selection");
+
+        assert_eq!(candidate.candidate.key_id, "key-00000");
+        assert_eq!(cursor.scanned_keys, 70);
+    }
+
+    #[tokio::test]
+    async fn pool_key_cursor_uses_routing_pool_override_for_final_selection() {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "scheduling_presets": [
+                    {"preset": "cache_affinity", "enabled": true}
+                ]
+            }
+        }));
+        let (provider, endpoint, mut keys, rows) = large_pool_fixture(2, provider_config.clone());
+        for key in &mut keys {
+            let usage_ratio = if key.id == "key-00000" { 0.0 } else { 0.9 };
+            key.status_snapshot = Some(json!({
+                "quota": {
+                    "provider_type": "openai",
+                    "exhausted": false,
+                    "usage_ratio": usage_ratio
+                }
+            }));
+        }
+
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider],
+                    vec![endpoint],
+                    keys,
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        let group = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "pool-group",
+            10,
+            provider_config,
+        );
+        let mut routing_policy = routing_policy_with_allowed_keys([]);
+        routing_policy.pool_policy_overrides.insert(
+            "provider-pool".to_string(),
+            RoutingPoolPolicyOverride {
+                scheduling_presets: vec![
+                    RoutingSchedulingPreset {
+                        preset: "cache_affinity".to_string(),
+                        enabled: true,
+                        mode: None,
+                    },
+                    RoutingSchedulingPreset {
+                        preset: "quota_balanced".to_string(),
+                        enabled: true,
+                        mode: None,
+                    },
+                ],
+            },
+        );
+        let mut cursor = PoolKeyCursor::new_with_routing_policy(
+            PlannerAppState::new(&app),
+            group,
+            None,
+            None,
+            None,
+            Some(&routing_policy),
+        );
+
+        let candidate = cursor
+            .next_key()
+            .await
+            .expect("routing pool override should select an account");
+
+        assert_eq!(candidate.candidate.key_id, "key-00000");
+        assert_eq!(
+            candidate
+                .orchestration
+                .pool_scheduling_presets_override
+                .as_deref(),
+            Some(
+                routing_policy.pool_policy_overrides["provider-pool"]
+                    .scheduling_presets
+                    .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn pool_key_cursor_ignores_unsupported_strategy_when_deciding_full_scan() {
+        let app = AppState::new().expect("state should build");
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "scheduling_presets": [
+                    {"preset": "cache_affinity", "enabled": true}
+                ]
+            }
+        }));
+        let mut group = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "pool-group",
+            10,
+            provider_config,
+        );
+        Arc::make_mut(&mut group.transport).provider.provider_type = "claude_code".to_string();
+        let mut routing_policy = routing_policy_with_allowed_keys([]);
+        routing_policy.pool_policy_overrides.insert(
+            "provider-pool".to_string(),
+            RoutingPoolPolicyOverride {
+                scheduling_presets: vec![
+                    RoutingSchedulingPreset {
+                        preset: "cache_affinity".to_string(),
+                        enabled: true,
+                        mode: None,
+                    },
+                    RoutingSchedulingPreset {
+                        preset: "recent_refresh".to_string(),
+                        enabled: true,
+                        mode: None,
+                    },
+                ],
+            },
+        );
+
+        let cursor = PoolKeyCursor::new_with_routing_policy(
+            PlannerAppState::new(&app),
+            group,
+            None,
+            None,
+            None,
+            Some(&routing_policy),
+        );
+
+        assert!(!cursor.ordered_strategy_scan);
+        assert!(!cursor.score_phase_loaded);
+    }
+
+    #[tokio::test]
+    async fn pool_key_cursor_rejects_exhausted_sticky_binding_before_returning_it() {
+        let provider_config = Some(json!({
+            "pool_advanced": {
+                "skip_exhausted_accounts": true,
+                "scheduling_presets": [
+                    {"preset": "cache_affinity", "enabled": true}
+                ]
+            }
+        }));
+        let (provider, endpoint, mut keys, rows) = large_pool_fixture(2, provider_config.clone());
+        keys[0].status_snapshot = Some(json!({
+            "quota": {
+                "provider_type": "openai",
+                "exhausted": true,
+                "usage_ratio": 1.0
+            }
+        }));
+        keys[1].status_snapshot = Some(json!({
+            "quota": {
+                "provider_type": "openai",
+                "exhausted": false,
+                "usage_ratio": 0.0
+            }
+        }));
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider],
+                    vec![endpoint],
+                    keys,
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        let group = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "pool-group",
+            10,
+            provider_config,
+        );
+        let pool_config = pool_config_for_candidate(&group).expect("pool config should parse");
+        record_admin_provider_pool_success(
+            app.runtime_state.as_ref(),
+            "provider-pool",
+            "key-00000",
+            &pool_config,
+            Some("session-1"),
+            0,
+            None,
+        )
+        .await;
+
+        let mut cursor = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            group,
+            Some("session-1"),
+            None,
+            None,
+        );
+        let candidate = cursor
+            .next_key()
+            .await
+            .expect("the available unbound key should be selected");
+
+        assert_eq!(candidate.candidate.key_id, "key-00001");
+        assert_eq!(
+            cursor
+                .take_skipped_candidates()
+                .iter()
+                .map(|candidate| candidate.skip_reason)
+                .collect::<Vec<_>>(),
+            vec![aether_pool_core::POOL_ACCOUNT_EXHAUSTED_SKIP_REASON]
+        );
     }
 
     #[tokio::test]

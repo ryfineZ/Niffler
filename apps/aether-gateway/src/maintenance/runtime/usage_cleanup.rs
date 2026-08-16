@@ -109,12 +109,14 @@ async fn perform_usage_cleanup_once_with_options(
     if !data.has_usage_writer() {
         return Ok(UsageCleanupSummary::default());
     }
-    if respect_auto_enabled
-        && override_older_than.is_none()
-        && !usage_detail_auto_cleanup_enabled(data).await?
-    {
-        return Ok(UsageCleanupSummary::default());
-    }
+    let targets = if respect_auto_enabled && override_older_than.is_none() {
+        let Some(targets) = usage_auto_cleanup_targets(data, options.targets).await? else {
+            return Ok(UsageCleanupSummary::default());
+        };
+        targets
+    } else {
+        options.targets
+    };
 
     let window = compute_usage_cleanup_window(data, options.mode, override_older_than).await?;
     let settings = usage_cleanup_settings(data).await?;
@@ -122,17 +124,26 @@ async fn perform_usage_cleanup_once_with_options(
         &window,
         settings.batch_size,
         settings.auto_delete_expired_keys,
-        options.targets,
+        targets,
         cleanup_execution_mode(options.mode),
     )
     .await
 }
 
-pub(super) async fn usage_detail_auto_cleanup_enabled(
+pub(super) async fn usage_auto_cleanup_targets(
     data: &GatewayDataState,
-) -> Result<bool, DataLayerError> {
-    Ok(system_config_bool(data, "enable_auto_cleanup", true).await?
-        && system_config_bool(data, "enable_usage_detail_cleanup", true).await?)
+    mut targets: UsageCleanupTargets,
+) -> Result<Option<UsageCleanupTargets>, DataLayerError> {
+    if !system_config_bool(data, "enable_auto_cleanup", true).await? {
+        return Ok(None);
+    }
+    if !system_config_bool(data, "enable_usage_detail_cleanup", true).await? {
+        targets.detail_body = false;
+        targets.compressed_body = false;
+        targets.headers = false;
+        targets.records = false;
+    }
+    Ok(Some(targets))
 }
 
 pub(crate) async fn preview_manual_usage_cleanup(

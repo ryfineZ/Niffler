@@ -62,10 +62,11 @@ pub(crate) use self::planner::{
     read_candidate_transport_snapshot, record_local_runtime_candidate_skip_reason,
     record_local_runtime_candidate_skip_reason_counts,
     set_local_openai_chat_execution_exhausted_diagnostic,
-    set_local_openai_image_execution_exhausted_diagnostic, CandidateFailureDiagnostic,
-    CandidateFailureDiagnosticKind, EligibleLocalExecutionCandidate, GatewayAuthApiKeySnapshot,
-    GatewayProviderTransportSnapshot, LocalExecutionAttemptSource, LocalExecutionCandidateKind,
-    LocalResolvedOAuthRequestAuth, PlannerAppState, SkippedLocalExecutionCandidate,
+    set_local_openai_image_execution_exhausted_diagnostic, with_request_billing_scope,
+    CandidateFailureDiagnostic, CandidateFailureDiagnosticKind, EligibleLocalExecutionCandidate,
+    GatewayAuthApiKeySnapshot, GatewayProviderTransportSnapshot, LocalExecutionAttemptSource,
+    LocalExecutionCandidateKind, LocalResolvedOAuthRequestAuth, PlannerAppState,
+    SkippedLocalExecutionCandidate,
 };
 pub(crate) use self::pure::*;
 pub(crate) use self::transport::{

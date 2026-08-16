@@ -417,6 +417,8 @@ fn append_seed_extra_data_from_report_context(
     context: &Map<String, Value>,
 ) {
     const PASSTHROUGH_FIELDS: &[&str] = &[
+        "trace_id",
+        "client_request_id",
         "execution_strategy",
         "conversion_mode",
         "client_contract",
@@ -1119,7 +1121,9 @@ mod tests {
                 "retry_index": 2,
                 "user_id": "user-1",
                 "api_key_id": "api-key-1",
-                "client_api_format": "openai:chat"
+                "client_api_format": "openai:chat",
+                "trace_id": "trace-client-1",
+                "client_request_id": "client-request-1"
             })),
             123,
             "generated-1".to_string(),
@@ -1130,6 +1134,22 @@ mod tests {
         assert_eq!(seed.upsert_record.candidate_index, 3);
         assert_eq!(seed.upsert_record.retry_index, 2);
         assert_eq!(seed.upsert_record.user_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            seed.upsert_record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("trace_id"))
+                .and_then(Value::as_str),
+            Some("trace-client-1")
+        );
+        assert_eq!(
+            seed.upsert_record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("client_request_id"))
+                .and_then(Value::as_str),
+            Some("client-request-1")
+        );
         assert_eq!(
             seed.report_context
                 .get("provider_id")

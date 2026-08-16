@@ -15,6 +15,9 @@ use axum::http::{self, header::HeaderName, header::HeaderValue, Response};
 use std::time::Instant;
 use tracing::{info, trace, warn};
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TrustedGatewayRequestIdentity;
+
 pub(super) fn request_wants_stream(
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
@@ -48,6 +51,7 @@ pub(super) fn request_wants_stream(
 pub(super) fn finalize_gateway_response(
     state: &AppState,
     mut response: Response<Body>,
+    request_id: &str,
     trace_id: &str,
     remote_addr: &std::net::SocketAddr,
     method: &http::Method,
@@ -58,12 +62,20 @@ pub(super) fn finalize_gateway_response(
     request_permit: Option<AdmissionPermit>,
 ) -> Response<Body> {
     attach_control_decision_headers(&mut response, control_decision);
-    if !response.headers().contains_key(TRACE_ID_HEADER) {
+    if response
+        .extensions()
+        .get::<TrustedGatewayRequestIdentity>()
+        .is_none()
+    {
         response.headers_mut().insert(
-            HeaderName::from_static(TRACE_ID_HEADER),
-            HeaderValue::from_str(trace_id).expect("trace id should be a valid header value"),
+            HeaderName::from_static(CONTROL_REQUEST_ID_HEADER),
+            HeaderValue::from_str(request_id).expect("request id should be a valid header value"),
         );
     }
+    response.headers_mut().insert(
+        HeaderName::from_static(TRACE_ID_HEADER),
+        HeaderValue::from_str(trace_id).expect("trace id should be a valid header value"),
+    );
     response.headers_mut().insert(
         HeaderName::from_static(EXECUTION_PATH_HEADER),
         HeaderValue::from_static(execution_path),
@@ -85,7 +97,7 @@ pub(super) fn finalize_gateway_response(
     let route_class = control_decision
         .and_then(|decision| decision.route_class.as_deref())
         .unwrap_or("passthrough");
-    let request_id = response
+    let response_request_id = response
         .headers()
         .get(CONTROL_REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -115,7 +127,7 @@ pub(super) fn finalize_gateway_response(
             status = "failed",
             status_code,
             trace_id = %trace_id,
-            request_id,
+            request_id = response_request_id,
             remote_addr = %remote_addr,
             method = %method,
             path = %sanitized_path_and_query,
@@ -135,7 +147,7 @@ pub(super) fn finalize_gateway_response(
             status = "completed",
             status_code,
             trace_id = %trace_id,
-            request_id,
+            request_id = response_request_id,
             remote_addr = %remote_addr,
             method = %method,
             path = %sanitized_path_and_query,
@@ -155,7 +167,7 @@ pub(super) fn finalize_gateway_response(
             status = "completed",
             status_code,
             trace_id = %trace_id,
-            request_id,
+            request_id = response_request_id,
             remote_addr = %remote_addr,
             method = %method,
             path = %sanitized_path_and_query,
@@ -172,6 +184,87 @@ pub(super) fn finalize_gateway_response(
     response.extensions_mut().insert(RequestLogEmitted);
 
     maybe_hold_axum_response_permit(response, request_permit)
+}
+
+#[cfg(test)]
+mod request_identity_tests {
+    use super::{finalize_gateway_response, TrustedGatewayRequestIdentity};
+    use crate::constants::CONTROL_REQUEST_ID_HEADER;
+    use crate::AppState;
+    use axum::body::Body;
+    use axum::http::{Method, Response};
+    use std::time::Instant;
+
+    #[test]
+    fn finalizer_always_uses_the_gateway_request_id() {
+        let state = AppState::new().expect("gateway state should build");
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            CONTROL_REQUEST_ID_HEADER,
+            "upstream-controlled-id"
+                .parse()
+                .expect("header should parse"),
+        );
+
+        let response = finalize_gateway_response(
+            &state,
+            response,
+            "gateway-request-id",
+            "trace-request-id-finalizer-1",
+            &"127.0.0.1:19001".parse().expect("address should parse"),
+            &Method::POST,
+            "/v1/chat/completions",
+            None,
+            "test",
+            &Instant::now(),
+            None,
+        );
+
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTROL_REQUEST_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("gateway-request-id")
+        );
+    }
+
+    #[test]
+    fn finalizer_preserves_request_id_from_trusted_gateway_forwarding() {
+        let state = AppState::new().expect("gateway state should build");
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            CONTROL_REQUEST_ID_HEADER,
+            "owner-gateway-request-id"
+                .parse()
+                .expect("header should parse"),
+        );
+        response
+            .extensions_mut()
+            .insert(TrustedGatewayRequestIdentity);
+
+        let response = finalize_gateway_response(
+            &state,
+            response,
+            "edge-gateway-request-id",
+            "trace-trusted-gateway-request-id-1",
+            &"127.0.0.1:19003".parse().expect("address should parse"),
+            &Method::POST,
+            "/v1/chat/completions",
+            None,
+            "test",
+            &Instant::now(),
+            None,
+        );
+
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTROL_REQUEST_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("owner-gateway-request-id")
+        );
+    }
 }
 
 fn attach_control_decision_headers(
@@ -250,6 +343,7 @@ pub(super) fn finalize_gateway_response_with_context(
     finalize_gateway_response(
         state,
         response,
+        &request_context.request_id,
         &request_context.trace_id,
         remote_addr,
         &request_context.request_method,
@@ -314,6 +408,7 @@ mod tests {
     #[test]
     fn request_wants_stream_reads_zstd_encoded_json_body() {
         let request_context = GatewayPublicRequestContext {
+            request_id: "request-zstd-stream".to_string(),
             trace_id: "trace-zstd-stream".to_string(),
             request_method: Method::POST,
             request_path: "/v1/responses".to_string(),
@@ -371,6 +466,7 @@ mod tests {
         let _response = finalize_gateway_response(
             &state,
             response,
+            "request-finalize",
             "trace-finalize",
             &remote_addr,
             &Method::GET,

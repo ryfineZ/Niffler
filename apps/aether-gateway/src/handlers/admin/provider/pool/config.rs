@@ -356,6 +356,20 @@ fn admin_provider_pool_lru_enabled(
 pub(crate) fn admin_provider_pool_cache_affinity_enabled(
     pool_config: &AdminProviderPoolConfig,
 ) -> bool {
+    admin_provider_pool_distribution_mode(pool_config).as_deref() == Some("cache_affinity")
+}
+
+pub(crate) fn admin_provider_pool_lru_runtime_enabled(
+    pool_config: &AdminProviderPoolConfig,
+) -> bool {
+    let distribution_mode = admin_provider_pool_distribution_mode(pool_config);
+    matches!(
+        distribution_mode.as_deref(),
+        Some("lru" | "cache_affinity" | "single_account")
+    ) || (pool_config.lru_enabled && distribution_mode.is_none())
+}
+
+fn admin_provider_pool_distribution_mode(pool_config: &AdminProviderPoolConfig) -> Option<String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut selected_distribution_preset = None::<String>;
     for item in &pool_config.scheduling_presets {
@@ -371,14 +385,14 @@ pub(crate) fn admin_provider_pool_cache_affinity_enabled(
             "lru" | "cache_affinity" | "load_balance" | "single_account" | "priority_first"
         ) {
             if preset == "priority_first" {
-                return false;
+                return Some(preset);
             }
             if selected_distribution_preset.is_none() {
                 selected_distribution_preset = Some(preset);
             }
         }
     }
-    selected_distribution_preset.as_deref() == Some("cache_affinity")
+    selected_distribution_preset
 }
 
 pub(crate) fn admin_provider_pool_config(
@@ -542,7 +556,7 @@ pub(crate) fn admin_provider_pool_config_from_config_value(
 mod tests {
     use super::{
         admin_provider_pool_cache_affinity_enabled, admin_provider_pool_config,
-        admin_provider_pool_config_from_config_value,
+        admin_provider_pool_config_from_config_value, admin_provider_pool_lru_runtime_enabled,
     };
     use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider;
     use serde_json::json;
@@ -854,5 +868,32 @@ mod tests {
         })))
         .expect("pool config should parse");
         assert!(!admin_provider_pool_cache_affinity_enabled(&priority_first));
+    }
+
+    #[test]
+    fn lru_runtime_is_only_enabled_for_lru_based_distribution_modes() {
+        for (preset, expected) in [
+            ("lru", true),
+            ("cache_affinity", true),
+            ("single_account", true),
+            ("load_balance", false),
+            ("priority_first", false),
+        ] {
+            let config = admin_provider_pool_config_from_config_value(Some(&json!({
+                "pool_advanced": {
+                    "scheduling_presets": [
+                        {"preset": preset, "enabled": true},
+                        {"preset": "quota_balanced", "enabled": true}
+                    ]
+                }
+            })))
+            .expect("pool config should parse");
+
+            assert_eq!(
+                admin_provider_pool_lru_runtime_enabled(&config),
+                expected,
+                "unexpected LRU runtime decision for {preset}"
+            );
+        }
     }
 }

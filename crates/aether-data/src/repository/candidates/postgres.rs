@@ -518,12 +518,16 @@ WHERE created_at >= TO_TIMESTAMP($1::double precision / 1000.0)
         candidate: UpsertRequestCandidateRecord,
         admission: BillingRequestAdmissionInput,
     ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
-        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        super::admission::validate_candidate_admission_identity(&candidate, &admission)?;
         self.tx_runner
             .run_read_write(|tx| {
                 Box::pin(async move {
                     let stored_admission =
                         insert_billing_admission_postgres(tx, &admission).await?;
+                    super::admission::validate_candidate_provider(
+                        &candidate,
+                        &stored_admission.to_input(),
+                    )?;
                     let stored = upsert_candidate_postgres(tx, candidate).await?;
                     Ok((stored, stored_admission))
                 })

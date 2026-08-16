@@ -16,6 +16,8 @@
 - 旧配置里如果同时启用了 `cache_affinity` 和 `priority_first`，运行时按 `priority_first` 生效。
 - `priority_first` 生效时，不再使用缓存亲和绑定账号，不再让最近使用账号压过手工优先级。
 
+后续两层组合规则见 `2026-08-16-pool-distribution-strategy-composition.md`：`priority_first` 仍是互斥的分配模式；启用叠加策略时，策略先比较账号，人工优先级负责最终裁决。
+
 ## 影响范围
 
 影响开启号池调度并启用 `priority_first` 的 Provider。未启用 `priority_first` 的号池继续保持原有缓存亲和、负载均衡、单号优先或 LRU 行为。

@@ -20,6 +20,7 @@ use tracing::warn;
 
 use crate::constants::{
     EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER,
+    TRACE_ID_HEADER,
 };
 use crate::control::GatewayControlDecision;
 use crate::headers::header_value_str;
@@ -340,7 +341,9 @@ pub(crate) async fn record_failed_usage_for_exhausted_request(
         Some(other) => Map::from_iter([("seed".to_string(), other)]),
         None => Map::new(),
     };
-    request_metadata.insert("trace_id".to_string(), Value::String(request_id.clone()));
+    request_metadata
+        .entry("trace_id".to_string())
+        .or_insert_with(|| Value::String(request_id.clone()));
     apply_runtime_miss_usage_routing(
         &mut data,
         &mut request_metadata,
@@ -540,10 +543,15 @@ pub(crate) async fn record_failed_usage_for_runtime_miss_request(
     }
 
     let mut request_metadata = Map::new();
-    request_metadata.insert(
-        "trace_id".to_string(),
-        Value::String(request_id.to_string()),
-    );
+    let trace_id = header_value_str(request_headers, TRACE_ID_HEADER)
+        .unwrap_or_else(|| request_id.to_string());
+    request_metadata.insert("trace_id".to_string(), Value::String(trace_id));
+    if let Some(client_request_id) = header_value_str(request_headers, "x-request-id") {
+        request_metadata.insert(
+            "client_request_id".to_string(),
+            Value::String(client_request_id),
+        );
+    }
     if record_as_platform_rejection {
         let reason = diagnostic
             .map(|value| value.reason.trim())
@@ -714,6 +722,100 @@ pub(crate) async fn record_platform_handled_usage(
     .await;
 }
 
+pub(crate) async fn record_platform_pending_usage(
+    state: &AppState,
+    request_id: &str,
+    decision: Option<&GatewayControlDecision>,
+    uri: &http::Uri,
+    headers: &HeaderMap,
+    request_body: Option<&Bytes>,
+) -> Result<(), crate::GatewayError> {
+    if !state.usage_runtime.is_enabled() {
+        return Ok(());
+    }
+    let Some(decision) = decision else {
+        return Ok(());
+    };
+    if decision.route_class.as_deref() != Some("ai_public") {
+        return Ok(());
+    }
+
+    let auth_context = decision.auth_context.as_ref();
+    let api_format = trimmed_non_empty(decision.auth_endpoint_signature.as_deref());
+    let requested_model = crate::control::extract_requested_model(
+        decision,
+        uri,
+        headers,
+        request_body.unwrap_or(&Bytes::new()),
+    );
+    let model = requested_model
+        .or_else(|| trimmed_non_empty(decision.route_kind.as_deref()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut request_metadata = Map::new();
+    request_metadata.insert(
+        "source".to_string(),
+        Value::String("platform_pending".to_string()),
+    );
+    let trace_id =
+        header_value_str(headers, TRACE_ID_HEADER).unwrap_or_else(|| request_id.to_string());
+    request_metadata.insert("trace_id".to_string(), Value::String(trace_id));
+    if let Some(client_request_id) = header_value_str(headers, "x-request-id") {
+        request_metadata.insert(
+            "client_request_id".to_string(),
+            Value::String(client_request_id),
+        );
+    }
+    request_metadata.insert(
+        "request_path".to_string(),
+        Value::String(
+            uri.path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or("/")
+                .to_string(),
+        ),
+    );
+
+    let event = UsageEvent::new(
+        UsageEventType::Pending,
+        request_id,
+        UsageEventData {
+            user_id: auth_context.map(|value| value.user_id.clone()),
+            api_key_id: auth_context.map(|value| value.api_key_id.clone()),
+            username: auth_context.and_then(|value| value.username.clone()),
+            api_key_name: auth_context.and_then(|value| value.api_key_name.clone()),
+            provider_name: "Niffler 平台".to_string(),
+            model,
+            request_type: Some(infer_request_type(api_format.as_deref())),
+            api_format: api_format.clone(),
+            api_family: api_format
+                .as_deref()
+                .and_then(infer_api_family)
+                .map(ToOwned::to_owned),
+            endpoint_kind: api_format
+                .as_deref()
+                .and_then(infer_endpoint_kind)
+                .map(ToOwned::to_owned),
+            endpoint_api_format: api_format.clone(),
+            provider_api_family: api_format
+                .as_deref()
+                .and_then(infer_api_family)
+                .map(ToOwned::to_owned),
+            provider_endpoint_kind: api_format
+                .as_deref()
+                .and_then(infer_endpoint_kind)
+                .map(ToOwned::to_owned),
+            has_format_conversion: Some(false),
+            request_metadata: Some(Value::Object(request_metadata)),
+            ..UsageEventData::default()
+        },
+    );
+    state
+        .usage_runtime
+        .record_pending_event_direct(state.data.as_ref(), event)
+        .await
+        .map_err(|error| crate::GatewayError::Internal(format!("创建请求使用记录失败: {error}")))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn record_platform_usage(
     state: &AppState,
@@ -766,10 +868,15 @@ async fn record_platform_usage(
     };
     let mut request_metadata = Map::new();
     request_metadata.insert("source".to_string(), Value::String(source.to_string()));
-    request_metadata.insert(
-        "trace_id".to_string(),
-        Value::String(request_id.to_string()),
-    );
+    let trace_id =
+        header_value_str(headers, TRACE_ID_HEADER).unwrap_or_else(|| request_id.to_string());
+    request_metadata.insert("trace_id".to_string(), Value::String(trace_id));
+    if let Some(client_request_id) = header_value_str(headers, "x-request-id") {
+        request_metadata.insert(
+            "client_request_id".to_string(),
+            Value::String(client_request_id),
+        );
+    }
     request_metadata.insert(
         "platform_rejection_reason".to_string(),
         Value::String(reason.to_string()),
@@ -834,10 +941,13 @@ async fn record_platform_usage(
         ..UsageEventData::default()
     };
 
-    state.usage_runtime.submit_terminal_event(
-        state.data.as_ref(),
-        UsageEvent::new(event_type, request_id, data),
-    );
+    state
+        .usage_runtime
+        .record_terminal_event_direct(
+            state.data.as_ref(),
+            UsageEvent::new(event_type, request_id, data),
+        )
+        .await;
 }
 
 pub(crate) fn beautify_local_execution_client_error_message(message: &str) -> String {

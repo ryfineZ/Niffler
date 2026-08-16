@@ -153,6 +153,7 @@ pub(crate) fn should_skip_response_header(name: &str) -> bool {
             | "upgrade"
             | "x-aether-control-executed"
             | "x-aether-control-action"
+            | "x-aether-control-request-id"
     )
 }
 

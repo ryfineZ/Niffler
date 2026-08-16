@@ -4,6 +4,7 @@ use super::{
     HeaderName, HeaderValue, Infallible, Json, Mutex, Request, Response, Router, StatusCode,
     UsageRuntimeConfig, TRACE_ID_HEADER,
 };
+use crate::constants::CONTROL_REQUEST_ID_HEADER;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -592,6 +593,12 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string();
     assert_eq!(
         strip_sse_keepalive_comments(&response.text().await.expect("body should read")),
         "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex_cli_stream_local_123\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
@@ -685,7 +692,7 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-codex-cli-stream-local-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -696,7 +703,7 @@ async fn gateway_executes_codex_cli_stream_via_local_decision_gate_after_oauth_r
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         stored_usage = usage_repository
-            .find_by_request_id("trace-codex-cli-stream-local-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored_usage

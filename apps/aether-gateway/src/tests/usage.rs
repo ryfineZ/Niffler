@@ -28,8 +28,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     any, build_router_with_state, build_state_with_execution_runtime_override, send_request,
-    start_server, strip_sse_keepalive_comments, wait_until, Body, Bytes, HeaderValue, Infallible,
-    Json, Mutex, Request, Response, Router, StatusCode, UsageRuntimeConfig, TRACE_ID_HEADER,
+    start_server, strip_sse_keepalive_comments, to_bytes, wait_until, Body, Bytes, HeaderValue,
+    Infallible, Json, Mutex, Request, Response, Router, StatusCode, UsageRuntimeConfig,
+    TRACE_ID_HEADER,
 };
 use crate::data::GatewayDataState;
 
@@ -53,6 +54,24 @@ pub(super) async fn wait_for_request_candidate_status(
                 .list_by_request_id(request_id)
                 .await
                 .expect("request candidate trace should read");
+            let stored_candidates = if stored_candidates.is_empty() {
+                request_candidate_repository
+                    .list_recent(100)
+                    .await
+                    .expect("recent request candidates should read")
+                    .into_iter()
+                    .filter(|candidate| {
+                        candidate
+                            .extra_data
+                            .as_ref()
+                            .and_then(|value| value.get("trace_id"))
+                            .and_then(|value| value.as_str())
+                            == Some(request_id)
+                    })
+                    .collect()
+            } else {
+                stored_candidates
+            };
             if stored_candidates
                 .iter()
                 .any(|candidate| candidate.status == expected_status)

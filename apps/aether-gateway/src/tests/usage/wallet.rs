@@ -2,13 +2,14 @@ use super::{
     any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
     sample_local_openai_auth_snapshot, sample_local_openai_candidate_row,
     sample_local_openai_endpoint, sample_local_openai_key, sample_local_openai_provider,
-    start_server, Arc, GatewayDataState, InMemoryAuthApiKeySnapshotRepository,
+    start_server, to_bytes, Arc, GatewayDataState, InMemoryAuthApiKeySnapshotRepository,
     InMemoryBillingReadRepository, InMemoryMinimalCandidateSelectionReadRepository,
     InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository,
     InMemoryUsageReadRepository, InMemoryWalletRepository, Json, Request, Router, StatusCode,
     StoredBillingModelContext, StoredWalletSnapshot, UsageReadRepository, UsageRuntimeConfig,
     WalletLookupKey, WalletReadRepository, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
+use crate::constants::CONTROL_REQUEST_ID_HEADER;
 use aether_data::repository::settlement::InMemorySettlementRepository;
 use aether_data_contracts::repository::billing::{
     BillingFundingSource, BillingRequestAdmissionInput,
@@ -59,6 +60,9 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
         )
         .expect("wallet should build"),
     ]));
+    let settlement_repository = Arc::new(InMemorySettlementRepository::from_wallet_repository(
+        wallet_repository.clone(),
+    ));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-sync",
@@ -67,27 +71,57 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
 
     let execution_runtime = Router::new().route(
         "/v1/execute/sync",
-        any(|_request: Request| async move {
-            Json(json!({
-                "request_id": "req-usage-wallet-sync-123",
-                "status_code": 200,
-                "headers": {
-                    "content-type": "application/json"
-                },
-                "body": {
-                    "json_body": {
-                        "id": "chatcmpl-usage-wallet-sync-123",
-                        "usage": {
-                            "input_tokens": 1000,
-                            "output_tokens": 500,
-                            "total_tokens": 1500
+        any({
+            let settlement_repository = Arc::clone(&settlement_repository);
+            move |request: Request| {
+                let settlement_repository = Arc::clone(&settlement_repository);
+                async move {
+                    let body = to_bytes(request.into_body(), usize::MAX)
+                        .await
+                        .expect("execution request body should read");
+                    let request_id = serde_json::from_slice::<serde_json::Value>(&body)
+                        .expect("execution plan should parse")
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        .expect("execution plan should contain its server request id")
+                        .to_string();
+                    settlement_repository.insert_admission(BillingRequestAdmissionInput {
+                        request_id: request_id.clone(),
+                        user_id: Some("user-usage-sync-123".to_string()),
+                        api_key_id: Some("api-key-usage-sync-123".to_string()),
+                        wallet_id: Some("wallet-usage-sync-123".to_string()),
+                        global_model_id: Some("global-model-openai-usage-local-1".to_string()),
+                        funding_source: BillingFundingSource::Wallet,
+                        wallet_balance_at_admission: Some(12.0),
+                        wallet_payment_allowed: true,
+                        wallet_overage_allowed: false,
+                        entitlement_ids: Vec::new(),
+                        entitlement_provider_scopes: std::collections::BTreeMap::new(),
+                        allowed_provider_ids: Vec::new(),
+                        schema_version: 1,
+                    });
+                    Json(json!({
+                        "request_id": request_id,
+                        "status_code": 200,
+                        "headers": {
+                            "content-type": "application/json"
+                        },
+                        "body": {
+                            "json_body": {
+                                "id": "chatcmpl-usage-wallet-sync-123",
+                                "usage": {
+                                    "input_tokens": 1000,
+                                    "output_tokens": 500,
+                                    "total_tokens": 1500
+                                }
+                            }
+                        },
+                        "telemetry": {
+                            "elapsed_ms": 45
                         }
-                    }
-                },
-                "telemetry": {
-                    "elapsed_ms": 45
+                    }))
                 }
-            }))
+            }
         }),
     );
 
@@ -116,26 +150,7 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
         wallet_repository.clone(),
         DEVELOPMENT_ENCRYPTION_KEY,
     )
-    .with_settlement_writer_for_tests(Arc::new(
-        InMemorySettlementRepository::from_wallet_repository_with_admissions(
-            wallet_repository.clone(),
-            vec![BillingRequestAdmissionInput {
-                request_id: "req-usage-wallet-sync-123".to_string(),
-                user_id: Some("user-usage-sync-123".to_string()),
-                api_key_id: Some("api-key-usage-sync-123".to_string()),
-                wallet_id: Some("wallet-usage-sync-123".to_string()),
-                global_model_id: Some("global-model-openai-usage-local-1".to_string()),
-                funding_source: BillingFundingSource::Wallet,
-                wallet_balance_at_admission: Some(12.0),
-                wallet_payment_allowed: true,
-                wallet_overage_allowed: false,
-                entitlement_ids: Vec::new(),
-                entitlement_provider_scopes: std::collections::BTreeMap::new(),
-                allowed_provider_ids: Vec::new(),
-                schema_version: 1,
-            }],
-        ),
-    ));
+    .with_settlement_writer_for_tests(settlement_repository);
     let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url)
         .with_data_state_for_tests(data_state)
         .with_usage_runtime_for_tests(UsageRuntimeConfig {
@@ -159,11 +174,17 @@ async fn gateway_settles_wallet_for_completed_execution_runtime_sync_usage() {
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string();
 
     let mut stored = None;
     for _ in 0..50 {
         stored = usage_repository
-            .find_by_request_id("req-usage-wallet-sync-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored

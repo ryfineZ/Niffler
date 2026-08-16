@@ -3,7 +3,9 @@ use super::keys::{
     pool_cooldown_keys, pool_cost_keys, pool_latency_keys, pool_lru_key, pool_model_cooldown_key,
     pool_sticky_key, pool_sticky_pattern,
 };
-use crate::handlers::admin::provider::pool::config::admin_provider_pool_cache_affinity_enabled;
+use crate::handlers::admin::provider::pool::config::{
+    admin_provider_pool_cache_affinity_enabled, admin_provider_pool_lru_runtime_enabled,
+};
 use crate::handlers::admin::provider::shared::support::{
     admin_provider_pool_quota_probe_active_members_key, AdminProviderPoolConfig,
     AdminProviderPoolRuntimeState,
@@ -217,13 +219,7 @@ pub(crate) async fn read_admin_provider_pool_runtime_state(
         }
     }
 
-    if (pool_config.lru_enabled
-        || pool_config
-            .scheduling_presets
-            .iter()
-            .any(|item| item.enabled))
-        && !key_ids.is_empty()
-    {
+    if admin_provider_pool_lru_runtime_enabled(pool_config) && !key_ids.is_empty() {
         if let Ok(scores) = runtime
             .score_many(&pool_lru_key(provider_id), key_ids)
             .await

@@ -1158,6 +1158,7 @@ mod tests {
         query: impl Into<String>,
     ) -> crate::control::GatewayPublicRequestContext {
         crate::control::GatewayPublicRequestContext {
+            request_id: "request-dodopay-cancel-test".to_string(),
             trace_id: "trace-dodopay-cancel-test".to_string(),
             request_method: axum::http::Method::GET,
             request_path: "/api/payment/dodopay/cancel".to_string(),

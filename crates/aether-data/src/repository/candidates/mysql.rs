@@ -331,7 +331,7 @@ impl RequestCandidateWriteRepository for MysqlRequestCandidateRepository {
         candidate: UpsertRequestCandidateRecord,
         admission: BillingRequestAdmissionInput,
     ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
-        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        super::admission::validate_candidate_admission_identity(&candidate, &admission)?;
         let mut tx = self.pool.begin().await.map_sql_err()?;
         let existing = sqlx::query(&format!(
             "{CANDIDATE_COLUMNS} WHERE request_id = ? AND candidate_index = ? AND retry_index = ? LIMIT 1"
@@ -345,7 +345,7 @@ impl RequestCandidateWriteRepository for MysqlRequestCandidateRepository {
         .as_ref()
         .map(map_candidate_row)
         .transpose()?;
-        let merged = merge_candidate(candidate, existing)?;
+        let merged = merge_candidate(candidate.clone(), existing)?;
         let now = super::admission::current_unix_ms();
         sqlx::query(
             r#"
@@ -411,6 +411,7 @@ LIMIT 1
         .map_sql_err()
         .and_then(|row| map_billing_admission_row(&row))?;
         super::admission::validate_stored_admission_matches_input(&stored_admission, &admission)?;
+        super::admission::validate_candidate_provider(&candidate, &stored_admission.to_input())?;
         upsert_merged_candidate(&mut tx, &merged).await?;
         tx.commit().await.map_sql_err()?;
         Ok((merged, stored_admission))
