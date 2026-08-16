@@ -1932,7 +1932,7 @@ async fn gateway_handles_local_openai_chat_stream_report_with_local_reporting_wh
 }
 
 #[tokio::test]
-async fn gateway_marks_full_stream_body_unavailable_without_object_store() {
+async fn gateway_preserves_full_stream_body_without_object_store() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
@@ -2084,14 +2084,14 @@ async fn gateway_marks_full_stream_body_unavailable_without_object_store() {
     assert_eq!(stored_usage.total_tokens, 6);
     assert_eq!(
         stored_usage.response_body_state,
-        Some(UsageBodyCaptureState::Unavailable)
+        Some(UsageBodyCaptureState::Inline)
     );
     assert_eq!(
         stored_usage.client_response_body_state,
-        Some(UsageBodyCaptureState::Unavailable)
+        Some(UsageBodyCaptureState::Inline)
     );
-    assert!(stored_usage.response_body.is_none());
-    assert!(stored_usage.client_response_body.is_none());
+    assert!(stored_usage.response_body.is_some());
+    assert!(stored_usage.client_response_body.is_some());
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
