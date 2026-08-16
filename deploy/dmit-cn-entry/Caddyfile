@@ -14,16 +14,28 @@
 		format json
 	}
 
-	reverse_proxy https://10.89.0.1 {
-		header_up Host {$NIFFLER_UPSTREAM_HOST:niffler.org}
-		header_up X-Niffler-Entry dmit-lax-as3-pro-mini
-		flush_interval -1
+	@latency_probe path /__niffler_latency
+	handle @latency_probe {
+		header {
+			Access-Control-Allow-Origin "*"
+			Cache-Control "no-store, no-cache, must-revalidate"
+			Timing-Allow-Origin "*"
+		}
+		respond 204
+	}
 
-		transport http {
-			tls_server_name {$NIFFLER_UPSTREAM_TLS_SERVER_NAME:niffler.org}
-			dial_timeout 5s
-			response_header_timeout 30m
-			keepalive 2m
+	handle {
+		reverse_proxy https://10.89.0.1 {
+			header_up Host {$NIFFLER_UPSTREAM_HOST:niffler.org}
+			header_up X-Niffler-Entry dmit-lax-as3-pro-mini
+			flush_interval -1
+
+			transport http {
+				tls_server_name {$NIFFLER_UPSTREAM_TLS_SERVER_NAME:niffler.org}
+				dial_timeout 5s
+				response_header_timeout 30m
+				keepalive 2m
+			}
 		}
 	}
 }

@@ -47,6 +47,8 @@ DMIT 到 `hd0526` 的 2026-08-14 首次实测结果：10 次 ICMP 平均约 0.7 
 - DMIT 只允许 SSH、HTTP、HTTPS 和 WireGuard 所需端口；Caddy 为 `cn.niffler.org` 自动申请和续期 HTTPS 证书。
 - DMIT Caddy 保留真实客户端地址所需的转发头，但会覆盖公网用户伪造的相关请求头。
 - 入口必须支持长时间流式响应和多模态请求体，不能使用普通网页接口的小请求体上限。
+- DMIT Caddy 在 `/__niffler_latency` 本地返回空的 `204` 响应，并允许跨域、禁止缓存；测速请求不再转发到 hd0526。
+- 首页将该入口显示为“三网优化”和公开入口域名 `cn.niffler.org`，不暴露 DMIT 厂商名或内部机器编号。
 - 当前没有在 Caddy 上安装第三方限流模块；限流由 Niffler 自身承担，后续如需入口限流应单独设计和验证。
 
 ## 影响范围
@@ -62,6 +64,7 @@ DMIT 到 `hd0526` 的 2026-08-14 首次实测结果：10 次 ICMP 平均约 0.7 
 - DMIT 通过私网访问 `hd0526` 健康接口返回 HTTP 200。
 - `cn.niffler.org` 的 DNS 只返回 `179.253.242.2`，Cloudflare 代理状态为关闭。
 - `cn.niffler.org` 的 HTTPS 证书有效，首页、健康接口、标准 API 和流式响应均能正常转发。
+- `cn.niffler.org/__niffler_latency` 返回 HTTP 204，包含允许跨域和禁止缓存的响应头，并且首页能显示该线路的成功或失败状态。
 - DMIT 重启后 WireGuard、Caddy、防火墙和监控自动恢复。
 - DMIT 监控从本机访问 `cn.niffler.org` 的正式 HTTPS 地址，同时检查证书、入口代理和 `hd0526` 回源。
 - Telegram `/status` 和 `/settings` 能显示 DMIT，设置命令只能修改允许的三个数字。

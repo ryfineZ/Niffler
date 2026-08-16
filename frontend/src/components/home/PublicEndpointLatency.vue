@@ -15,9 +15,11 @@
       </div>
       <button
         type="button"
-        class="inline-flex h-9 shrink-0 items-center gap-2 border border-border bg-background/75 px-3 text-xs font-semibold transition hover:border-primary/45 hover:text-primary disabled:cursor-wait disabled:opacity-60"
+        class="inline-flex h-9 shrink-0 items-center gap-2 border border-border bg-background/75 px-3 text-xs font-semibold transition hover:border-primary/45 hover:text-primary active:translate-y-px disabled:cursor-wait disabled:opacity-60"
         :disabled="isMeasuring"
         :aria-label="t('home.endpointLatencyRefresh')"
+        :aria-busy="isMeasuring"
+        :data-state="isMeasuring ? 'checking' : 'idle'"
         data-refresh-endpoint-latency
         @click="measureEndpoints"
       >
@@ -30,7 +32,7 @@
     </div>
 
     <div
-      class="mt-3 grid gap-2 sm:grid-cols-2"
+      class="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-1 min-[1280px]:grid-cols-3"
       aria-live="polite"
     >
       <article
@@ -63,9 +65,6 @@
       </article>
     </div>
 
-    <p class="mt-2 text-[10px] leading-4 text-muted-foreground">
-      {{ t('home.endpointLatencyNote') }}
-    </p>
   </section>
 </template>
 
@@ -74,7 +73,7 @@ import { computed, onBeforeUnmount, onMounted, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Gauge, RefreshCw } from 'lucide-vue-next'
 
-type EndpointId = 'us1' | 'us2'
+type EndpointId = 'us1' | 'us2' | 'cn'
 type MeasurementStatus = 'checking' | 'ready' | 'error'
 
 interface EndpointDefinition {
@@ -106,10 +105,17 @@ const endpoints: EndpointDefinition[] = [
     labelKey: 'home.endpointLatencyUs2',
     probeUrl: 'https://us2.niffler.org/__niffler_latency',
   },
+  {
+    id: 'cn',
+    host: 'cn.niffler.org',
+    labelKey: 'home.endpointLatencyCn',
+    probeUrl: 'https://cn.niffler.org/__niffler_latency',
+  },
 ]
 const results = reactive<Record<EndpointId, MeasurementResult>>({
   us1: { status: 'checking', latencyMs: null },
   us2: { status: 'checking', latencyMs: null },
+  cn: { status: 'checking', latencyMs: null },
 })
 const isMeasuring = computed(() => endpoints.some(endpoint => results[endpoint.id].status === 'checking'))
 let activeRun = 0
