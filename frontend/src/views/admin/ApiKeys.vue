@@ -266,7 +266,7 @@
                     <div class="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
                       <span>
                         {{ t('apiKeysAdmin.consumed') }}
-                        <span class="font-medium tabular-nums text-foreground">${{ getApiKeyWalletConsumed(apiKey).toFixed(2) }}</span>
+                        <span class="font-medium tabular-nums text-foreground">${{ formatWalletNumber(getApiKeyWalletConsumed(apiKey)) }}</span>
                       </span>
                     </div>
                   </div>
@@ -533,7 +533,7 @@
                         {{ t('apiKeysAdmin.consumed') }}
                       </p>
                       <p class="text-sm font-medium tabular-nums text-foreground">
-                        ${{ getApiKeyWalletConsumed(apiKey).toFixed(2) }}
+                        ${{ formatWalletNumber(getApiKeyWalletConsumed(apiKey)) }}
                       </p>
                     </div>
                   </div>
@@ -866,7 +866,12 @@ import { useResizableTableColumns, type ResizableTableColumn } from '@/composabl
 import { adminApi, type AdminApiKey, type CreateStandaloneApiKeyRequest } from '@/api/admin'
 import type { ApiKeyInstallSession, InstallSessionTargetSystem, InstallTargetCli } from '@/api/me'
 import type { AdminWallet } from '@/api/admin-wallets'
-import { walletStatusBadge, walletStatusLabel } from '@/utils/walletDisplay'
+import {
+  formatWalletAmount as formatWalletNumber,
+  formatWalletCurrency,
+  walletStatusBadge,
+  walletStatusLabel,
+} from '@/utils/walletDisplay'
 import WalletOpsDrawer from '@/features/wallet/components/WalletOpsDrawer.vue'
 import { EmptyState, LoadingState } from '@/components/common'
 
@@ -1339,7 +1344,7 @@ function formatWalletAmount(value: number | null, nullLabel = t('common.unlimite
   if (value == null) {
     return nullLabel
   }
-  return `$${value.toFixed(2)}`
+  return formatWalletCurrency(value)
 }
 
 function isNegativeWalletAmount(value: number | null): boolean {

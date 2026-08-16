@@ -384,6 +384,13 @@ jobs:
           AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
         run: cargo test -p aether-data postgres_candidate_admission_round_trips_numeric_balance_when_url_is_set --lib -- --nocapture
 
+      - name: Run Postgres payment callback precision test
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
+          AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
+        run: cargo test -p aether-data postgres_payment_callback_credits_the_full_settled_decimal_amount_when_url_is_set --lib -- --nocapture
+
       - name: Run release migration compatibility smoke test
         env:
           RUSTC_WRAPPER: sccache

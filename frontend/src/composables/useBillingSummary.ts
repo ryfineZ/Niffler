@@ -4,7 +4,7 @@ import { billingApi, type UserPlanEntitlement } from '@/api/billing'
 import { walletApi, type WalletBalanceResponse } from '@/api/wallet'
 import { useAuthStore } from '@/stores/auth'
 import { hasPackageBillingEntitlement } from '@/utils/billingEntitlements'
-import { formatCurrency } from '@/utils/format'
+import { formatWalletCurrency as formatCurrency } from '@/utils/walletDisplay'
 import { log } from '@/utils/logger'
 
 export const BILLING_SUMMARY_REFRESH_EVENT = 'aether:billing-summary-refresh'
