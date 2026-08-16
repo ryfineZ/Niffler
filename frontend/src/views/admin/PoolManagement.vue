@@ -543,12 +543,14 @@
           v-if="keyPage.keys.length > 0 || hasPoolKeyFilters"
           class="hidden xl:block overflow-x-auto"
         >
-          <Table class="w-full table-fixed">
+          <Table
+            data-testid="pool-accounts-desktop-table"
+            class="w-full table-auto"
+          >
             <TableHeader>
               <TableRow class="border-b border-border/60 hover:bg-transparent">
                 <TableHead
-                  class="px-3 text-center"
-                  :style="{ width: desktopColumnWidths.select }"
+                  class="w-px px-3 text-center whitespace-nowrap"
                 >
                   <Checkbox
                     :checked="isCurrentPageFullySelected"
@@ -559,33 +561,22 @@
                   />
                 </TableHead>
                 <SortableTableHead
-                  class="font-semibold whitespace-nowrap"
+                  class="min-w-56 font-semibold whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="name"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.name }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.account') }}
                 </SortableTableHead>
                 <SortableTableHead
                   v-if="showAccountQuotaColumn"
-                  class="font-semibold whitespace-nowrap"
+                  data-testid="pool-account-quota-heading"
+                  class="w-px min-w-44 font-semibold whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="quota"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.quota }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.quota') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="px-2 font-semibold text-center whitespace-nowrap"
+                  class="w-px px-2 font-semibold text-center whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="stats"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.stats }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   <div class="flex items-center justify-center gap-1.5">
                     <button
@@ -604,65 +595,49 @@
                   </div>
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="imported_at"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="imported"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.imported }"
                   :title="t('poolManagement.sortImported')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.importedAt') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="last_used_at"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="lastUsed"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.lastUsed }"
                   :title="t('poolManagement.sortLastUsed')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.lastUsed') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="score"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="score"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.score }"
                   :title="t('poolManagement.sortScore')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.score') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="status"
                   :sortable="false"
                   align="center"
                   :filter-active="statusFilter !== 'all'"
                   :filter-title="t('poolManagement.filterStatus')"
                   filter-content-class="w-44 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
-                  resize-column-key="status"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.status }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.status') }}
                   <template #filter="{ close }">
@@ -674,12 +649,8 @@
                   </template>
                 </SortableTableHead>
                 <SortableTableHead
-                  class="px-2 font-semibold text-center whitespace-nowrap"
+                  class="w-px px-2 font-semibold text-center whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="actions"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.actions }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.actions') }}
                 </SortableTableHead>
@@ -692,7 +663,7 @@
                 class="border-b border-border/40 last:border-b-0 hover:bg-muted/30 transition-colors"
                 :class="keyUiStateMap[key.key_id]?.rowClass || ''"
               >
-                <TableCell class="px-3 py-3 text-center align-middle">
+                <TableCell class="w-px px-3 py-3 text-center align-middle whitespace-nowrap">
                   <Checkbox
                     :checked="isPoolKeySelected(key.key_id)"
                     :disabled="poolSelectionActionBusy || allFilteredPoolKeysSelected"
@@ -702,7 +673,7 @@
                   />
                 </TableCell>
                 <TableCell
-                  class="py-3"
+                  class="min-w-56 py-3"
                 >
                   <div class="min-w-0">
                     <div class="flex items-center gap-1.5 min-w-0">
@@ -809,7 +780,7 @@
                 </TableCell>
                 <TableCell
                   v-if="showAccountQuotaColumn"
-                  class="py-3 align-middle"
+                  class="w-px min-w-44 py-3 align-middle"
                 >
                   <div
                     v-if="quotaProgressMap[key.key_id]?.length"
@@ -892,7 +863,7 @@
                     </Button>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="w-px py-3 px-2 align-middle whitespace-nowrap">
                   <div
                     v-if="isPoolKeyCycleStatsDisplay(key)"
                     class="mx-auto w-[188px] overflow-x-auto text-[10px] leading-4"
@@ -960,17 +931,17 @@
                     </div>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.importedAtRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.lastUsedRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center align-middle">
+                <TableCell class="w-px py-3 text-center align-middle whitespace-nowrap">
                   <div class="inline-flex items-center justify-center gap-1">
                     <span class="font-mono text-xs tabular-nums text-foreground/90">
                       {{ formatPoolScore(key.pool_score?.score) }}
@@ -1031,7 +1002,7 @@
                     </Popover>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <Badge
                     :variant="keyUiStateMap[key.key_id]?.schedulingBadgeVariant || 'default'"
                     class="text-[10px]"
@@ -1040,7 +1011,7 @@
                     {{ keyUiStateMap[key.key_id]?.schedulingBadgeLabel }}
                   </Badge>
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="w-px py-3 px-2 align-middle whitespace-nowrap">
                   <div class="flex justify-center gap-0.5">
                     <Button
                       variant="ghost"
@@ -1394,7 +1365,7 @@
               </div>
 
               <div
-                v-if="showAccountQuotaColumn"
+                v-if="providerSupportsAccountQuota"
                 class="rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-xs"
               >
                 <div class="text-muted-foreground mb-1">
@@ -1855,7 +1826,6 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useCountdownTimer, getCodexResetCountdown } from '@/composables/useCountdownTimer'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRouteQuery } from '@/composables/useRouteQuery'
-import { useResizableTableColumns, type ResizableTableColumn } from '@/composables/useResizableTableColumns'
 import { parseApiError } from '@/utils/errorParser'
 import { getAccountCopyText, getAccountDisplayName } from '@/features/providers/utils/accountDisplay'
 import {
@@ -2432,49 +2402,41 @@ watch(showAdaptiveHotPoolMetricsButton, (enabled) => {
   }
 })
 
-const showAccountQuotaColumn = computed(() => {
-  return selectedProviderType.value === 'codex'
-    || selectedProviderType.value === 'gemini_cli'
-    || selectedProviderType.value === 'kiro'
-    || selectedProviderType.value === 'antigravity'
-    || selectedProviderType.value === 'grok'
-    || selectedProviderType.value === 'grok_oauth'
-    || selectedProviderType.value === 'chatgpt_web'
+const ACCOUNT_QUOTA_PROVIDER_TYPES = new Set([
+  'codex',
+  'gemini_cli',
+  'kiro',
+  'antigravity',
+  'grok',
+  'grok_oauth',
+  'chatgpt_web',
+])
+
+function hasMeaningfulPoolKeyQuota(key: PoolKeyDetail): boolean {
+  if (getLegacyAccountQuotaText(key)) return true
+
+  const quota = key.status_snapshot?.quota
+  if (!quota) return false
+  if (parseQuotaProgressItems(key).length > 0) return true
+  if (getGrokOAuthQuotaFreshness(key, selectedProviderType.value)) return true
+
+  const code = String(quota.code || '').trim().toLowerCase()
+  if (code && code !== 'ok' && code !== 'unknown') return true
+  if (String(quota.label || '').trim() || String(quota.reason || '').trim()) return true
+
+  const credits = quota.credits
+  if (credits && (credits.has_credits != null || credits.balance != null || credits.unlimited != null)) {
+    return true
+  }
+  return quota.reset_credits?.available_count != null
+}
+
+const providerSupportsAccountQuota = computed(() => {
+  return ACCOUNT_QUOTA_PROVIDER_TYPES.has(selectedProviderType.value)
 })
 
-type PoolDesktopColumnKey = 'select' | 'name' | 'quota' | 'stats' | 'imported' | 'lastUsed' | 'score' | 'status' | 'actions'
-const poolDesktopColumns = computed<ResizableTableColumn<PoolDesktopColumnKey>[]>(() => {
-  if (showAccountQuotaColumn.value) {
-    return [
-      { key: 'select', width: '3rem', minWidth: 44 },
-      { key: 'name', width: '21%', minWidth: 180 },
-      { key: 'quota', width: '18%', minWidth: 180 },
-      { key: 'stats', width: '13%', minWidth: 160 },
-      { key: 'imported', width: '10%', minWidth: 120 },
-      { key: 'lastUsed', width: '8%', minWidth: 120 },
-      { key: 'score', width: '9%', minWidth: 96 },
-      { key: 'status', width: '7%', minWidth: 96 },
-      { key: 'actions', width: '14%', minWidth: 150 },
-    ]
-  }
-  return [
-    { key: 'select', width: '3rem', minWidth: 44 },
-    { key: 'name', width: '31%', minWidth: 220 },
-    { key: 'stats', width: '15%', minWidth: 160 },
-    { key: 'imported', width: '11%', minWidth: 120 },
-    { key: 'lastUsed', width: '11%', minWidth: 120 },
-    { key: 'score', width: '9%', minWidth: 96 },
-    { key: 'status', width: '8%', minWidth: 96 },
-    { key: 'actions', width: '15%', minWidth: 150 },
-  ]
-})
-const {
-  columnWidths: desktopColumnWidths,
-  startResize: handlePoolColumnResizeStart,
-} = useResizableTableColumns<PoolDesktopColumnKey>({
-  storageKey: 'pool-management-table-column-widths',
-  columns: poolDesktopColumns,
-  defaultMinWidth: 64,
+const showAccountQuotaColumn = computed(() => {
+  return providerSupportsAccountQuota.value && keyPage.value.keys.some(hasMeaningfulPoolKeyQuota)
 })
 
 async function selectProvider(

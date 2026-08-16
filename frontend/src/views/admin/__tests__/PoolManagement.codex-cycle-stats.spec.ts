@@ -641,6 +641,46 @@ afterEach(() => {
 })
 
 describe('PoolManagement Codex cycle stats mode', () => {
+  it('lets desktop columns follow their content instead of fixed saved widths', async () => {
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(createPoolKey('codex')))
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+
+    const root = mountPoolManagement()
+    await settle()
+
+    const table = root.querySelector<HTMLTableElement>('[data-testid="pool-accounts-desktop-table"]')
+    expect(table).not.toBeNull()
+    expect(table?.className).toContain('table-auto')
+    expect(table?.className).not.toContain('table-fixed')
+    expect(table?.querySelectorAll('th[style*="width"]').length).toBe(0)
+  })
+
+  it('hides the quota column when every account on the page has no quota content', async () => {
+    const keyWithoutQuota = createPoolKey('codex', {
+      account_quota: null,
+      quota_updated_at: null,
+      status_snapshot: {
+        oauth: { code: 'none' },
+        account: { code: 'ok', blocked: false },
+        quota: {
+          code: 'unknown',
+          exhausted: false,
+          provider_type: 'codex',
+          windows: [],
+        },
+      },
+    })
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(keyWithoutQuota))
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+
+    const root = mountPoolManagement()
+    await settle()
+
+    expect(root.querySelector('[data-testid="pool-account-quota-heading"]')).toBeNull()
+  })
+
   it('renders Codex current-cycle stats by default with a header icon toggle', async () => {
     const codexKey = createPoolKey('codex')
     endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
@@ -650,6 +690,7 @@ describe('PoolManagement Codex cycle stats mode', () => {
     const root = mountPoolManagement()
     await settle()
 
+    expect(root.querySelector('[data-testid="pool-account-quota-heading"]')).not.toBeNull()
     expect(root.querySelector('[data-testid="pool-stats-mode-switch"]')).toBeNull()
     const modeButton = root.querySelector<HTMLButtonElement>('[data-testid="pool-stats-mode-control"]')
     expect(modeButton).not.toBeNull()
