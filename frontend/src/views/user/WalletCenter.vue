@@ -465,10 +465,10 @@
                         <TableCell
                           :class="item.data.amount >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'"
                         >
-                          {{ item.data.amount >= 0 ? '+' : '' }}{{ item.data.amount.toFixed(4) }}
+                          {{ item.data.amount >= 0 ? '+' : '' }}{{ formatWalletAmount(item.data.amount) }}
                         </TableCell>
                         <TableCell class="text-xs tabular-nums">
-                          {{ item.data.balance_before.toFixed(4) }} → {{ item.data.balance_after.toFixed(4) }}
+                          {{ formatWalletAmount(item.data.balance_before) }} → {{ formatWalletAmount(item.data.balance_after) }}
                         </TableCell>
                         <TableCell class="text-xs text-muted-foreground">
                           {{ item.data.description || '-' }}
@@ -723,6 +723,7 @@ import { log } from '@/utils/logger'
 import {
   dailyUsageCategoryLabel,
   formatTokenCount,
+  formatWalletAmount,
   formatWalletCurrency as formatCurrency,
   paymentOrderContentLabel,
   paymentOrderMethodLabel,

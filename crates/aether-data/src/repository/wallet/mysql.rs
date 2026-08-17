@@ -8,8 +8,10 @@ use super::plan_overrides::{
     entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
-    plan_purchase_payment_amounts, redeem_code_credits_recharge_balance,
-    redeem_code_payment_method, redeem_code_refundable_amount,
+    payment_callback_amount_matches, payment_callback_currency_matches,
+    payment_callback_settled_amount_usd, plan_purchase_payment_amounts,
+    redeem_code_credits_recharge_balance, redeem_code_payment_method,
+    redeem_code_refundable_amount,
 };
 use super::{
     AdjustWalletBalanceInput, AdminPaymentOrderListQuery, AdminRedeemCodeBatchListQuery,
@@ -1134,17 +1136,56 @@ VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'received', ?, NULL, ?, NULL)
         let order_amount_usd: f64 = get(&order_row, "amount_usd")?;
         let order_debt_repayment_usd: f64 = get(&order_row, "debt_repayment_usd")?;
         let order_pay_amount: Option<f64> = get(&order_row, "pay_amount")?;
+        let order_pay_currency: Option<String> = get(&order_row, "pay_currency")?;
+        let order_exchange_rate: Option<f64> = get(&order_row, "exchange_rate")?;
         let order_status: String = get(&order_row, "status")?;
         let expires_at_unix_secs: Option<i64> = get(&order_row, "expires_at_unix_secs")?;
 
-        let amount_matches = if let (Some(callback_pay_amount), Some(order_pay_amount)) =
-            (input.pay_amount, order_pay_amount)
-        {
-            (callback_pay_amount - order_pay_amount).abs() <= 0.01
-        } else {
-            (input.amount_usd - order_amount_usd).abs() <= f64::EPSILON
+        let Some(settled_amount_usd) = payment_callback_settled_amount_usd(
+            input.amount_usd,
+            input.pay_amount,
+            order_amount_usd,
+            order_pay_amount,
+            order_exchange_rate,
+        ) else {
+            update_mysql_payment_callback_failure(
+                &mut tx,
+                &callback_id,
+                &input,
+                &payload,
+                "callback amount invalid",
+            )
+            .await?;
+            tx.commit().await.map_sql_err()?;
+            return Ok(ProcessPaymentCallbackOutcome::Failed {
+                duplicate,
+                error: "callback amount invalid".to_string(),
+            });
         };
-        if !amount_matches {
+        if !payment_callback_currency_matches(
+            input.pay_currency.as_deref(),
+            order_pay_currency.as_deref(),
+        ) {
+            update_mysql_payment_callback_failure(
+                &mut tx,
+                &callback_id,
+                &input,
+                &payload,
+                "payment currency mismatch",
+            )
+            .await?;
+            tx.commit().await.map_sql_err()?;
+            return Ok(ProcessPaymentCallbackOutcome::Failed {
+                duplicate,
+                error: "payment currency mismatch".to_string(),
+            });
+        }
+        if !payment_callback_amount_matches(
+            settled_amount_usd,
+            input.pay_amount,
+            order_amount_usd,
+            order_pay_amount,
+        ) {
             update_mysql_payment_callback_failure(
                 &mut tx,
                 &callback_id,
@@ -1421,8 +1462,8 @@ UPDATE payment_orders
 SET gateway_order_id = COALESCE(?, gateway_order_id),
     gateway_response = ?,
     pay_amount = COALESCE(?, pay_amount),
-    pay_currency = COALESCE(?, pay_currency),
-    exchange_rate = COALESCE(?, exchange_rate),
+    pay_currency = COALESCE(pay_currency, ?),
+    exchange_rate = COALESCE(exchange_rate, ?),
     payment_provider = COALESCE(payment_provider, ?),
     payment_channel = COALESCE(payment_channel, ?),
     status = 'credited',
@@ -1515,7 +1556,7 @@ FOR UPDATE
         let before_recharge: f64 = get(&wallet_row, "balance")?;
         let before_gift: f64 = get(&wallet_row, "gift_balance")?;
         let before_total = before_recharge + before_gift;
-        let after_recharge = before_recharge + order_amount_usd;
+        let after_recharge = before_recharge + settled_amount_usd;
         let after_total = after_recharge + before_gift;
 
         sqlx::query(
@@ -1528,7 +1569,7 @@ WHERE id = ?
 "#,
         )
         .bind(after_recharge)
-        .bind(order_amount_usd)
+        .bind(settled_amount_usd)
         .bind(now)
         .bind(&order_wallet_id)
         .execute(&mut *tx)
@@ -1546,7 +1587,7 @@ VALUES (?, ?, 'recharge', 'topup_gateway', ?, ?, ?, ?, ?, ?, ?, 'payment_order',
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&order_wallet_id)
-        .bind(order_amount_usd)
+        .bind(settled_amount_usd)
         .bind(before_total)
         .bind(after_total)
         .bind(before_recharge)
@@ -1565,14 +1606,15 @@ UPDATE payment_orders
 SET gateway_order_id = COALESCE(?, gateway_order_id),
     gateway_response = ?,
     pay_amount = COALESCE(?, pay_amount),
-    pay_currency = COALESCE(?, pay_currency),
-    exchange_rate = COALESCE(?, exchange_rate),
+    pay_currency = COALESCE(pay_currency, ?),
+    exchange_rate = COALESCE(exchange_rate, ?),
     payment_provider = COALESCE(payment_provider, ?),
     payment_channel = COALESCE(payment_channel, ?),
+    amount_usd = ?,
     status = 'credited',
     paid_at = COALESCE(paid_at, ?),
     credited_at = ?,
-    refundable_amount_usd = amount_usd
+    refundable_amount_usd = ?
 WHERE id = ?
 "#,
         )
@@ -1583,8 +1625,10 @@ WHERE id = ?
         .bind(input.exchange_rate)
         .bind(input.payment_provider.as_deref())
         .bind(input.payment_channel.as_deref())
+        .bind(settled_amount_usd)
         .bind(now)
         .bind(now)
+        .bind(settled_amount_usd)
         .bind(&order_id)
         .execute(&mut *tx)
         .await

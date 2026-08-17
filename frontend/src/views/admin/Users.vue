@@ -521,7 +521,7 @@
                   <div class="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
                     <span>
                       {{ t('userManagement.consumed') }}
-                      <span class="font-medium tabular-nums text-foreground">${{ getUserWalletConsumed(user).toFixed(2) }}</span>
+                      <span class="font-medium tabular-nums text-foreground">${{ formatWalletAmount(getUserWalletConsumed(user)) }}</span>
                     </span>
                   </div>
                 </div>
@@ -870,7 +870,7 @@
                       {{ t('userManagement.consumed') }}
                     </p>
                     <p class="text-sm font-medium tabular-nums text-foreground">
-                      ${{ getUserWalletConsumed(user).toFixed(2) }}
+                      ${{ formatWalletAmount(getUserWalletConsumed(user)) }}
                     </p>
                   </div>
                 </div>
@@ -1900,7 +1900,12 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
 import { useResizableTableColumns, type ResizableTableColumn } from '@/composables/useResizableTableColumns'
 import { adminApi } from '@/api/admin'
-import { walletStatusBadge, walletStatusLabel } from '@/utils/walletDisplay'
+import {
+  formatWalletAmount,
+  formatWalletCurrency,
+  walletStatusBadge,
+  walletStatusLabel,
+} from '@/utils/walletDisplay'
 import {
   hasPackageBillingEntitlement,
   normalizeBillingEntitlements,
@@ -2439,7 +2444,7 @@ function formatCurrencyValue(value: number | null, nullLabel = '-'): string {
   if (value == null) {
     return nullLabel
   }
-  return `$${value.toFixed(2)}`
+  return formatWalletCurrency(value)
 }
 
 function formatConcurrentLimitSimple(concurrentLimit?: number | null): string {

@@ -3,8 +3,10 @@ use super::plan_overrides::{
     entitlements_with_admin_grant_overrides, plan_provider_ids_snapshot,
 };
 use super::types::{
-    plan_purchase_payment_amounts, redeem_code_credits_recharge_balance,
-    redeem_code_payment_method, redeem_code_refundable_amount,
+    payment_callback_amount_matches, payment_callback_currency_matches,
+    payment_callback_settled_amount_usd, plan_purchase_payment_amounts,
+    redeem_code_credits_recharge_balance, redeem_code_payment_method,
+    redeem_code_refundable_amount,
 };
 use super::{
     AdjustWalletBalanceInput, AdminPaymentOrderListQuery, AdminRedeemCodeBatchListQuery,
@@ -1669,17 +1671,56 @@ VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'received', ?, NULL, ?, NULL)
         let order_amount_usd = sqlite_real(&order_row, "amount_usd")?;
         let order_debt_repayment_usd = sqlite_real(&order_row, "debt_repayment_usd")?;
         let order_pay_amount = sqlite_optional_real(&order_row, "pay_amount")?;
+        let order_pay_currency: Option<String> = get(&order_row, "pay_currency")?;
+        let order_exchange_rate = sqlite_optional_real(&order_row, "exchange_rate")?;
         let order_status: String = get(&order_row, "status")?;
         let expires_at_unix_secs: Option<i64> = get(&order_row, "expires_at_unix_secs")?;
 
-        let amount_matches = if let (Some(callback_pay_amount), Some(order_pay_amount)) =
-            (input.pay_amount, order_pay_amount)
-        {
-            (callback_pay_amount - order_pay_amount).abs() <= 0.01
-        } else {
-            (input.amount_usd - order_amount_usd).abs() <= f64::EPSILON
+        let Some(settled_amount_usd) = payment_callback_settled_amount_usd(
+            input.amount_usd,
+            input.pay_amount,
+            order_amount_usd,
+            order_pay_amount,
+            order_exchange_rate,
+        ) else {
+            update_sqlite_payment_callback_failure(
+                &mut tx,
+                &callback_id,
+                &input,
+                &payload,
+                "callback amount invalid",
+            )
+            .await?;
+            tx.commit().await.map_sql_err()?;
+            return Ok(ProcessPaymentCallbackOutcome::Failed {
+                duplicate,
+                error: "callback amount invalid".to_string(),
+            });
         };
-        if !amount_matches {
+        if !payment_callback_currency_matches(
+            input.pay_currency.as_deref(),
+            order_pay_currency.as_deref(),
+        ) {
+            update_sqlite_payment_callback_failure(
+                &mut tx,
+                &callback_id,
+                &input,
+                &payload,
+                "payment currency mismatch",
+            )
+            .await?;
+            tx.commit().await.map_sql_err()?;
+            return Ok(ProcessPaymentCallbackOutcome::Failed {
+                duplicate,
+                error: "payment currency mismatch".to_string(),
+            });
+        }
+        if !payment_callback_amount_matches(
+            settled_amount_usd,
+            input.pay_amount,
+            order_amount_usd,
+            order_pay_amount,
+        ) {
             update_sqlite_payment_callback_failure(
                 &mut tx,
                 &callback_id,
@@ -1955,8 +1996,8 @@ UPDATE payment_orders
 SET gateway_order_id = COALESCE(?, gateway_order_id),
     gateway_response = ?,
     pay_amount = COALESCE(?, pay_amount),
-    pay_currency = COALESCE(?, pay_currency),
-    exchange_rate = COALESCE(?, exchange_rate),
+    pay_currency = COALESCE(pay_currency, ?),
+    exchange_rate = COALESCE(exchange_rate, ?),
     payment_provider = COALESCE(payment_provider, ?),
     payment_channel = COALESCE(payment_channel, ?),
     status = 'credited',
@@ -2048,7 +2089,7 @@ LIMIT 1
         let before_recharge = sqlite_real(&wallet_row, "balance")?;
         let before_gift = sqlite_real(&wallet_row, "gift_balance")?;
         let before_total = before_recharge + before_gift;
-        let after_recharge = before_recharge + order_amount_usd;
+        let after_recharge = before_recharge + settled_amount_usd;
         let after_total = after_recharge + before_gift;
 
         sqlx::query(
@@ -2061,7 +2102,7 @@ WHERE id = ?
 "#,
         )
         .bind(after_recharge)
-        .bind(order_amount_usd)
+        .bind(settled_amount_usd)
         .bind(now)
         .bind(&order_wallet_id)
         .execute(&mut *tx)
@@ -2079,7 +2120,7 @@ VALUES (?, ?, 'recharge', 'topup_gateway', ?, ?, ?, ?, ?, ?, ?, 'payment_order',
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&order_wallet_id)
-        .bind(order_amount_usd)
+        .bind(settled_amount_usd)
         .bind(before_total)
         .bind(after_total)
         .bind(before_recharge)
@@ -2098,14 +2139,15 @@ UPDATE payment_orders
 SET gateway_order_id = COALESCE(?, gateway_order_id),
     gateway_response = ?,
     pay_amount = COALESCE(?, pay_amount),
-    pay_currency = COALESCE(?, pay_currency),
-    exchange_rate = COALESCE(?, exchange_rate),
+    pay_currency = COALESCE(pay_currency, ?),
+    exchange_rate = COALESCE(exchange_rate, ?),
     payment_provider = COALESCE(payment_provider, ?),
     payment_channel = COALESCE(payment_channel, ?),
+    amount_usd = ?,
     status = 'credited',
     paid_at = COALESCE(paid_at, ?),
     credited_at = ?,
-    refundable_amount_usd = amount_usd
+    refundable_amount_usd = ?
 WHERE id = ?
 "#,
         )
@@ -2116,8 +2158,10 @@ WHERE id = ?
         .bind(input.exchange_rate)
         .bind(input.payment_provider.as_deref())
         .bind(input.payment_channel.as_deref())
+        .bind(settled_amount_usd)
         .bind(now)
         .bind(now)
+        .bind(settled_amount_usd)
         .bind(&order_id)
         .execute(&mut *tx)
         .await
@@ -5346,6 +5390,176 @@ mod tests {
             .expect("daily usage should query")
             .expect("daily usage should exist");
         assert_eq!(daily.total_requests, 2);
+    }
+
+    #[tokio::test]
+    async fn sqlite_payment_callback_credits_the_full_settled_decimal_amount() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+
+        let repository = SqliteWalletReadRepository::new(pool);
+        let order = match repository
+            .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
+                preferred_wallet_id: Some("wallet-decimal-callback-1".to_string()),
+                user_id: "user-decimal-callback-1".to_string(),
+                amount_usd: 10.0,
+                pay_amount: Some(72.0),
+                pay_currency: Some("CNY".to_string()),
+                exchange_rate: Some(7.2),
+                payment_method: "epay".to_string(),
+                payment_provider: Some("epay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: "gateway-decimal-callback-1".to_string(),
+                gateway_response: json!({ "checkout": true }),
+                order_no: "order-decimal-callback-1".to_string(),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("recharge order should be created")
+        {
+            CreateWalletRechargeOrderOutcome::Created(order) => order,
+            CreateWalletRechargeOrderOutcome::WalletInactive => {
+                panic!("new wallet should be active")
+            }
+        };
+
+        let callback_amount_usd = 72.01 / 7.3;
+        let expected_amount_usd = 10.001_388_89;
+        let callback_input = ProcessPaymentCallbackInput {
+            payment_method: "epay".to_string(),
+            payment_provider: Some("epay".to_string()),
+            payment_channel: Some("alipay".to_string()),
+            callback_key: "callback-decimal-callback-1".to_string(),
+            order_no: Some(order.order_no.clone()),
+            gateway_order_id: Some("gateway-decimal-callback-1".to_string()),
+            amount_usd: callback_amount_usd,
+            pay_amount: Some(72.01),
+            pay_currency: Some("CNY".to_string()),
+            exchange_rate: Some(7.3),
+            payload_hash: "payload-decimal-callback-1".to_string(),
+            payload: json!({ "trade_status": "TRADE_SUCCESS", "money": "72.01" }),
+            signature_valid: true,
+        };
+
+        let callback = repository
+            .process_payment_callback(callback_input.clone())
+            .await
+            .expect("payment callback should process");
+        let ProcessPaymentCallbackOutcome::Applied { order, .. } = callback else {
+            panic!("callback should credit the order");
+        };
+        assert!((order.amount_usd - expected_amount_usd).abs() < 0.000_000_001);
+        assert!((order.refundable_amount_usd - expected_amount_usd).abs() < 0.000_000_001);
+        assert_eq!(order.exchange_rate, Some(7.2));
+
+        let wallet = repository
+            .find(WalletLookupKey::UserId("user-decimal-callback-1"))
+            .await
+            .expect("wallet should query")
+            .expect("wallet should exist");
+        assert!((wallet.balance - expected_amount_usd).abs() < 0.000_000_001);
+        assert!((wallet.total_recharged - expected_amount_usd).abs() < 0.000_000_001);
+
+        let (transaction_amount, transaction_balance_after): (f64, f64) = sqlx::query_as(
+            "SELECT amount, balance_after FROM wallet_transactions WHERE link_type = 'payment_order' AND link_id = ?",
+        )
+        .bind(&order.id)
+        .fetch_one(repository.pool())
+        .await
+        .expect("wallet transaction should query");
+        assert!((transaction_amount - expected_amount_usd).abs() < 0.000_000_001);
+        assert!((transaction_balance_after - expected_amount_usd).abs() < 0.000_000_001);
+
+        let duplicate = repository
+            .process_payment_callback(callback_input)
+            .await
+            .expect("duplicate callback should resolve");
+        assert!(matches!(
+            duplicate,
+            ProcessPaymentCallbackOutcome::DuplicateProcessed { .. }
+        ));
+        let wallet_after_duplicate = repository
+            .find(WalletLookupKey::UserId("user-decimal-callback-1"))
+            .await
+            .expect("wallet should query")
+            .expect("wallet should exist");
+        assert!((wallet_after_duplicate.balance - expected_amount_usd).abs() < 0.000_000_001);
+    }
+
+    #[tokio::test]
+    async fn sqlite_payment_callback_rejects_currency_that_differs_from_order() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+
+        let repository = SqliteWalletReadRepository::new(pool);
+        let order = match repository
+            .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
+                preferred_wallet_id: Some("wallet-currency-callback-1".to_string()),
+                user_id: "user-currency-callback-1".to_string(),
+                amount_usd: 10.0,
+                pay_amount: Some(72.0),
+                pay_currency: Some("CNY".to_string()),
+                exchange_rate: Some(7.2),
+                payment_method: "dodopay".to_string(),
+                payment_provider: Some("dodopay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                gateway_order_id: "gateway-currency-callback-1".to_string(),
+                gateway_response: json!({ "checkout": true }),
+                order_no: "order-currency-callback-1".to_string(),
+                expires_at_unix_secs: 4_102_444_800,
+            })
+            .await
+            .expect("recharge order should be created")
+        {
+            CreateWalletRechargeOrderOutcome::Created(order) => order,
+            CreateWalletRechargeOrderOutcome::WalletInactive => {
+                panic!("new wallet should be active")
+            }
+        };
+
+        let callback = repository
+            .process_payment_callback(ProcessPaymentCallbackInput {
+                payment_method: "dodopay".to_string(),
+                payment_provider: Some("dodopay".to_string()),
+                payment_channel: Some("alipay".to_string()),
+                callback_key: "callback-currency-callback-1".to_string(),
+                order_no: Some(order.order_no),
+                gateway_order_id: Some("gateway-currency-callback-1".to_string()),
+                amount_usd: 72.0,
+                pay_amount: Some(72.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                payload_hash: "payload-currency-callback-1".to_string(),
+                payload: json!({ "currency": "USD", "amount": "72.00" }),
+                signature_valid: true,
+            })
+            .await
+            .expect("payment callback should resolve");
+        assert!(matches!(
+            callback,
+            ProcessPaymentCallbackOutcome::Failed { ref error, .. }
+                if error == "payment currency mismatch"
+        ));
+
+        let wallet = repository
+            .find(WalletLookupKey::UserId("user-currency-callback-1"))
+            .await
+            .expect("wallet should query")
+            .expect("wallet should exist");
+        assert_eq!(wallet.balance, 0.0);
+        assert_eq!(wallet.total_recharged, 0.0);
     }
 
     #[tokio::test]

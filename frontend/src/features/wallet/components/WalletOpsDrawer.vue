@@ -60,7 +60,7 @@
                     class="mt-1 text-lg font-semibold"
                     :class="totalAvailableAmount !== null && totalAvailableAmount < 0 ? 'text-rose-600' : 'text-foreground'"
                   >
-                    {{ totalAvailableAmount === null ? t('walletOps.unlimited') : `$${formatFixed(totalAvailableAmount, 2)}` }}
+                    {{ totalAvailableAmount === null ? t('walletOps.unlimited') : `$${formatWalletAmount(totalAvailableAmount)}` }}
                   </div>
                 </div>
                 <div class="rounded-xl bg-background/80 p-3">
@@ -68,13 +68,13 @@
                     {{ t('walletOps.todayQuota') }}
                   </div>
                   <div class="mt-1 text-lg font-semibold text-foreground">
-                    {{ isApiKeyWallet ? t('walletOps.notApplicable') : `$${formatFixed(packageBalanceAmount, 2)}` }}
+                    {{ isApiKeyWallet ? t('walletOps.notApplicable') : `$${formatWalletAmount(packageBalanceAmount)}` }}
                   </div>
                   <div
                     v-if="dailyQuota?.has_active"
                     class="mt-1 text-[11px] text-muted-foreground"
                   >
-                    {{ t('walletOps.used') }} ${{ formatFixed(dailyQuota.used_usd, 2) }} / ${{ formatFixed(dailyQuota.total_usd, 2) }}
+                    {{ t('walletOps.used') }} ${{ formatWalletAmount(dailyQuota.used_usd) }} / ${{ formatWalletAmount(dailyQuota.total_usd) }}
                   </div>
                 </div>
                 <div class="rounded-xl bg-background/80 p-3">
@@ -85,7 +85,7 @@
                     class="mt-1 text-lg font-semibold"
                     :class="walletBalanceAmount < 0 ? 'text-rose-600' : 'text-foreground'"
                   >
-                    ${{ formatFixed(walletBalanceAmount, 2) }}
+                    ${{ formatWalletAmount(walletBalanceAmount) }}
                   </div>
                 </div>
                 <div class="rounded-xl bg-background/80 p-3">
@@ -93,7 +93,7 @@
                     {{ t('walletOps.rechargeBalance') }}
                   </div>
                   <div class="mt-1 text-lg font-semibold text-foreground">
-                    ${{ formatFixed(localWallet.recharge_balance, 2) }}
+                    ${{ formatWalletAmount(localWallet.recharge_balance) }}
                   </div>
                 </div>
                 <div class="rounded-xl bg-background/80 p-3">
@@ -101,7 +101,7 @@
                     {{ t('walletOps.giftBalance') }}
                   </div>
                   <div class="mt-1 text-lg font-semibold text-foreground">
-                    {{ isApiKeyWallet ? t('walletOps.unsupported') : `$${formatFixed(localWallet.gift_balance, 2)}` }}
+                    {{ isApiKeyWallet ? t('walletOps.unsupported') : `$${formatWalletAmount(localWallet.gift_balance)}` }}
                   </div>
                 </div>
                 <div class="rounded-xl bg-background/80 p-3">
@@ -109,7 +109,7 @@
                     {{ t('walletOps.totalConsumed') }}
                   </div>
                   <div class="mt-1 text-lg font-semibold text-foreground">
-                    ${{ formatFixed(localWallet.total_consumed, 2) }}
+                    ${{ formatWalletAmount(localWallet.total_consumed) }}
                   </div>
                 </div>
               </div>
@@ -330,16 +330,16 @@
                             class="tabular-nums"
                             :class="toFiniteNumber(tx.amount) >= 0 ? 'text-emerald-600' : 'text-rose-600'"
                           >
-                            {{ toFiniteNumber(tx.amount) >= 0 ? '+' : '' }}{{ formatFixed(tx.amount, 4) }}
+                            {{ toFiniteNumber(tx.amount) >= 0 ? '+' : '' }}{{ formatWalletAmount(tx.amount) }}
                           </TableCell>
                           <TableCell class="text-xs tabular-nums whitespace-nowrap">
-                            <div>{{ formatFixed(tx.balance_before, 4) }} → {{ formatFixed(tx.balance_after, 4) }}</div>
+                            <div>{{ formatWalletAmount(tx.balance_before) }} → {{ formatWalletAmount(tx.balance_after) }}</div>
                             <div
                               v-if="tx.recharge_balance_before !== null && tx.recharge_balance_before !== undefined && tx.gift_balance_before !== null && tx.gift_balance_before !== undefined"
                               class="text-[11px] text-muted-foreground mt-0.5"
                             >
-                              {{ t('walletOps.rechargeShort') }} {{ formatFixed(tx.recharge_balance_before, 4) }}→{{ formatFixed(tx.recharge_balance_after, 4) }}
-                              · {{ t('walletOps.giftShort') }} {{ formatFixed(tx.gift_balance_before, 4) }}→{{ formatFixed(tx.gift_balance_after, 4) }}
+                              {{ t('walletOps.rechargeShort') }} {{ formatWalletAmount(tx.recharge_balance_before) }}→{{ formatWalletAmount(tx.recharge_balance_after) }}
+                              · {{ t('walletOps.giftShort') }} {{ formatWalletAmount(tx.gift_balance_before) }}→{{ formatWalletAmount(tx.gift_balance_after) }}
                             </div>
                           </TableCell>
                           <TableCell
@@ -724,7 +724,7 @@
                             {{ refund.refund_no }}
                           </TableCell>
                           <TableCell class="tabular-nums whitespace-nowrap">
-                            ${{ formatFixed(refund.amount_usd, 4) }}
+                            ${{ formatWalletAmount(refund.amount_usd) }}
                           </TableCell>
                           <TableCell>
                             {{ refundModeLabel(refund.refund_mode) }}
@@ -851,6 +851,7 @@ import {
   refundModeLabel,
   refundStatusBadge,
   refundStatusLabel,
+  formatWalletAmount,
   walletStatusBadge,
   walletStatusLabel,
   walletTransactionCategoryLabel,
@@ -1269,7 +1270,7 @@ async function submitRecharge() {
   const totalAfter = totalBefore + actionAmount.value
   const confirmed = await confirm({
     title: t('walletOps.confirmManualRecharge'),
-    message: t('walletOps.rechargeConfirmMessage', { owner: props.ownerName || t('walletOps.thisWallet'), amount: formatFixed(actionAmount.value, 4), rechargeBefore: formatFixed(rechargeBefore, 4), rechargeAfter: formatFixed(rechargeAfter, 4), totalBefore: formatFixed(totalBefore, 4), totalAfter: formatFixed(totalAfter, 4) }),
+    message: t('walletOps.rechargeConfirmMessage', { owner: props.ownerName || t('walletOps.thisWallet'), amount: formatWalletAmount(actionAmount.value), rechargeBefore: formatWalletAmount(rechargeBefore), rechargeAfter: formatWalletAmount(rechargeAfter), totalBefore: formatWalletAmount(totalBefore), totalAfter: formatWalletAmount(totalAfter) }),
     confirmText: t('walletOps.confirmRecharge'),
     variant: 'warning',
   })
@@ -1371,11 +1372,11 @@ async function submitAdjust() {
   const balanceTypeLabel = adjustBalanceType.value === 'gift' ? t('walletOps.giftBalance') : t('walletOps.rechargeBalance')
   const isDeduct = actionAmount.value < 0
   const detailLine = isDeduct
-    ? t('walletOps.adjustDeductDetail', { rechargeBefore: formatFixed(rechargeBefore, 4), rechargeAfter: formatFixed(preview.rechargeAfter, 4), giftBefore: formatFixed(giftBefore, 4), giftAfter: formatFixed(preview.giftAfter, 4) })
-    : t('walletOps.adjustAddDetail', { type: balanceTypeLabel, before: formatFixed(currentBucketBalance, 4), after: formatFixed(afterBalance, 4) })
+    ? t('walletOps.adjustDeductDetail', { rechargeBefore: formatWalletAmount(rechargeBefore), rechargeAfter: formatWalletAmount(preview.rechargeAfter), giftBefore: formatWalletAmount(giftBefore), giftAfter: formatWalletAmount(preview.giftAfter) })
+    : t('walletOps.adjustAddDetail', { type: balanceTypeLabel, before: formatWalletAmount(currentBucketBalance), after: formatWalletAmount(afterBalance) })
   const confirmed = await confirm({
     title: t('walletOps.confirmWalletAdjustment'),
-    message: t('walletOps.adjustConfirmMessage', { owner: props.ownerName || t('walletOps.thisWallet'), type: balanceTypeLabel, action: actionAmount.value > 0 ? t('walletOps.increase') : t('walletOps.decrease'), amount: formatFixed(Math.abs(actionAmount.value), 4), detail: detailLine, totalBefore: formatFixed(totalBefore, 4), totalAfter: formatFixed(totalAfter, 4) }),
+    message: t('walletOps.adjustConfirmMessage', { owner: props.ownerName || t('walletOps.thisWallet'), type: balanceTypeLabel, action: actionAmount.value > 0 ? t('walletOps.increase') : t('walletOps.decrease'), amount: formatWalletAmount(Math.abs(actionAmount.value)), detail: detailLine, totalBefore: formatWalletAmount(totalBefore), totalAfter: formatWalletAmount(totalAfter) }),
     confirmText: t('walletOps.confirmAdjustment'),
     variant: 'warning',
   })
@@ -1749,9 +1750,6 @@ function toFiniteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function formatFixed(value: unknown, digits: number): string {
-  return toFiniteNumber(value).toFixed(digits)
-}
 </script>
 
 <style scoped>

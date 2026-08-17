@@ -20,9 +20,21 @@ export function formatWalletCurrency(
   value: number | null | undefined,
   options?: { decimals?: number }
 ): string {
-  const decimals = options?.decimals ?? 2
+  return `$${formatWalletAmount(value, options)}`
+}
+
+export function formatWalletAmount(
+  value: number | null | undefined,
+  options?: { decimals?: number }
+): string {
   const amount = Number(value ?? 0)
-  return `$${amount.toFixed(decimals)}`
+  if (!Number.isFinite(amount)) return '0.00'
+  if (options?.decimals !== undefined) {
+    return amount.toFixed(options.decimals)
+  }
+  return amount
+    .toFixed(8)
+    .replace(/(\.\d{2,}?)0+$/, '$1')
 }
 
 export function walletStatusBadge(status: string | null | undefined): string {
