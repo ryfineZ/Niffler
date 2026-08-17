@@ -2063,3 +2063,15 @@
 - 进一步核对发现应用镜像工作流当前只在推送 `test` 时自动运行；`main` 需要手工启动 `Build App Image`，随后再手工启动 `Deploy Production` 并传入当前 `main` 的完整提交编号。
 - 当前分支与 `origin/main` 从较早共同提交分开：远端一侧 42 个提交，当前分支一侧 9 个提交，且双方有多处同文件改动。提交当前工作区后必须在最新 `origin/main` 上逐项解决冲突，不能把当前分支整体合并进 `main`，否则会重复带入已被远端替代的历史提交。
 - GitHub CLI 在该工作区会默认识别上游 `fawney19/Aether`；目标仓库是 `ryfineZ/Niffler`，后续工作流查询和启动必须显式指定目标仓库。
+
+## 2026-08-17 三线路测速生产发布
+
+- 本地 `main` 工作区在发布计划记录前保持干净，相对 `origin/main` 领先两个已验证提交：账号表空列修复与三线路测速入口。
+- 本次应用变更不包含数据库迁移；新增生产前置条件是 DMIT Caddy 必须先提供允许跨域、禁止缓存的 `/__niffler_latency` 204 响应。
+- 发布继续使用目标仓库 `ryfineZ/Niffler` 的正式 GitHub Actions；准确工作流参数和当前生产镜像仍需在任何写操作前重新核对。
+- `origin` 的读取与写入地址均为 `https://github.com/ryfineZ/Niffler.git`，GitHub CLI 当前以仓库所有者账号登录并具备 `repo` 权限。
+- 实际镜像工作流文件是 `.github/workflows/app-image.yml`，生产发布文件是 `.github/workflows/deploy-production.yml`；生产发布只接受当前 `main` 的完整 40 位提交号。
+- 当前工作区新增的未提交内容只有本轮 `task_plan.md`、`findings.md`、`progress.md` 发布记录，业务提交仍保持不变。
+- GitHub API 显示远端 `main` 已前进到 `53c7eda766c56159f88c0927fe80cc4032bd40a3`（支付回调实付金额修复）；本地已完成 fetch，目前相对 `origin/main` 领先两个业务提交、落后该一个生产提交，推送前必须先整合。
+- 远端 `53c7eda76` 的 `Build App Image` 运行 `31952627950` 和 `Deploy Production` 运行 `31953155532` 均已成功，说明它是当前生产基线，三线路版本必须包含它。
+- `Build App Image` 在 `main` 上使用无输入的 `workflow_dispatch`，产物名为 `niffler-app-linux-amd64`；`Deploy Production` 要求输入当前 `main` 的完整 40 位提交号，并由固定部署器执行迁移兼容、容器健康和自动回退检查。
