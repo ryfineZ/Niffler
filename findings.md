@@ -2111,3 +2111,11 @@
 - 只读生产审计的脱敏命令发生失误，工具输出意外包含连接凭据。凭据不写入仓库或后续报告，本次上线后需要单独轮换 PostgreSQL 与 Redis 凭据。
 - 合并后验证通过：前端三组 27 项、数据层支付回调 7 项、网关支付 53 项，共 87 项测试通过；前端类型检查、生产构建和 Rust 全工作区全目标编译也通过。
 - GitHub 生产工作流只能更新 hd0526 的 Frontdoor 与 Background；OVH 必须复用同一 CI 产物并调用现有固定部署器执行 Frontdoor-only 发布，显式使用本机 `18084` 和 `us1` 公网健康地址。
+- 最终应用提交为 `55550c553c11556b1c9c0b71f7d683ff4d2066b6`；`Build App Image` 运行 `31986031399` 成功，准确产物 `niffler-app-linux-amd64` 未过期，归档大小约 36.8 MB。
+- DMIT 已将旧配置备份到 `/etc/caddy/Caddyfile.before-latency-55550c553-20260817`，候选与活动配置均由现网 Caddy 验证后热加载；`cn` 测速现在返回 204，并带跨域、禁缓存和 Timing-Allow-Origin 响应头。
+- OVH 使用同一 CI 镜像执行 Frontdoor-only 发布；状态文件、镜像标签和 OCI revision 均为目标提交，容器 healthy、重启 0，本机与公网健康为 200，运行中的 Background 为 0。
+- hd0526 的 `Deploy Production` 运行 `31986945833` 成功；Frontdoor 与唯一 Background 的状态文件、镜像标签和 OCI revision 均为目标提交，两者 healthy、重启 0。
+- 真实 Chrome 中英文首页均能看到三条公开 API 域名；中文重新检测后 `us1`、`us2`、`cn` 都返回延迟值，没有“无法连接”，页面文本不包含 OVH、hd0526 或 DMIT，浏览器控制台无错误。
+- 五个公网健康地址连续两轮均为 200，三条测速端点第二轮均为 204；发布完成时远端 `main` 仍准确指向应用提交。
+- 剩余运维风险不阻塞本次发布：hd0526 系统盘使用率约 84%，固定部署器版本与仓库当前版本不一致；需要另行清理无活动构建缓存并审核部署器升级。
+- 独立只读复核确认 hd0526 两个角色与 OVH Frontdoor 使用同一不可变镜像，容器稍后复查仍 healthy、重启 0；包含 `ovh-origin` 在内的六个公开健康入口间隔 5 秒检查两轮，均返回 200 和 `status=ok`。
