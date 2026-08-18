@@ -64,7 +64,6 @@
         </strong>
       </article>
     </div>
-
   </section>
 </template>
 
@@ -89,7 +88,11 @@ interface MeasurementResult {
 }
 
 const SAMPLE_COUNT = 3
+const MAX_SAMPLE_ATTEMPTS = 4
+const MIN_SUCCESSFUL_SAMPLES = 2
 const PROBE_TIMEOUT_MS = 5000
+const INITIAL_MEASUREMENT_DELAY_MS = 250
+const INITIAL_LOAD_FALLBACK_MS = 1500
 
 const { t } = useI18n()
 const endpoints: EndpointDefinition[] = [
@@ -120,6 +123,10 @@ const results = reactive<Record<EndpointId, MeasurementResult>>({
 const isMeasuring = computed(() => endpoints.some(endpoint => results[endpoint.id].status === 'checking'))
 let activeRun = 0
 let activeController: AbortController | null = null
+let initialMeasurementTimer: number | null = null
+let initialLoadFallbackTimer: number | null = null
+let waitingForPageLoad = false
+let isUnmounted = false
 
 function latencyText(result: MeasurementResult) {
   if (result.status === 'checking') return t('home.endpointLatencyChecking')
@@ -133,7 +140,12 @@ function statusDotClass(status: MeasurementStatus) {
   return 'animate-pulse bg-amber-500'
 }
 
+function throwIfAborted(signal: AbortSignal) {
+  if (signal.aborted) throw new Error('The measurement was aborted')
+}
+
 async function timedProbe(endpoint: EndpointDefinition, signal: AbortSignal) {
+  throwIfAborted(signal)
   const controller = new AbortController()
   const abortProbe = () => controller.abort()
   signal.addEventListener('abort', abortProbe, { once: true })
@@ -148,7 +160,7 @@ async function timedProbe(endpoint: EndpointDefinition, signal: AbortSignal) {
       credentials: 'omit',
       signal: controller.signal,
     })
-    if (!response.ok && response.status !== 204) throw new Error(`Unexpected probe status: ${response.status}`)
+    if (response.status !== 204) throw new Error(`Unexpected probe status: ${response.status}`)
     return Math.max(1, Math.round(performance.now() - startedAt))
   } finally {
     window.clearTimeout(timeoutId)
@@ -158,14 +170,65 @@ async function timedProbe(endpoint: EndpointDefinition, signal: AbortSignal) {
 
 async function measureEndpoint(endpoint: EndpointDefinition, signal: AbortSignal) {
   const samples: number[] = []
-  for (let index = 0; index < SAMPLE_COUNT; index += 1) {
-    samples.push(await timedProbe(endpoint, signal))
+  let lastError: unknown = new Error('Not enough successful probe samples')
+
+  for (let attempt = 0; attempt < MAX_SAMPLE_ATTEMPTS && samples.length < SAMPLE_COUNT; attempt += 1) {
+    try {
+      samples.push(await timedProbe(endpoint, signal))
+    } catch (error) {
+      if (signal.aborted) throw error
+      lastError = error
+      const attemptsRemaining = MAX_SAMPLE_ATTEMPTS - attempt - 1
+      if (samples.length + attemptsRemaining < MIN_SUCCESSFUL_SAMPLES) break
+    }
   }
+
+  if (samples.length < MIN_SUCCESSFUL_SAMPLES) throw lastError
+
   samples.sort((left, right) => left - right)
-  return samples[Math.floor(samples.length / 2)] ?? null
+  const middle = Math.floor(samples.length / 2)
+  if (samples.length % 2 === 0) {
+    return Math.round((samples[middle - 1] + samples[middle]) / 2)
+  }
+  return samples[middle]
+}
+
+function clearInitialMeasurementSchedule() {
+  if (initialMeasurementTimer != null) {
+    window.clearTimeout(initialMeasurementTimer)
+    initialMeasurementTimer = null
+  }
+  if (initialLoadFallbackTimer != null) {
+    window.clearTimeout(initialLoadFallbackTimer)
+    initialLoadFallbackTimer = null
+  }
+  if (waitingForPageLoad) {
+    window.removeEventListener('load', scheduleInitialMeasurement)
+    waitingForPageLoad = false
+  }
+}
+
+function startInitialMeasurement() {
+  clearInitialMeasurementSchedule()
+  if (!isUnmounted) void measureEndpoints()
+}
+
+function scheduleInitialMeasurement() {
+  if (isUnmounted) return
+
+  if (waitingForPageLoad) {
+    window.removeEventListener('load', scheduleInitialMeasurement)
+    waitingForPageLoad = false
+  }
+  if (initialMeasurementTimer != null) return
+
+  initialMeasurementTimer = window.setTimeout(startInitialMeasurement, INITIAL_MEASUREMENT_DELAY_MS)
 }
 
 async function measureEndpoints() {
+  clearInitialMeasurementSchedule()
+  if (isUnmounted) return
+
   activeRun += 1
   const run = activeRun
   activeController?.abort()
@@ -176,24 +239,38 @@ async function measureEndpoints() {
     results[endpoint.id] = { status: 'checking', latencyMs: null }
   }
 
-  await Promise.all(endpoints.map(async endpoint => {
-    try {
-      const latencyMs = await measureEndpoint(endpoint, controller.signal)
-      if (run !== activeRun) return
-      results[endpoint.id] = { status: 'ready', latencyMs }
-    } catch {
-      if (run !== activeRun) return
-      results[endpoint.id] = { status: 'error', latencyMs: null }
-    }
-  }))
+  try {
+    await Promise.all(endpoints.map(async endpoint => {
+      try {
+        const latencyMs = await measureEndpoint(endpoint, controller.signal)
+        if (isUnmounted || run !== activeRun || controller.signal.aborted) return
+        results[endpoint.id] = { status: 'ready', latencyMs }
+      } catch {
+        if (isUnmounted || run !== activeRun || controller.signal.aborted) return
+        results[endpoint.id] = { status: 'error', latencyMs: null }
+      }
+    }))
+  } finally {
+    if (run === activeRun && activeController === controller) activeController = null
+  }
 }
 
 onMounted(() => {
-  void measureEndpoints()
+  if (document.readyState === 'complete') {
+    scheduleInitialMeasurement()
+  } else {
+    waitingForPageLoad = true
+    window.addEventListener('load', scheduleInitialMeasurement, { once: true })
+    initialLoadFallbackTimer = window.setTimeout(startInitialMeasurement, INITIAL_LOAD_FALLBACK_MS)
+  }
 })
 
 onBeforeUnmount(() => {
+  isUnmounted = true
+  clearInitialMeasurementSchedule()
   activeRun += 1
-  activeController?.abort()
+  const controller = activeController
+  activeController = null
+  controller?.abort()
 })
 </script>
