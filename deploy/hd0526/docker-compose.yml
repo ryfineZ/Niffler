@@ -6,6 +6,7 @@ services:
       - .env
     environment:
       AETHER_MAX_REQUEST_BODY_MB: "256"
+      AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS: "4"
       APP_PORT: ${APP_PORT:-8084}
       AETHER_GATEWAY_NODE_ROLE: frontdoor
       AETHER_GATEWAY_STATIC_DIR: /srv/frontend
@@ -17,6 +18,8 @@ services:
       - "127.0.0.1:${APP_PORT:-8084}:${APP_PORT:-8084}"
     volumes:
       - ./logs/frontdoor:/app/logs
+    mem_limit: 4g
+    memswap_limit: 4g
     healthcheck:
       test: ["CMD", "aether-gateway", "--healthcheck"]
       interval: 30s
