@@ -6,6 +6,7 @@
 - DMIT 只终止 HTTPS 并转发网站和 Niffler API，不运行 Frontdoor、Background、PostgreSQL、Redis 或 FFmpeg。
 - DMIT 通过 WireGuard 私网访问 `hd0526`，不直接访问数据库。
 - 使用 `cn.niffler.org` 作为网站和 API 共用入口，Cloudflare 仅提供灰云 DNS 解析。
+- 同一台服务器还承载 `pay.dodododo.org` 的 Caddy 站点；Niffler 配置发布必须保留该独立站点。
 
 ## 非目标
 
@@ -13,6 +14,7 @@
 - 本次不迁移 Niffler 应用、数据库、Redis、Background 或媒体任务。
 - 本次不允许 DMIT 访问 `rn01` 的 PostgreSQL 或 Redis。
 - 本次不让图片/视频工作台的大文件经过 DMIT；标准 Niffler API 中的多模态数据仍整体经过入口。
+- 本次不修改 DoDoPay 应用、容器、数据库或支付行为，也不得删除其 Caddy 站点块。
 
 ## 已购节点
 
@@ -48,12 +50,14 @@ DMIT 到 `hd0526` 的 2026-08-14 首次实测结果：10 次 ICMP 平均约 0.7 
 - DMIT Caddy 保留真实客户端地址所需的转发头，但会覆盖公网用户伪造的相关请求头。
 - 入口必须支持长时间流式响应和多模态请求体，不能使用普通网页接口的小请求体上限。
 - DMIT Caddy 在 `/__niffler_latency` 本地返回空的 `204` 响应，并允许跨域、禁止缓存；测速请求不再转发到 hd0526。
+- 完整 Caddy 配置必须同时包含 `cn.niffler.org` 和 `pay.dodododo.org`；安装仓库配置前必须核对两个站点都存在。
 - 首页将该入口显示为“三网优化”和公开入口域名 `cn.niffler.org`，不暴露 DMIT 厂商名或内部机器编号。
 - 当前没有在 Caddy 上安装第三方限流模块；限流由 Niffler 自身承担，后续如需入口限流应单独设计和验证。
 
 ## 影响范围
 
 - WireGuard 或 DMIT 故障只影响未来使用大陆直连域名的用户。
+- DMIT 的 Caddy 配置或 443 端口故障也会影响 DoDoPay；Niffler 入口发布不能再将其视为独占服务器。
 - `niffler.org`、`api.niffler.org`、`us1.niffler.org` 和 `us2.niffler.org` 不受本次上线影响。
 - `hd0526` 现有 Caddy、Frontdoor、Background 及数据库连接方式保持不变。
 - 因为入口不经过 Cloudflare，DMIT 故障和直接攻击不会由 Cloudflare 代为吸收；防火墙、监控和 Niffler 自身鉴权仍然生效。
@@ -65,6 +69,7 @@ DMIT 到 `hd0526` 的 2026-08-14 首次实测结果：10 次 ICMP 平均约 0.7 
 - `cn.niffler.org` 的 DNS 只返回 `179.253.242.2`，Cloudflare 代理状态为关闭。
 - `cn.niffler.org` 的 HTTPS 证书有效，首页、健康接口、标准 API 和流式响应均能正常转发。
 - `cn.niffler.org/__niffler_latency` 返回 HTTP 204，包含允许跨域和禁止缓存的响应头，并且首页能显示该线路的成功或失败状态。
+- `pay.dodododo.org/api/health` 通过公网和指定 DMIT 源站两种方式均返回 HTTP 200。
 - DMIT 重启后 WireGuard、Caddy、防火墙和监控自动恢复。
 - DMIT 监控从本机访问 `cn.niffler.org` 的正式 HTTPS 地址，同时检查证书、入口代理和 `hd0526` 回源。
 - Telegram `/status` 和 `/settings` 能显示 DMIT，设置命令只能修改允许的三个数字。
@@ -75,7 +80,7 @@ DMIT 到 `hd0526` 的 2026-08-14 首次实测结果：10 次 ICMP 平均约 0.7 
 ## 回退
 
 1. 删除 `cn.niffler.org` 的新 DNS 记录，立即停止新流量进入 DMIT。
-2. 停止并禁用 DMIT 的 Caddy 和 WireGuard 服务。
+2. 回退 Niffler 入口时只删除或停用 `cn.niffler.org` 站点，不得停止共享 Caddy 服务或删除 `pay.dodododo.org` 站点。
 3. 恢复 `hd0526` 修改前的 Caddy 配置。
 4. 删除两端 WireGuard 配置和对应防火墙规则。
 

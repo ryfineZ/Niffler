@@ -39,3 +39,10 @@
 		}
 	}
 }
+
+# DMIT 与 DoDoPay 共用 Caddy；发布 Niffler 入口时必须保留此站点。
+pay.dodododo.org {
+	tls internal
+	encode gzip zstd
+	reverse_proxy 127.0.0.1:3000
+}

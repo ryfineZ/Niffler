@@ -1,5 +1,110 @@
 # Findings
 
+## 2026-08-19 ColoCrossing 主库切换与 rn-hybrid 从库重建
+
+- rn-hybrid 已从 ColoCrossing 时间线 3 重新完成约 63 GB 物理基础备份，`pg_verifybackup` 校验通过；当前为只读异步从库，连续三轮 `streaming` 且重放延迟为 0，主从 system identifier 一致。
+- 基础备份包装脚本在远端工作已经结束后仍卡在本地 SSH；确认远端无残留进程后仅中断本地会话，没有中断数据库复制。启动前清理了基础备份中历史遗留的重复 `primary_conninfo`，最终只保留指向 ColoCrossing `.5:55432` 的专用复制配置。
+- 现有监控脚本默认在容器内连接 PostgreSQL `5432`，但 ColoCrossing 主库实际监听 `55432`；若不增加可配置端口会产生假告警，因此部署前必须先修正脚本并增加回归测试。
+- 数据库角色监控已部署到 ColoCrossing 和 rn-hybrid：两边定时器均为 enabled/active、systemd 执行结果 success，Telegram 人工测试均投递成功。ColoCrossing 首次 systemd 执行暴露无 locale 时中文变量边界解析问题，改用 `${变量名}` 后已通过空环境回归测试。
+- 最终架构复核确认 hd0526 Frontdoor/唯一 Background 与 OVH Frontdoor 都连接 `10.72.0.5:6432`，OVH 无 Background；rn-hybrid 旧 PgBouncer 为 inactive/disabled，主库复制视图为 `streaming / async / 0`，四个公网健康入口均为 HTTP 200。
+- 该备份在导出 `usage_body_blobs` 约 7 分钟后被取消，日志为 `canceling statement due to conflict with recovery`；失败通知已成功发送，本地截断文件已自动清理。根因是从库 `max_standby_streaming_delay=30s`，不是 R2、磁盘或网络故障。
+- rn-hybrid 是不承载在线查询的专用备份从库，适合把 WAL 冲突等待设为与备份超时一致的 2 小时；同时监控必须只在备份服务运行期间豁免重放字节阈值，恢复角色和 `streaming` 状态不能豁免。
+- 2 小时等待参数和备份感知监控已部署并通过隔离回归测试；修正后的全量备份 `20260819T184403Z` 成功上传 R2，大小 35,557,713,090 字节，远端大小和 SHA-256 独立复核一致，Telegram 成功通知已投递。
+- 备份期间监控正确显示“备份进行中，复制连接正常”；备份结束后从库自动恢复为 `streaming / 0`，主库复制槽始终 active 且没有额外保留 WAL。
+- 当前数据库约 62 GiB，`usage_body_blobs` 总占用约 27 GiB，备份文件已经达到 35.6 GB；下一阶段必须制定请求正文和审计数据的保留或归档策略。
+- 恢复定时器时仍处在随机延迟边界，额外触发的重复备份已在 55 秒内停止且未上传对象；检查同时暴露旧脚本会把 `SIGTERM` 记为空大小成功并留下容器内 `pg_dump`。脚本现已按精确 PID 回收并以失败退出，回归和生产只读验证通过。
+- 最终状态为：成功对象 `20260819T184403Z` 的 35,557,713,090 字节及 SHA-256 再次从 R2 核对一致，重复对象不存在；定时器下一次为 `2026-08-20 20:37:32 UTC`，主从复制延迟与槽保留 WAL 均为 0。
+
+- 当前生产主库已经是 ColoCrossing：PostgreSQL 15.18、时间线 3、`pg_is_in_recovery=false`。旧 rn-hybrid 时间线 2 已干净停止并禁止自启，后续只能封存或从新主库重建，禁止直接启动。
+- 两台 Frontdoor 和唯一 Background 已不再经过 rn-hybrid，分别直连 `10.72.0.5:6432` 的 `aether`、`aether_ovh`、`aether_background`；三个池均无等待，应用容器全部 healthy。
+- 新主库最终 HBA 只允许本机 PgBouncer 普通连接及 rn-hybrid 专用角色的 TLS 流复制；临时允许 `.1` 普通访问的缓冲规则已撤销。`max_slot_wal_keep_size=16GB` 已生效。
+- 生产节点发起的主站/API 健康请求约 0.06–0.34 秒并全部返回 200；本地跨境测试出现 1–6 秒，不能据此归因于数据库或服务端，因为同一时刻服务器侧结果稳定。
+- 用户已明确批准最终架构：ColoCrossing 为生产 PostgreSQL 主库，rn-hybrid 为异步物理从库和回退节点。
+- 当前生产源库是 rn-hybrid 的 PostgreSQL 15.18，`pg_is_in_recovery=false`，时间线 2，数据库约 `66,442,444,135` 字节；预检时有 23 个客户端连接，没有超过 5 分钟的长事务，也没有复制槽。
+- 源库已具备物理复制参数：`wal_level=replica`、10 个 WAL sender、10 个复制槽、单槽 WAL 上限 8 GB、TLS 开启。PostgreSQL 只通过宿主机 `127.0.0.1:55432` 暴露，复制阶段需要新增仅限 WireGuard 和专用复制角色的临时入口。
+- rn-hybrid 根分区约 477 GB，当前使用 72 GB、可用约 381 GB；ColoCrossing 根分区约 1.7 TB，可用约 1.6 TB，足以接收在线基础备份并在 rn-hybrid 上保留一次旧主数据目录后反向重建。
+- rn-hybrid 当前 R2 定时备份最近一次于 `2026-08-18 20:30:24 UTC` 启动、`22:16:10 UTC` 成功结束；正式切换前仍需人工生成并校验一份更新的备份。
+- PgBouncer 在 rn-hybrid 上是宿主机原生服务，不是 Docker 容器；监听 `10.72.0.1:6432`，三个应用别名均为 `session` 池并指向本机 PostgreSQL。
+- hd0526 Frontdoor、唯一 Background 和 OVH Frontdoor 均健康，仍分别连接 rn-hybrid 的三个 PgBouncer 别名；生产连接尚未改变。
+- hd0526 到 ColoCrossing 私网平均约 1.3 ms，OVH 到 ColoCrossing约 69.6 ms；两端均可访问候选 PostgreSQL 私网端口。
+- 最终不能把 PgBouncer 长期留在 rn-hybrid，否则每次数据库请求仍绕行 rn-hybrid并保留额外单点。正式架构是在 ColoCrossing 运行 PgBouncer `10.72.0.5:6432`，三项应用连接最终全部直达该地址。
+- RAID 控制器型号不符、BBU/CacheVault 状态未知和 IPMI 缺失作为已知风险保留；用户已接受先迁移，但这些项目不是“已验收通过”。
+- rn-hybrid 与 ColoCrossing 已建立直接 WireGuard peer；补齐热更新未自动创建的 `/32` 路由后，双向 ICMP 0% 丢包，rn-hybrid 到 ColoCrossing 平均约 1.1 ms。两端配置已持久化并各自保存在 root-only 回退目录。
+- 源库 Docker 网络为 `172.18.0.0/16`。已新增仅允许 ColoCrossing `10.72.0.5` 访问的临时私网复制转发 `10.72.0.1:55433`，内层 HBA 只允许复制角色、TLS 和 SCRAM。
+- 专用复制角色 `niffler_colo_repl` 已创建，凭据在一次输入重定向失败后立即轮换；旧密码失效，目标机 pgpass 权限为 `0600`。ColoCrossing 通过复制协议 `IDENTIFY_SYSTEM` 成功读到生产 system identifier `7644483892823924774` 和时间线 2。
+- 源库 `data_checksums=off`、`wal_log_hints=off`，因此提升后不依赖 `pg_rewind` 重建 rn-hybrid；采用保留旧目录后重新执行物理基础备份，避免对分叉数据作不安全假设。
+- 已新增 `deploy/colocrossing-db-primary` 正式配置；应用最终访问 `.5:6432`，只有 rn-hybrid `.1` 能访问主库 `.5:55432` 的复制入口，公网 PostgreSQL/PgBouncer 均不开放。
+- 切换前数据基线：system identifier `7644483892823924774`、时间线 2、127 张 public 表、62 条迁移、322 个用户、306 个 API Key、29 个 Provider、216 个模型、2,963,196 条 usage；`orders` 表实际不存在，支付订单表名为 `payment_orders`。
+- 已在 rn-hybrid 五位数临时端口验证切换事务池配置：真实应用角色通过 TLS 完成事务级 advisory lock、临时表和读写事务；测试端口和目录均已清理，无残留进程。
+- ColoCrossing 已安装 PgBouncer 1.24.1 和 PostgreSQL 客户端，正式 PostgreSQL/PgBouncer 配置校验和与仓库完全一致；服务保持停用，候选实例继续健康运行。
+- 提升窗口所需的 rn-hybrid 事务池配置、ColoCrossing 临时缓冲配置、最终/临时 HBA 和 PgBouncer 管理 pgpass 已放入两端 root-only staging 目录，未激活。
+- 正式 Compose 初版漏挂载 `pg_basebackup -R` 写入的复制密码路径；已在启动副本前补为只读挂载并同步远端，Compose 解析通过，避免副本完成基础备份后无法持续接收 WAL。
+- ColoCrossing 的最终 HBA、切换缓冲 HBA 和两份 PgBouncer 管理 pgpass 已安装到最终受限路径，配置权限和哈希一致；正式 PostgreSQL、PgBouncer 仍未启动。
+- 现有生产监控只检查容器存活，不能识别主库误入恢复模式或从库停止流复制；已增加可选的 PostgreSQL 主从角色与重放延迟检查，原应用节点未配置该选项时行为不变。
+- 新增数据库角色监控已在 ColoCrossing 隔离临时目录以 root 运行完整脚本测试并通过，临时目录已清理。
+
+
+## 2026-08-19 ColoCrossing 候选数据库初始化与延迟验证
+
+- 新服务器已创建非 root 管理账号 `nifflerops` 和独立 ED25519 密钥；密钥登录及无交互 sudo 均通过验证。
+- 在新密钥入口验证成功后，才关闭 root 远程登录、SSH 密码登录和键盘交互认证；重新连接成功，root 密码登录已明确被拒绝。
+- nftables 已启用默认拒绝入站：保留限速 SSH、ICMP，只允许 hd0526/OVH 固定公网 IP 访问 UDP 51822，并只允许 `wg-db` 的 `.3/.4` 访问 TCP 55432；公网 PostgreSQL 实测超时。
+- 已规范化厂商预装的重复 APT 软件源并完成安全更新；Docker、Fail2ban、nftables、unattended-upgrades、WireGuard 和候选 PostgreSQL 均为 enabled/active。
+- 实时核对确认 `rn-hybrid` 的 `niffler-postgres15` 已连续健康运行 4 天，版本为 PostgreSQL 15.18，`pg_is_in_recovery()` 为 false；PgBouncer 只监听 `10.72.0.1:6432`，PostgreSQL 15 只映射到本机 `127.0.0.1:55432`。
+- `wg-db` 实时地址与文档一致：rn-hybrid `.1`、rn01 `.2`、hd0526 `.3`、OVH `.4`，三组 peer 都有近期握手；应用正式数据库地址仍为 `.1:6432`。
+- `hd0526` 的 Frontdoor、Background、Caddy 和 OVH 的 Frontdoor、Caddy 均正常；本阶段没有修改任何容器、数据库连接或私网配置。
+- 候选节点已使用 `10.72.0.5`，分别与 hd0526、OVH 建立独立 WireGuard peer。没有修改 rn-hybrid，现有 `.1` 生产路由保持不变。
+- 用户已同意先加固并测试新服务器；本阶段不迁移数据、不切换应用连接、不改变生产流量。
+- 现有运维记录表明当前生产 PostgreSQL 15.18 主库位于 `rn-hybrid`，应用通过 `wg-db` 和 PgBouncer 访问；`rn01` 已不是生产主库，未来迁移不能再以它作为数据源。
+- 新服务器基础硬件检查通过：E3-1240 v6、64 GB ECC、两块 Samsung PM863a 企业级 SATA SSD，操作系统看到约 1.7 TB RAID 1 逻辑盘，SMART 无当前介质错误。
+- RAID 控制器实物为 LSI 9260-8i，不是订单中的 9271-8i；在确认虚拟盘 Optimal、写缓存策略和 BBU 状态前，不应直接成为唯一生产主库。
+- 10 次私网 ICMP 复核显示：`hd0526` 到候选库平均 `1.831 ms`、0% 丢包；OVH Hillsboro 平均 `69.704 ms`、0% 丢包。
+- 候选 PostgreSQL 使用与生产一致的 15.18 镜像，启用数据校验和、TLS、fsync、synchronous_commit 和 full_page_writes；只绑定 `127.0.0.1:55432` 与 `10.72.0.5:55432`。
+- `pgbench` 只读测试使用单客户端和持久 TLS 连接：hd0526 处理 10,983 笔、失败 0，平均 `1.811 ms`、P95 `2.397 ms`、最大 `7.935 ms`；OVH 处理 278 笔、失败 0，平均 `70.095 ms`、P95 `70.361 ms`、最大 `74.700 ms`。
+- 每次查询都新建独立 `psql + TLS` 连接时，50 次端到端采样：hd0526 平均 `76.965 ms`、P95 `87.269 ms`；OVH 平均 `628.355 ms`、P95 `636.715 ms`。正式应用必须继续使用 PgBouncer/连接池，不能按请求新建数据库连接。
+- 候选服务重启后恢复 healthy，PostgreSQL 仍为 15.18、不是从库，100 万条 pgbench 测试数据完整；两台应用服务器重连均确认 TLS 1.3。
+- 候选测试库的 `pg_dump` 和独立 `pg_restore` 已通过，恢复库核对为 100 万条记录；临时恢复库和 dump 已清理。该结果只验证数据库工具链，不替代未来生产 R2 备份与恢复演练。
+- 两台生产 Frontdoor 仍明确连接 `10.72.0.1:6432` 且 healthy；hd0526 的单活 Background 也保持 healthy，本阶段没有切换生产数据库或流量。
+- 候选机适合成为 hd0526 的后续主数据库，但不能在缺少 RAID 虚拟盘 Optimal、写缓存保护、BBU/CacheVault 和 IPMI 凭据时直接承担唯一生产主库。
+
+
+## 2026-08-17 OVH Frontdoor 更新与生产切流
+
+- 用户已明确授权：检查 OVH 版本；若落后则先更新；健康后切换生产流量到 OVH。
+- hd0526 当前 Frontdoor 镜像基线为 `niffler-app:55550c553c11556b1c9c0b71f7d683ff4d2066b6`，保留该实例作为切流回退目标。
+- 当前有效拓扑以 `docs/operations/dual-us-frontdoor-access.md` 为准：`api.niffler.org` 和主站回源 hd0526，`us1` 回源 OVH，`us2` 回源 hd0526，`cn` 经 DMIT 回源 hd0526；OVH 当前正式 Caddy 只保留 `us1`、`ovh-origin` 和独立 autocar 站点。
+- 较早的 `ovh-production-traffic-cutover.md` 记录了 8 月 6 日曾把主站/API 切到 OVH，但已被后续双线路拓扑变更覆盖，不能照旧文档盲目重复执行。
+- 切流必须至少恢复 OVH 的主站/API Caddy 虚拟主机并修改对应 Cloudflare 源站记录；若用户意图是完全绕开 hd0526，还需要处理 `us2` 和 DMIT `cn` 回源，范围比只切主站/API更大。
+- 当前仓库与远端 `origin/main` 都是 `89d269266`；hd0526 实际运行的生产镜像为 `55550c553`（镜像 ID `sha256:ca1204d...`），Frontdoor/Background 均 healthy。`89d269266` 及其前一提交都是上线后的运维记录提交，不代表存在尚未发布的业务二进制变化，因此“最新生产应用版本”仍以 hd0526 实际镜像 `55550c553` 为准确基线。
+- hd0526 Frontdoor 当前健康，累计重启 32 次，健康接口明确显示请求并发门未启用；它可以在切流失败时继续作为回退节点。
+- 已区分两台 OVH 主机：`ovh-baremetal` 指向 `40.160.72.248`，不是当前 Niffler 应用节点；项目文档中的应用服务器 SSH 别名是 `ovh-US-WEST-OR-VPS-4`，指向 `15.204.120.221`。此前在 baremetal 上找不到 Frontdoor 是检查了错误主机，不代表 OVH 应用实例不存在。
+- 正确 OVH 应用节点当前运行 `niffler-app:55550c553...`，镜像 ID 与 hd0526 完全一致（`sha256:ca1204d...`），Frontdoor healthy、重启数 0、本机与 Caddy `us1` 健康接口均为 `status=ok`；无需更新应用。
+- OVH 资源约 22.9 GiB RAM，当前可用约 22 GiB，Frontdoor 约 61.6 MiB，根分区仅使用 2%；近 3 天未检出内核 OOM。该节点具备承接当前默认流量的明显内存余量。
+- 按当前双线路文档的既有回退边界，hd0526 异常时只把 `api` 和根域名切到 OVH；`us1` 已在 OVH，`us2` 和 `cn` 继续作为 hd0526 专线入口。此次采用该范围，不擅自改变全部线路拓扑。
+- Git 历史保留了 8 月 6 日已验证过的 OVH 主站/API 配置：使用挂载的 Cloudflare Origin CA 证书，主站的 `/InfiniteCanvas/*` 继续反代旧源站，其余请求进入 OVH Frontdoor。当前配置移除这些站点只是后续双线路拓扑调整，不是 OVH 不支持主站/API。
+- `api` 当前是灰云直连 hd0526，而 OVH 预置的是 Cloudflare Origin CA 证书，浏览器不能直接信任；切到 OVH 时必须同时把 `api` 改为橙云，或另行签发公有证书。既有 8 月 6 日正式切流流程采用橙云，本次应复用该已验证路径。
+- 本机存在 Wrangler 和受限 Cloudflare 环境文件，可在不输出凭证的前提下核对记录并执行原子修改；尚未读取或改变 DNS。
+- Cloudflare 当前记录与双线路文档一致：`api` 为 `23.19.228.223` 灰云 TTL 300，根域名为同地址橙云；`us1`/`ovh-origin` 指向 OVH，`us2` 指向 hd0526，`cn` 指向 DMIT。根域名和 API 的精确记录 ID 已取得，可按记录级回退。
+- Cloudflare token 的 `/user/tokens/verify` 返回 401，但同一 token 成功读取 zone 和 DNS 记录，说明至少 zone/DNS 读权限有效；不能仅凭 verify 端点判断写权限，正式修改时必须检查 API `success` 并保存原记录。
+- OVH 现有 Origin CA 证书覆盖 `niffler.org` 与 `*.niffler.org`，有效期到 2041-08-01；仓库部署配置与服务器当前 Caddy/Compose 校验和完全一致，具备从仓库受控恢复主站/API 站点的条件。
+- 已先更新当前双线路运维文档，明确本次临时切流的目标、非目标、行为变化、验证和精确 DNS 回退值；随后才修改 OVH 正式 Caddy 源配置，符合文档先行要求。
+- 已确认单文件 bind mount 的宿主机与容器 inode不同；改用容器内临时配置热加载后，OVH `api`、主站健康接口、主站 InfiniteCanvas 和既有 `us1` 固定 Host 验证全部通过，再同步宿主机正式配置。Caddy/Frontdoor 均未重启，既有 autocar 返回预期 303。
+- OVH Caddy 切换前配置备份位于 `/root/niffler-ovh-cutover-20260817T120455Z`；当前宿主机正式 Caddyfile SHA-256 为 `de15c095...`。DNS 仍未修改时，公开 `us1`、`ovh-origin` 均继续返回 `status=ok`。
+- 网关使用 `x-trace-id` 并把它写入 `/opt/niffler-app/logs/frontdoor/aether-gateway.2026-08-17.log`；切流验证可发送唯一 trace ID，并在 OVH 日志中精确确认请求实际到达该节点，而不依赖 DNS 推断。
+- 首次 API 切换已独立确认完全回退：Cloudflare 记录恢复为 `23.19.228.223`、灰云、TTL 300，OVH 日志没有初次 marker。失败原因是本机/公共 DNS仍缓存原灰云地址，立即用普通域名验证不能证明橙云切换；下一次必须强制连接已知 Cloudflare edge IP，再由 Cloudflare 按新记录回源 OVH。
+- 当前可用 Cloudflare IPv4 edge 为 `104.21.2.230`、`172.67.129.200`；切换前系统和 1.1.1.1 都正确返回旧 API 地址 `23.19.228.223`。
+- 两次 API marker 都精确出现在 hd0526 日志、未出现在 OVH；OVH 本机同样的 `x-trace-id` 能正常写入日志。因此问题不是 trace 机制，而是 Cloudflare edge 在短验证窗口内仍复用旧 origin 配置。
+- 两次窗口内 Cloudflare edge 健康和登录 400 语义都正常，说明延迟传播期间仍由健康的 hd0526 承接，没有用户错误。下一次可以保留新 DNS 配置并分段观察 2–3 分钟，而不因“尚未到 OVH”立即回退；只有 5xx/TLS/认证异常才回退。
+- 第三次更新保留新记录等待传播后，API marker `cutover-api-propagation-20260817-121354` 只出现在 OVH 日志（1 条），hd0526 为 0；Cloudflare 记录保持 `15.204.120.221`、橙云、自动 TTL，证明 `api.niffler.org` 已实际切到 OVH。
+- API 切换后固定 Cloudflare edge 连续 10/10 健康，空登录请求保持预期 400；OVH Frontdoor healthy、重启 0、内存约 65.8 MiB，最近日志 5xx 为 0、Caddy error 为 0。1.1.1 已返回 Cloudflare 地址；本机仍缓存旧灰云地址，属于原 TTL 300 的预期过渡。
+- 根域名 Cloudflare 记录已从 hd0526 改为 OVH，保持橙云和自动 TTL；marker `cutover-root-propagation-20260817-121536` 只在 OVH 日志出现，hd0526 为 0，证明主站也已真实切换。
+- 切流后首轮公网全链路：根域名和 API 各 10/10 健康；首页 200、InfiniteCanvas 200、空登录 400；us1/us2/cn/ovh-origin 均 200；主站响应确认 `server: cloudflare`，1.1.1.1 对 API/根域名都返回 Cloudflare 地址。
+- OVH 切流后已有 89 条完成请求，Frontdoor 内存约 248 MiB、重启 0；网关 5xx、Caddy error 和内核 OOM 均为 0。hd0526 Frontdoor/Background 仍 healthy，Frontdoor 重启数保持 32，没有因切流操作新增重启。
+- Cloudflare 最终控制面再次读取确认：API 和根域名均指向 `15.204.120.221`、`proxied=true`、自动 TTL；Caddy admin 当前活动路由包含 `api.niffler.org`、`niffler.org`、`us1`、`ovh-origin` 和 autocar。
+- 当前 `main` 相比生产镜像提交只涉及本地三份运维/诊断记录，没有应用代码差异；未更新 OVH 是有版本证据的决定，不是跳过更新步骤。
+- 北京时间 20:19 间隔复核：主站/API 各 5/5 健康；OVH 已完成 152 条请求，Frontdoor 内存约 318 MiB，Frontdoor/Caddy 重启均为 0，网关 5xx、Caddy error、内核 OOM 仍全部为 0；hd0526 Frontdoor/Background 继续健康。
+
+
 ## 2026-08-16 支付小数金额完整入账：初始要求
 
 - 用户确认问题不是单纯显示格式，而是支付回调金额存在小数时，实际钱包入账被取整，小数部分丢失。
@@ -2119,3 +2224,110 @@
 - 五个公网健康地址连续两轮均为 200，三条测速端点第二轮均为 204；发布完成时远端 `main` 仍准确指向应用提交。
 - 剩余运维风险不阻塞本次发布：hd0526 系统盘使用率约 84%，固定部署器版本与仓库当前版本不一致；需要另行清理无活动构建缓存并审核部署器升级。
 - 独立只读复核确认 hd0526 两个角色与 OVH Frontdoor 使用同一不可变镜像，容器稍后复查仍 healthy、重启 0；包含 `ovh-origin` 在内的六个公开健康入口间隔 5 秒检查两轮，均返回 200 和 `status=ok`。
+## 2026-08-17 首页测速首次失败诊断
+
+- 用户截图中首次进入页面时只有 `us1` 成功，`us2` 与 `cn` 同时显示“无法连接”；点击重新检测后可恢复。
+- 截图只能证明前端首次判定失败，不能证明两个 API 入口实际不可达；下一步需对照浏览器网络错误、请求超时和组件生命周期。
+- 组件在 `onMounted` 后立即并行测三条线路；每条线路串行请求 3 次，每次超时 5 秒，取中位数。
+- 当前实现对单次样本没有容错：某条线路 3 次请求中只要任意 1 次抛错或超过 5 秒，整条线路就直接显示“无法连接”，已经成功的样本也全部丢弃。
+- 手工重新检测会重新创建控制器并重复整组请求；此时 DNS、TLS 和连接通常已经预热，因此“首次失败、重测恢复”与单个冷连接样本失败的实现特征相符，但仍需浏览器网络证据确认。
+- 现有测试只覆盖“9 次全部成功”和“所有请求全部失败”，没有覆盖单个样本瞬时失败、冷启动超时、部分样本成功或自动补测。
+- 测速组件直接位于首页首屏 Hero 中，不受滚动或可见性懒加载控制；进入首页后会立即挂载并启动测速，而不是等页面网络空闲后再测。
+- 主代理的第一轮全新 Chrome 上下文冷启动中三条线路均成功，显示约 235/284/262 ms，控制台无错误；这说明问题不是每次冷启动必现，需要多轮或更接近用户网络条件的复现。
+- `agent-browser network requests` 没有回溯到导航期间已经完成的探针请求；后续改用页面 Performance Resource Timing 和导航前启用的网络记录取证，不把“未捕获”误当成没有请求。
+- 第一轮 Resource Timing 显示首个冷请求的 TLS/连接耗时差异很大：`us1` 约 1.59 秒、`us2` 约 3.65 秒、`cn` 约 0.58 秒；同一域名后两次复用连接后只需约 0.18–0.28 秒。`us2` 的冷连接已经接近代码 5 秒硬超时，用户网络稍慢即可触发。
+- 超时计时器在调用 `fetch` 前就开始，包含浏览器排队、DNS、TCP、TLS 和服务端响应；首次页面仍在加载资源时，排在后面的跨域探针更容易耗尽 5 秒预算，手工重测时这些成本已预热。
+- DNS 不支持“us2/cn 有坏 IPv6”的猜测：`us1` 与 `us2` 的 Cloudflare A/AAAA 完全相同，`cn` 只有 IPv4。因此截图中的两条失败不是由一组共同的错误 AAAA 记录导致。
+- 三个端点当前 GET/OPTIONS 均为 HTTP/2 204，CORS、禁缓存、Timing-Allow-Origin、TLS 1.3 与 ALPN h2 均正常；暂未发现生产端点配置错误。
+- `us1`、`us2`、`cn` 的测速路径都由各入口 Caddy 直接返回 204，不经过 Frontdoor、Background、PostgreSQL 或 Redis；所以首页“无法连接”不能用数据库或应用后端故障解释。
+- DMIT Caddy 在本次测速配置热加载后记录到的 98 次探针全部是 204，服务端最慢处理约 0.000063 秒；没有任何非 204。失败时间消耗发生在请求到达 Caddy 之前的浏览器排队/解析/建连阶段，或浏览器主动超时中止，而不是 Caddy 处理慢。
+- 日志中存在的 9 次旧非 204 都属于测速配置热加载之前的历史请求；按热加载时间过滤后为 0，不能用于解释当前现象。
+- 端点稳定性压力检查未复现服务器失败：三条线路冷连接串行各 30 次、30 路冷连接并发各 30 次、单连接复用各 30 次均为 0 失败；冷连接最慢约为 us1 1.034 秒、us2 0.774 秒、cn 0.650 秒，明显低于前端 5 秒阈值。
+- 两个 Cloudflare IPv4 分别绑定测试与 cn 独立 IPv4 测试也全部成功。当前客户端没有原生 IPv6 路由，不能证明所有用户 IPv6 网络都正常；但 us1/us2 DNS 完全一致且 cn 没有 AAAA，IPv6 仍无法解释截图的组合。
+- 压力检查说明端点当前稳定，不支持“us2 和 cn 服务器持续故障”；它也不能否定用户首次页面加载时的局部网络抖动。真正的产品缺陷是前端把任一瞬时样本失败放大为整条线路失败。
+- 独立冷浏览器复现得到决定性证据：5 次成功打开首页的全新上下文中，4 次至少一条首次测速失败；`us2` 失败 4/5，`us1` 1/5，`cn` 1/5。点击重测的完整样本中三条全部恢复。
+- 浏览器 Resource Timing 中失败请求都精确结束在约 5001–5003 ms，响应状态为 0、连接和响应字段为 0、没有传输数据、协议为空；这与前端 5000 ms `AbortController` 超时完全吻合，而不是服务器返回错误码。
+- 同一冷会话里成功握手可花 0.5–3.7 秒，连接复用后降到约 0.17–0.30 秒；重测恢复是连接与页面加载状态预热后的直接结果，不是线路自行修好。
+- 冷会话还有 3 次整页导航出现 `ERR_CONNECTION_CLOSED`，说明当前测试网络自身存在冷连接抖动；这不改变产品结论：测速 UI 应容忍单次客户端抖动，不能把它等同于线路不可达。
+- 最终根因：生产端点正常，但首页在最拥挤的首次加载阶段立即测速，单个请求 5 秒硬超时，并把三次采样中的任意一次失败放大成整条线路“无法连接”；重测时页面和连接已预热，所以恢复。截图中的 us2/cn 是各自独立出现至少一次客户端超时，不是两个服务器同时宕机。
+- 建议修复：单样本失败后继续收集其余样本，至少两个成功样本时按成功样本计算中位数；首次检测等待页面 load/idle，失败自动短退避补测一次；只接受约定的 204，并在内部保留超时/网络/状态码错误类别。
+- 用户已授权修复；界面角色仍是帮助普通用户选择低延迟公开 API 域名，保留现有三张卡片、域名和重测按钮，不做视觉或文案扩张。
+- 实现口径确定为：页面加载完成后短暂延后首测；每条线路最多四次尝试、争取三次成功，至少两次成功才显示中位耗时；严格要求探针为 204；新检测和卸载必须取消旧请求。
+- 本地生产构建的真实 Chrome 首轮精确复现了原故障条件：`us2` 第一个探针在 5002ms 被中止且零传输；修复后组件继续补测，同轮后续三次成功，最终仍正确显示 `us2` 407ms，而不是“无法连接”。
+- 同一页面手动重测后三条均成功；另开三个独立浏览器会话首测也全部显示 ready。该证据直接验证了修复目的，不只是单元测试模拟。
+- 本地 Vite preview 没有后端代理，因此站点资料、模型等五个相对 `/api` 请求返回 500；三条跨域测速请求正常，且这些本地预览 500 与本组件和生产 API 无关。
+- 真实截图确认布局、公开域名和按钮外观未改变；聚焦组件的 `ui-review` 静态与运行时检查最终输出 `PASS ui-review gate`。测速不是逐帧或高频交互，只在初次进入和手动重测时发请求，没有新增 DOM 测量、重排、模糊或动画性能风险。
+- 独立最终审查发现并推动补齐一个真实边界：如果慢资源让 `window.load` 长期不触发，旧方案会一直停在检测中。当前由 load 后 250ms 与挂载后 1.5 秒兜底竞速，先到者启动并清理另一项，不会重复检测或无限等待。
+- 已增加旧轮次晚回包测试：强制新一轮会中止旧的三个在途请求，旧响应之后返回也不能继续补样本或覆盖新结果；两个成功样本 100ms/300ms 时精确显示 200ms，中位数口径已固定。
+- 最终独立审查未发现剩余 P0/P1/P2。极端情况下单线路四次串行探测可能接近 20 秒，这是用一次额外补测换取冷启动可靠性的明确取舍；三条线路仍并行，任一时刻最多三个请求。
+- 用户已明确要求提交到 `main`、构建并上线。本次提交必须选择性暂存：组件与测试可整文件暂存；`dual-us-frontdoor-access.md` 只能暂存测速行为/验证片段，不能带入同文件中此前的 OVH 主入口切流记录。
+- 选择性提交与推送已完成：`main` 和远端均为 `1797bfc993d11e73359d2a03871c25ac37289fe5`，提交只含预定三个文件；此前 OVH Caddy、切流记录和过程文件仍保持未提交，没有混入发布版本。
+- 精确 SHA 的 `Build App Image` 运行 `32088818884` 全部成功；下载的 90 MB 镜像 tar 哈希为 `9c7c2ddf92958006c0d60a7ef20f9034c4c5136c7ff202302d213af9c61374af`，两台机器传输后均在部署前核对同一哈希。
+- 因当前主站/API/us1 在 OVH，us2 在 hd0526，cn 经 DMIT 回源 hd0526，本次先将 hd0526 Frontdoor 作为非主入口发布并完成三轮检查，再发布 OVH Frontdoor。两台均为目标 revision、healthy、重启 0、无 OOM。
+- 本次提交没有后端、迁移或配置变化；唯一 Background 继续在 hd0526 以 `55550c553` healthy 运行且未重启，OVH 仍无 Background。这样避免为纯前端修复打断后台任务，下一次普通后端发布会自然统一版本。
+- OVH 宿主机 Caddyfile 与 Caddy 运行态都包含主站/API，运行态仍回源 `127.0.0.1:18084`；容器只读挂载仍指向旧 inode。本次严格只重建 Frontdoor，Caddy 启动时间保持 2026-08-09、重启 0，漂移没有被触发，但仍需后续正式收尾。
+- 上线后六个公开健康入口连续三轮 200/ok，三条测速探针均为 204 且 CORS、Timing-Allow-Origin、no-store 正确。三个全新系统 Chrome 会话首测都显示三条具体延迟，没有无法连接；一轮手动重测也全部成功，页面错误和控制台为空。
+- 功能验收后 hd0526 Frontdoor 在 2026-08-18 02:00:43 UTC 再次触发宿主机 global OOM：内核杀死匿名 RSS 约 4.57 GiB 的 `aether-gateway`，Docker 事件为 oom、exit 137、自动重启，重启计数升为 1。OVH Frontdoor 保持约 0.5 GiB、0 重启，主站/API/`us1` 未受影响。
+- 脱敏流量聚合显示 OOM 窗口的 880 条 Caddy 错误中 879 条来自 `us2` 同一来源，集中为高并发 POST `/v1/chat/completions` 和 `/v1/responses`；声明请求体合计约 2.33 GB、单请求最大约 66.8 MB，崩溃点失败请求重叠峰值约 281。该流量不是首页测速，也不是本次前端改动引入。
+- 当前 hd0526 没有 Swap、容器没有资源限制，公网请求并发门未启用且请求体上限为 256 MiB。代码已有 `AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS` 的 fail-fast 并发门，但启用会改变 `us2/cn` 高并发请求行为并需要仅重建 hd Frontdoor，需作为明确的应急运维变更处理。
+- 同一来源在第一次恢复后继续施压，hd Frontdoor 于 02:09:54 UTC 第二次被 global OOM 杀死；当时匿名 RSS 约 4.59 GiB。第二次 OOM 发生在 live 4 GiB cgroup hard cap 更新事件之前，不是硬限失效。
+- 应急配置提交 `e831993185c74c7b0c6c75e64f5e18c8d7a96fba` 已进入远端 `main`：只在 hd Frontdoor 设置 `AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS=4`、`mem_limit=4g`、`memswap_limit=4g`，并附独立运维文档；Background 不继承。
+- 新 Frontdoor 健康接口曾在异常来源持续时显示 4/4 饱和并快速拒绝 2,279 个请求，证明并发门在读取请求体前生效并阻止继续堆积，但异常来源仍会独占容量。
+- hd Caddy 已临时只对该单一 `CF-Connecting-IP` 访问 `us2 /v1/*` 返回 429；没有记录或提交来源地址。目标模拟为 429，普通来源不被封，健康为 200、测速为 204，`cn` 与 OVH 不受影响。
+- Caddy 单文件 bind mount 在宿主机覆盖后出现 inode 漂移；先用标准输入热加载立即生效，再只重建 hd Caddy 使宿主机文件、容器挂载与运行态一致。Frontdoor 与 Background 容器 ID 均未因此变化，OVH Caddy 未触碰。
+- 封源后的 3 分钟 10 次采样中，hd Frontdoor 内存稳定在约 31–32 MiB、在途 0、拒绝数固定 2,279、重启 0；保护生效后没有新内核 OOM。临时来源规则后续应迁到 Cloudflare WAF，长期仍需修复 chunked/无长度请求先无限完整缓冲和响应转换内存放大。
+- 最终独立复核再次确认当前止血状态通过：目标来源模拟429、普通来源401、健康200、测速204；hd新Frontdoor约31.5MiB且cgroup/kernel均无新OOM，Background与OVH未受影响，六公开入口和三测速入口连续正常。
+- 临时 429 规则同时存在于 hd 生产挂载文件和 Caddy 运行态，普通容器重启可保持；但远端 `main` 的 `deploy/hd0526/Caddyfile` 不含具体来源地址。未来若用仓库文件覆盖生产 Caddyfile，规则会丢失，因此必须先迁移到 Cloudflare WAF 或用不含个人地址的可配置规则正式化。
+## 2026-08-17：hd0526 Frontdoor 频繁重启诊断
+
+- `niffler-frontdoor` 当前镜像为 `55550c553c11556b1c9c0b71f7d683ff4d2066b6`，容器创建于 10:06（北京时间），截至首次检查累计自动重启 32 次；最近一次发生于 19:26 左右。
+- Docker 日志显示每次退出码均为 137，`unless-stopped` 策略随后自动拉起；这解释了用户观察到的短时无法连接。
+- 内核日志给出直接证据：每次均为全局 OOM，受害进程是该容器内的 `aether-gateway`；被杀时匿名常驻内存约 4.8–5.1 GiB，主机总内存约 5.8 GiB且没有 Swap。
+- 容器没有 `memory`、`memory_swap` 或 `memory_reservation` 限制，主机资源耗尽前不会被隔离；当前重启后的内存约 86 MiB，不能代表历史峰值。
+- 当前 cgroup `memory.events` 的 OOM 计数为 0，是因为它只记录当前重启后的进程期；内核日志和 Docker 的 137 退出时间线已经相互印证。
+- 生产 Background、Caddy 与当前 Frontdoor 都健康；公网入口和固定 IP 直连当前正常。问题是 Frontdoor 运行一段时间后内存异常增长，不是持续的 DNS、TLS、数据库或 Caddy 故障。
+- 当前部署标记提交 `55550c553` 本身只改了两份运维记录；需要沿提交祖先和上一次生产版本继续定位实际业务代码变化，不能把文档提交当成根因。
+- 初次代码检索显示网关存在完整的使用记录正文捕获、流式响应转换与上游响应聚合路径；尚不能仅凭关键词判定是哪一处泄漏，必须与 OOM 前请求类型对齐。
+- 最近两轮短周期 OOM 与图片同步请求直接对齐：19:04:23 的 OOM 前同秒完成 `/v1/images/edits`，19:05:02 的 OOM 前 1 秒又完成同一路径；19:26 的 OOM 前日志出现仍在等待上游的 `openai_image_sync_execution_idle`。
+- 图片同步 SSE 执行路径在 `execute_openai_image_sync_upstream_sse_candidate` 中把上游每个 chunk 无上限追加到 `body_bytes: Vec<u8>`；没有总字节上限，也不丢弃已经处理过的进度帧。
+- 同一路径还同时用 `OpenAiImageSyncProgressRecorder.buffer` 保留未完成 SSE 帧；遇到完整帧后会复制/解析该帧。最终又可能复制完整响应、Base64 编码为约 4/3 大小、解析为 JSON，并在 finalize/usage 结构间克隆，因此图片 SSE 的峰值远大于线上的最终图片大小。
+- 图片上游会返回 `response.image_generation_call.partial_image` 进度帧；如果每个进度帧都携带完整 Base64 图片快照，累计保留整条 SSE 会把多份大图片同时留在内存。该路径于提交 `3b4f27f76`（Add Codex image progress heartbeat）引入。
+- 同步图片总超时默认 900 秒，只限制时间，不限制响应字节数；在大进度流下，进程会先耗尽约 5.8 GiB 主机内存。
+- 过去 3 天的内核日志只在当前新容器（17 日 10:06 北京时间创建）记录到 32 次 OOM；现有证据支持问题在当前部署/当前负载组合下爆发，但旧容器已被替换，不能据此证明旧版本绝对没有同类隐患。
+- 12 小时日志中有 31 次 `openai_image_sync_execution_idle`，统一使用 900 秒总超时；图片编辑完成记录高频覆盖 07:00–09:00 的 OOM 密集时段。被 OOM 中断的图片请求不会留下完成访问日志，因此“完成数”只是真实触发量的下限。
+- PostgreSQL 候选表的 `extra_data.image_progress` 会记录 SSE 帧数、局部图数量和阶段，可用于聚合验证。首次连接到 rn-hybrid 宿主机 PostgreSQL 16 是错误实例；Niffler 使用独立 PostgreSQL 15.18。
+- 候选聚合显示成功图片任务通常为 14–18 个 SSE 事件，但 `partial_image_count` 只有 1；因此不能把根因简化为“很多局部图快照相加”。确定事实仍是图片同步完整 SSE 无界保留和多份复制，但 5 GiB 峰值还可能需要并发任务或 Responses 生图流共同放大。
+- OOM 生命周期统计反驳了“每个普通请求固定泄漏、缓慢累加”的单一解释：有的生命周期处理约 2.9 万请求后才 OOM，有的重启后 15–39 秒、只完成 58–135 个请求就再次 OOM。更符合某类大请求被客户端自动重试并在处理时瞬时占用数 GiB。
+- 重启后 30 秒抽样中 Frontdoor 内存在约 78–97 MiB 波动，没有随普通请求单调上涨；当前主机无内存压力。问题是特定请求/并发组合触发的瞬时峰值，而不是常驻基础内存持续增长。
+- Caddy 的 OOM 断连日志给出关键请求形状：并发活跃请求以 `/v1/responses` 为主，单请求体多次达到约 54 MiB，另有大量 8–40 MiB 请求；还观察到超过 100 MiB 的声明长度。相同约 54 MiB 请求在容器重启后继续出现，符合客户端自动重试放大重启循环。
+- 每次 OOM 时 Caddy 同秒断开的活跃请求约 5–53 个，声明请求体合计约 10–199 MiB；这些只是仍在 Caddy 等响应的请求，不包含已经进入后台任务或已结束入口读取的对象。
+- 网关代码默认硬限制为 64 MiB，但线上容器覆盖成 256 MiB；`check_request_content_length` 只提前拒绝声明长度超过 256 MiB 的请求。当前 `to_bytes` 仍传 `usize::MAX`，对无 Content-Length/分块传输只能在完整读入后再检查；观察到的 10–100+ MiB 请求都会进入 JSON 解析和多次规划克隆。
+- 生产数据库里的 `max_request_body_size=16777216`（16 MiB）目前只被用作使用记录正文捕获策略和隧道转发限制，主公网代理入口不使用该值做准入。系统配置展示的 16 MiB 与实际公网入口 256 MiB 行为不一致。
+- `/v1/responses` 请求体在入口被完整缓冲并解析为 `serde_json::Value`，后续决策与供应商请求构造存在多处完整 JSON 克隆；大段历史、Base64 图片或附件会同时以原始 Bytes、JSON String/Value、决策体和供应商体存在。多笔 10–54 MiB 请求并发时，内存放大到约 5 GiB具有直接代码路径。
+- Responses 图片终态跟踪器自身将未终止行限制为 64 KiB，普通流式正文审计缓冲在 basic 级别为 0；它们不是本次 5 GiB 峰值的主要无界容器。同步图片 SSE 的无界 `body_bytes` 仍是独立高风险放大器。
+- 线上保护现状补充：hd0526 的 Caddy 配置只做域名到 `niffler-frontdoor:8084` 的反代，没有入口请求体大小限制；Frontdoor 容器也没有 Docker memory/memory-swap/reservation 限制。
+- OVH 主机有约 30 GiB 内存且近 3 天没有内核 OOM，但最新检查未发现名为 `niffler-frontdoor` 的运行容器，不能未经确认就把它当成现成可切换的灾备实例。
+- 生产 `system_configs.max_request_body_size=16 MiB`，但它没有用于公网代理入口准入；线上容器实际设置 `AETHER_MAX_REQUEST_BODY_MB=256`，所以公网入口允许最多 256 MiB 的声明请求体进入。此前按“未设置、使用默认 64 MiB”的判断已被容器实值推翻并修正。这是配置语义与实际保护范围严重不一致。
+- 线上没有设置 `AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS`，启动参数也为空，因此 Frontdoor 的全局请求并发门当前未启用。
+- `buffer_and_normalize_request_body` 虽会先检查声明的 `Content-Length`，但随后使用 `to_bytes(body, usize::MAX)`；无 `Content-Length`/chunked 请求会先无界缓冲，之后才做 256 MiB 检查。压缩请求也会同时保留压缩体与解压结果一段时间。
+- 最新复核（2026-08-17 19:43 北京时间）：Frontdoor 已健康运行，当前约 91.9 MiB，但累计重启仍为 32；最近一次内核 OOM 是 19:26:01，进程匿名常驻内存约 4.80 GiB 后被杀，19:26:02 容器由 `unless-stopped` 自动拉起。
+- 部署源 `deploy/hd0526/docker-compose.yml` 明确写死 `AETHER_MAX_REQUEST_BODY_MB: "256"`，并未配置 `AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS`、`mem_limit` 或 `mem_reservation`。
+
+## 2026-08-20 hd0526 Background 告警初始事实
+
+- 用户截图显示监控在 00:34:47 和 00:46:44 两次报告“后台任务连续 3 次检查异常”，并在 00:43:05 和 00:47:55 分别报告恢复。
+- 告警呈短暂异常后自动恢复，尚不能据此判断容器重启、任务停摆或监控误报；需要对齐脚本判定条件、Docker 事件、应用日志和依赖状态。
+- 本轮按用户要求只查原因，不修改生产环境。
+- 监控脚本约每 60–90 秒执行一次，只要 `docker inspect` 看到 Background 不是 `running + healthy`（包括正常启动期的 `starting`），就累计一次失败；第三次才发送告警，恢复到 healthy 后发送恢复消息。告警并不读取业务任务错误数量。
+- 第一轮告警与数据库切换操作完全重合：旧 Background 在 00:30:47 开始停止，00:31:47 被强制结束；监控于 00:31:59、00:33:11、00:34:47 连续三轮看到异常，于 00:34:47 告警。
+- 新 Background 于 00:41:47 启动并在 0.2 秒内 ready，监控于 00:43:05 报恢复；随后该容器在 00:43:08 被计划内停止，00:43:18 以修正后的数据库连接重新创建。
+- 第二个 Background 从 00:43:18 到 00:46:25 处于初始化阶段；日志仅显示数据层已配置，直到 00:46:25 bootstrap 查询完成并 ready。监控在 00:44:11、00:45:21、00:46:44 把 `starting` 计为三次异常，于 00:46:44 告警，00:47:55 确认 healthy 后恢复。
+- 当前容器从 00:43:18 运行至今，healthy、RestartCount=0、OOM=false；最近 5 次本机健康检查均在约 0.05–0.07 秒完成，当前资源占用低。
+- 第二轮三分钟初始化等待与旧 rn-hybrid PgBouncer 精确对齐：旧池在 00:46:25.905 开始停止，00:46:26.156 完全退出；Background 在 00:46:25.974 ready，距离停止动作约 69 毫秒。结合迁移记录，旧池的空闲数据库后端保留了会话级迁移 advisory lock；连接释放后新 Background 立即完成初始化。
+- 旧 PgBouncer 当前为 inactive/disabled；它没有再次参与生产连接。
+- 当前 hd0526 宿主机无 OOM、hung task、I/O 或文件系统异常，PSI 也无内存/I/O 压力；可用内存约 4.7 GiB。根盘使用率约 85%、剩余约 15 GiB，属于需要继续关注的容量风险，但不是这两次 Background 告警原因。
+- 当前容器标签带 Compose replace 标记，`.env.background` 修改时间为 00:43:08，可确认第二次生命周期是数据库连接配置更新后的计划重建，不是 Docker 自动重启或随机崩溃。
+- Background 日志仍有既存的 `billing admission missing` 结算重试错误，00:43–01:05 约 400 条、每 10 分钟成批出现；它没有影响容器健康，与截图告警不是同一问题，但应单独跟进。
+- 当前 ColoCrossing PostgreSQL 15.18 主库 healthy、可写、重启 0；PgBouncer active，三个生产池无等待。Redis PONG/healthy、无拒绝连接或淘汰，该告警窗口日志也无 Redis 错误。因此没有证据支持新主库、Redis 或 WireGuard 持续抖动。
+- 00:47:55 恢复后监控状态一直为 `ok/0`，没有新的 Background 状态变更告警；当前五个公开健康入口最终均可返回 200。
+- 两组消息属于迁移期间真实的“容器暂时不 healthy”，但相对于计划维护是缺少维护静默产生的预期告警；不是监控脚本凭空误报，也不是后台业务任务连续失败三次。

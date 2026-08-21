@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres@sha256:67dc02dae6e27fa8b4333df9bfdf15265b33ce04186cd7e65c0b8fe67ee37b97
+    container_name: niffler-postgres15
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 5m
+    shm_size: 2gb
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - /opt/niffler-data/postgres15:/var/lib/postgresql/data
+      - /opt/niffler-data/postgres15-config/postgresql.conf:/etc/postgresql/custom/postgresql.conf:ro
+      - /opt/niffler-data/postgres15-config/pg_hba.conf:/etc/postgresql/custom/pg_hba.conf:ro
+      - /opt/niffler-data/postgres15-tls/server.crt:/etc/postgresql/tls/server.crt:ro
+      - /opt/niffler-data/postgres15-tls/server.key:/etc/postgresql/tls/server.key:ro
+      - /opt/niffler-data/secrets/postgres-password:/run/secrets/postgres-password:ro
+      - /opt/niffler-data/secrets/source-replication.pgpass:/run/secrets/replication.pgpass:ro
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/custom/postgresql.conf
+      - -c
+      - hba_file=/etc/postgresql/custom/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 55432 -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

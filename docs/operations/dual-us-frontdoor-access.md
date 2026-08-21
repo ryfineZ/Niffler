@@ -83,3 +83,44 @@ cn.niffler.org
 - OVH 证书或 Caddy 异常时恢复修改前的 Caddyfile 和防火墙规则。
 - hd0526 异常时恢复修改前的 Caddyfile；该操作不影响现有域名。
 - 前端异常时回退首页测速组件；三条 API 入口仍可独立使用。
+
+## 2026-08-17 hd0526 OOM 后临时主入口切换
+
+### 目标
+
+- 因 hd0526 Frontdoor 在大请求并发下频繁触发宿主机 OOM，将默认入口 `api.niffler.org` 和 `niffler.org` 临时切到 OVH。
+- `us1.niffler.org` 继续由 OVH 提供；`us2.niffler.org` 和 `cn.niffler.org` 保持原线路不变，继续作为 hd0526/DMIT 专线入口。
+- hd0526 Frontdoor、唯一 Background 和 InfiniteCanvas 保持运行，既用于专线入口，也作为主站/API 快速回退目标。
+
+### 行为变化
+
+- OVH Caddy 恢复 `api.niffler.org` 与 `niffler.org` 站点，使用现有 Cloudflare Origin CA 证书。
+- `api.niffler.org` 的 A 记录从 `23.19.228.223` 改为 `15.204.120.221`，同时由灰云改为橙云；`niffler.org` 保持橙云，仅将源站从 `23.19.228.223` 改为 `15.204.120.221`。
+- 主站 `/InfiniteCanvas/*` 暂时通过 OVH 转发到 hd0526，其余主站和 API 请求由 OVH Frontdoor 处理。
+
+### 影响范围与非目标
+
+- Background 仍只在 hd0526 运行，不在 OVH 启动第二份后台任务。
+- 不修改数据库、Redis、`us2`、`cn`、DMIT 或 hd0526 Caddy 配置。
+- Cloudflare 代理会成为 `api.niffler.org` 的新入口层；客户端看到的源站地址、TLS 终止和请求体平台限制会随之变化。
+
+### 切换与验证
+
+1. 确认 OVH 与 hd0526 运行同一生产镜像，OVH Frontdoor、Caddy、数据库和 Redis 连接健康。
+2. 备份 OVH Caddyfile，恢复主站/API 站点，先完成 Caddy 配置校验和本机固定 Host 验证。
+3. 先切 `api.niffler.org`，验证健康接口、认证错误语义、连续公开请求和 OVH 日志；通过后再切 `niffler.org`。
+4. 验证主站首页、`/_gateway/health`、`/InfiniteCanvas/`、公开 API、OVH 资源和 5xx；确认 hd0526 默认入口请求下降。
+
+### 回退
+
+- 任一步出现持续 5xx、登录异常、TLS 错误或明显延迟升高，立即停止后续步骤。
+- `api.niffler.org` 恢复为 `23.19.228.223`、`proxied=false`、TTL 300；`niffler.org` 恢复为 `23.19.228.223`、`proxied=true`、自动 TTL。
+- DNS 回退验证后，OVH 主站/API Caddy 站点可以保留作为后续快速故障切换能力；若其自身异常，则恢复切换前保存的 OVH Caddyfile并热重载。
+
+### 2026-08-17 切换结果
+
+- OVH 与 hd0526 均运行生产镜像 `niffler-app:55550c553c11556b1c9c0b71f7d683ff4d2066b6`，镜像 ID 完全一致；当前 `main` 相比该镜像提交只增加运维记录，没有新的应用二进制变化，因此无需更新 OVH。
+- OVH 恢复 `api.niffler.org` 和 `niffler.org` Caddy 站点并无中断热加载；切换前配置保存在 `/root/niffler-ovh-cutover-20260817T120455Z`。
+- `api.niffler.org` 与 `niffler.org` 的 Cloudflare A 记录均已指向 `15.204.120.221`，保持橙云和自动 TTL。两次唯一 trace 分别只出现在 OVH Frontdoor 日志，hd0526 为 0，确认不是仅修改控制面而是实际完成回源切换。
+- 根域名和 API 首轮各连续 10 次、间隔复核各连续 5 次健康检查全部返回 200；首页、InfiniteCanvas、登录错误语义、`us1`、`us2`、`cn` 和 `ovh-origin` 均符合预期。北京时间 20:19 复核时 OVH 已完成 152 条请求，网关 5xx、Caddy error 和内核 OOM 均为 0。
+- OVH Frontdoor 与 Caddy 均未重启，Frontdoor 内存约 318 MiB；hd0526 Frontdoor 和唯一 Background 继续健康运行，作为专线入口和快速回退目标。

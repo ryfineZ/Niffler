@@ -18,6 +18,8 @@ BACKUP_ID=""
 OBJECT_KEY=""
 BACKUP_BYTES=""
 BACKUP_SHA256=""
+DUMP_CLIENT_PID=""
+CONTAINER_DUMP_PID_FILE=""
 
 die() {
     echo "ERROR: $*" >&2
@@ -56,10 +58,47 @@ cleanup_local_files() {
     done
 }
 
+stop_dump_process() {
+    if [ -n "$CONTAINER_DUMP_PID_FILE" ] \
+        && docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+        docker exec "$POSTGRES_CONTAINER" sh -c '
+            pid_file="$1"
+            if [ -f "$pid_file" ]; then
+                dump_pid="$(cat "$pid_file")"
+                case "$dump_pid" in
+                    ""|*[!0-9]*) ;;
+                    *) kill -TERM "$dump_pid" >/dev/null 2>&1 || true ;;
+                esac
+                rm -f -- "$pid_file"
+            fi
+        ' sh "$CONTAINER_DUMP_PID_FILE" >/dev/null 2>&1 || true
+    fi
+
+    if [ -n "$DUMP_CLIENT_PID" ] && kill -0 "$DUMP_CLIENT_PID" >/dev/null 2>&1; then
+        kill -TERM "$DUMP_CLIENT_PID" >/dev/null 2>&1 || true
+        wait "$DUMP_CLIENT_PID" >/dev/null 2>&1 || true
+    fi
+}
+
+handle_signal() {
+    local signal_name="$1"
+    local exit_code=1
+
+    trap - HUP INT TERM
+    case "$signal_name" in
+        HUP) exit_code=129 ;;
+        INT) exit_code=130 ;;
+        TERM) exit_code=143 ;;
+    esac
+    stop_dump_process
+    exit "$exit_code"
+}
+
 finish() {
     local exit_code=$?
 
     trap - EXIT
+    stop_dump_process
     cleanup_local_files
     if [ "$exit_code" -eq 0 ]; then
         write_status success
@@ -70,6 +109,9 @@ finish() {
 }
 
 trap finish EXIT
+trap 'handle_signal HUP' HUP
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
 
 if [ "$EUID" -ne 0 ]; then
     die "must run as root"
@@ -136,6 +178,7 @@ month="$(date -u '+%m')"
 BACKUP_PATH="$BACKUP_DIR/aether-$BACKUP_ID.dump"
 PARTIAL_PATH="$BACKUP_PATH.partial"
 CHECKSUM_PATH="$BACKUP_PATH.sha256"
+CONTAINER_DUMP_PID_FILE="/tmp/niffler-postgres-backup-$BACKUP_ID.pid"
 OBJECT_KEY="postgres/aether/daily/$year/$month/aether-$BACKUP_ID.dump"
 
 if [ -e "$BACKUP_PATH" ] || [ -e "$PARTIAL_PATH" ] || [ -e "$CHECKSUM_PATH" ]; then
@@ -145,14 +188,25 @@ fi
 write_status running
 echo "Starting PostgreSQL backup $BACKUP_ID"
 
-docker exec "$POSTGRES_CONTAINER" nice -n 10 ionice -c 2 -n 7 pg_dump \
-    -U "$POSTGRES_USER" \
-    -d "$POSTGRES_DATABASE" \
-    --format=custom \
-    --compress=6 \
-    --no-owner \
-    --no-privileges \
-    > "$PARTIAL_PATH"
+docker exec "$POSTGRES_CONTAINER" sh -c '
+    pid_file="$1"
+    shift
+    printf "%s\n" "$$" > "$pid_file"
+    exec "$@"
+' sh "$CONTAINER_DUMP_PID_FILE" \
+    nice -n 10 ionice -c 2 -n 7 pg_dump \
+        -U "$POSTGRES_USER" \
+        -d "$POSTGRES_DATABASE" \
+        --format=custom \
+        --compress=6 \
+        --no-owner \
+        --no-privileges \
+        > "$PARTIAL_PATH" &
+DUMP_CLIENT_PID=$!
+wait "$DUMP_CLIENT_PID"
+DUMP_CLIENT_PID=""
+docker exec "$POSTGRES_CONTAINER" rm -f -- "$CONTAINER_DUMP_PID_FILE"
+CONTAINER_DUMP_PID_FILE=""
 
 if [ ! -s "$PARTIAL_PATH" ]; then
     die "pg_dump produced an empty backup"

@@ -2,6 +2,10 @@
 	encode gzip zstd
 }
 
+(niffler_origin_tls) {
+	tls /etc/caddy/tls/niffler-origin.pem /etc/caddy/tls/niffler-origin.key
+}
+
 (niffler_latency_probe) {
 	@latency_probe path /__niffler_latency
 	handle @latency_probe {
@@ -17,6 +21,33 @@
 us1.niffler.org {
 	import niffler_common
 	import niffler_latency_probe
+
+	handle {
+		reverse_proxy 127.0.0.1:18084
+	}
+}
+
+api.niffler.org {
+	import niffler_common
+	import niffler_origin_tls
+	reverse_proxy 127.0.0.1:18084
+}
+
+niffler.org {
+	import niffler_common
+	import niffler_origin_tls
+
+	@infinite_canvas_root path /InfiniteCanvas
+	redir @infinite_canvas_root /InfiniteCanvas/ 308
+
+	handle /InfiniteCanvas/* {
+		reverse_proxy {$INFINITE_CANVAS_ORIGIN} {
+			header_up Host niffler.org
+			transport http {
+				tls_server_name niffler.org
+			}
+		}
+	}
 
 	handle {
 		reverse_proxy 127.0.0.1:18084
