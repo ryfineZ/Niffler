@@ -2027,7 +2027,7 @@ async fn execute_execution_runtime_sync_impl(
     let _execution_result_request_id = result.request_id;
     let candidate_id_owned = result.candidate_id;
     let request_id = Some(plan_request_id.as_str());
-    let request_id_for_log = short_request_id(request_id.unwrap_or("-"));
+    let request_id_for_log = short_request_id(plan_request_id.as_str());
     let candidate_id = candidate_id_owned
         .as_deref()
         .or(plan_candidate_id.as_deref());
