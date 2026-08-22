@@ -719,7 +719,7 @@ pub(crate) fn normalize_sales_multiplier(value: f64) -> Result<f64, String> {
     if value.is_finite() && value >= 0.0 {
         Ok(value)
     } else {
-        Err("销售倍率必须大于等于 0".to_string())
+        Err("折扣必须大于等于 0".to_string())
     }
 }
 
@@ -730,14 +730,14 @@ pub(crate) fn normalize_model_sales_multipliers(
         return Ok(None);
     };
     let Some(object) = value.as_object() else {
-        return Err("模型销售倍率必须是对象".to_string());
+        return Err("模型折扣必须是对象".to_string());
     };
     for (model_id, multiplier) in object {
         if model_id.trim().is_empty() {
             return Err("模型ID不能为空".to_string());
         }
         let Some(multiplier) = multiplier.as_f64() else {
-            return Err("模型销售倍率必须是数字".to_string());
+            return Err("模型折扣必须是数字".to_string());
         };
         normalize_sales_multiplier(multiplier)?;
     }

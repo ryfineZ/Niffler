@@ -3,8 +3,9 @@ use super::{
     build_auth_json_response, build_auth_wallet_summary_payload,
     decrypt_catalog_secret_with_fallbacks, encrypt_catalog_secret_with_fallbacks, handle_auth_me,
     handle_users_me_api_key_install_session_create, query_param_optional_bool, query_param_value,
-    resolve_authenticated_local_user, sanitize_public_model_config_for_user, unix_secs_to_rfc3339,
-    users_me_api_key_install_sessions_path_matches, validate_auth_register_password, AppState,
+    resolve_authenticated_local_user, resolve_user_portal, sanitize_public_model_config_for_user,
+    unix_secs_to_rfc3339, users_me_api_key_install_sessions_path_matches,
+    validate_auth_register_password, validate_official_usd_registration_group, AppState,
     AuthenticatedLocalUserContext, GatewayPublicRequestContext, PUBLIC_CAPABILITY_DEFINITIONS,
 };
 use crate::admin_api::build_admin_endpoint_health_status_payload;

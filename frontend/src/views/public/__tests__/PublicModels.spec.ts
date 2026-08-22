@@ -104,6 +104,28 @@ describe('public model marketplace', () => {
     expect(root.textContent).toMatch(/US\$10(?:\.00)?|\$10(?:\.00)?/)
   })
 
+  it('uses discount terminology and adjustable pricing for the dedicated portal', async () => {
+    getPublicModelGroupCatalog.mockResolvedValue({
+      groups: [{
+        id: 'partner-plan',
+        name: '专属方案',
+        discount: 1.2,
+        model_discounts: {},
+        allowed_models: ['gpt-5.1'],
+        allowed_models_mode: 'specific',
+        models: [catalogModel()],
+      }],
+    })
+
+    const root = await mountMarketplace()
+
+    expect(root.textContent).toContain('折扣 1.2')
+    expect(root.textContent).not.toContain('×1.2')
+    expect(root.textContent).toContain('创建订单时的当前可用汇率')
+    expect(root.textContent).not.toContain('1 元人民币 = 1 美元余额')
+    expect(root.textContent).toMatch(/US\$12(?:\.00)?|\$12(?:\.00)?/)
+  })
+
   it('classifies and filters models by manufacturer independently of the route provider', async () => {
     getPublicModelGroupCatalog.mockResolvedValue({
       groups: [{

@@ -13,9 +13,9 @@ use super::super::support_payment::payment_gateway::{
 use super::{
     build_auth_error_response, build_auth_json_response, build_wallet_payload,
     build_wallet_recharge_storage_unavailable_response, http, parse_wallet_limit,
-    parse_wallet_offset, resolve_authenticated_local_user, unix_secs_to_rfc3339,
-    wallet_normalize_optional_string_field, AppState, Body, GatewayPublicRequestContext, Response,
-    WALLET_SAFE_GATEWAY_RESPONSE_KEYS,
+    parse_wallet_offset, resolve_authenticated_local_user, resolve_payment_exchange_rate,
+    unix_secs_to_rfc3339, wallet_normalize_optional_string_field, AppState, Body,
+    GatewayPublicRequestContext, Response, WALLET_SAFE_GATEWAY_RESPONSE_KEYS,
 };
 #[cfg(test)]
 use super::{
@@ -379,7 +379,24 @@ pub(super) async fn handle_wallet_create_recharge(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
             }
         };
-        let pay_amount = (payload.amount_usd * config.usd_exchange_rate * 100.0).round() / 100.0;
+        let exchange_rate = match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    detail,
+                    false,
+                )
+            }
+        };
+        let pay_amount = (payload.amount_usd * exchange_rate.rate * 100.0).round() / 100.0;
         let Some(callback_base_url) = epay_callback_base_url(
             config.callback_base_url.as_deref(),
             headers,
@@ -391,7 +408,7 @@ pub(super) async fn handle_wallet_create_recharge(
                 false,
             );
         };
-        let checkout = build_epay_checkout_url(
+        let mut checkout = build_epay_checkout_url(
             &config,
             &EpayCheckoutInput {
                 order_no: order_no.clone(),
@@ -402,6 +419,7 @@ pub(super) async fn handle_wallet_create_recharge(
                 return_url: format!("{callback_base_url}/api/payment/epay/return"),
             },
         );
+        exchange_rate.enrich_payload(&mut checkout);
         let outcome = match state
             .create_wallet_recharge_order(
                 aether_data::repository::wallet::CreateWalletRechargeOrderInput {
@@ -410,7 +428,7 @@ pub(super) async fn handle_wallet_create_recharge(
                     amount_usd: payload.amount_usd,
                     pay_amount: Some(pay_amount),
                     pay_currency: Some(config.pay_currency.clone()),
-                    exchange_rate: Some(config.usd_exchange_rate),
+                    exchange_rate: Some(exchange_rate.rate),
                     payment_method: "epay".to_string(),
                     payment_provider: Some("epay".to_string()),
                     payment_channel: Some(payment_channel),
@@ -476,7 +494,24 @@ pub(super) async fn handle_wallet_create_recharge(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
             }
         };
-        let pay_amount = (payload.amount_usd * config.usd_exchange_rate * 100.0).round() / 100.0;
+        let exchange_rate = match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    detail,
+                    false,
+                )
+            }
+        };
+        let pay_amount = (payload.amount_usd * exchange_rate.rate * 100.0).round() / 100.0;
         let Some(callback_base_url) = dodopay_callback_base_url(
             config.callback_base_url.as_deref(),
             headers,
@@ -496,15 +531,19 @@ pub(super) async fn handle_wallet_create_recharge(
                     amount_usd: payload.amount_usd,
                     pay_amount: Some(pay_amount),
                     pay_currency: Some(config.pay_currency.clone()),
-                    exchange_rate: Some(config.usd_exchange_rate),
+                    exchange_rate: Some(exchange_rate.rate),
                     payment_method: "dodopay".to_string(),
                     payment_provider: Some("dodopay".to_string()),
                     payment_channel: Some(payment_channel.clone()),
                     gateway_order_id: order_no.clone(),
-                    gateway_response: json!({
+                    gateway_response: {
+                        let mut payload = json!({
                         "gateway": "dodopay",
                         "provider_order_status": "pending_checkout",
-                    }),
+                        });
+                        exchange_rate.enrich_payload(&mut payload);
+                        payload
+                    },
                     order_no: order_no.clone(),
                     expires_at_unix_secs: expires_at.timestamp().max(0) as u64,
                 },
@@ -565,11 +604,13 @@ pub(super) async fn handle_wallet_create_recharge(
                 return build_auth_error_response(http::StatusCode::BAD_GATEWAY, detail, false);
             }
         };
+        let mut gateway_response = checkout.payment_instructions.clone();
+        exchange_rate.enrich_payload(&mut gateway_response);
         let updated_order = match state
             .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
                 order_id: pending_order.id.clone(),
                 gateway_order_id: checkout.gateway_order_id.clone(),
-                gateway_response: checkout.payment_instructions.clone(),
+                gateway_response,
             })
             .await
         {
@@ -652,34 +693,67 @@ pub(super) async fn handle_wallet_recharge_options(
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
 ) -> Response<Body> {
-    if let Err(response) = resolve_authenticated_local_user(state, request_context, headers).await {
-        return response;
-    }
+    let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
     let mut methods = Vec::new();
+    let mut exchange_rate_error = None;
     if let Ok(config) = load_epay_config(state).await {
-        for channel in configured_epay_channels(&config) {
-            methods.push(json!({
-                "payment_method": "epay",
-                "payment_provider": "epay",
-                "payment_channel": channel.channel,
-                "display_name": channel.display_name,
-                "pay_currency": config.pay_currency,
-                "usd_exchange_rate": config.usd_exchange_rate,
-                "min_recharge_usd": config.min_recharge_usd,
-            }));
+        match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(exchange_rate) => {
+                for channel in configured_epay_channels(&config) {
+                    let mut option = json!({
+                        "payment_method": "epay",
+                        "payment_provider": "epay",
+                        "payment_channel": channel.channel,
+                        "display_name": channel.display_name,
+                        "pay_currency": config.pay_currency,
+                        "min_recharge_usd": config.min_recharge_usd,
+                    });
+                    exchange_rate.enrich_payload(&mut option);
+                    methods.push(option);
+                }
+            }
+            Err(detail) => exchange_rate_error = Some(detail),
         }
     }
     if let Ok(config) = load_dodopay_config(state).await {
-        for channel in configured_dodopay_channels() {
-            methods.push(json!({
-                "payment_method": "dodopay",
-                "payment_provider": "dodopay",
-                "payment_channel": channel.channel,
-                "display_name": format!("DoDoPay · {}", channel.display_name),
-                "pay_currency": config.pay_currency,
-                "usd_exchange_rate": config.usd_exchange_rate,
-                "min_recharge_usd": config.min_recharge_usd,
-            }));
+        match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(exchange_rate) => {
+                for channel in configured_dodopay_channels() {
+                    let mut option = json!({
+                        "payment_method": "dodopay",
+                        "payment_provider": "dodopay",
+                        "payment_channel": channel.channel,
+                        "display_name": format!("DoDoPay · {}", channel.display_name),
+                        "pay_currency": config.pay_currency,
+                        "min_recharge_usd": config.min_recharge_usd,
+                    });
+                    exchange_rate.enrich_payload(&mut option);
+                    methods.push(option);
+                }
+            }
+            Err(detail) => exchange_rate_error = Some(detail),
+        }
+    }
+    if methods.is_empty() {
+        if let Some(detail) = exchange_rate_error {
+            return build_auth_error_response(http::StatusCode::SERVICE_UNAVAILABLE, detail, false);
         }
     }
     build_auth_json_response(http::StatusCode::OK, json!({ "items": methods }), None)

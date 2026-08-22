@@ -32,6 +32,8 @@ mod support_billing;
 mod support_ccswitch_usage;
 #[path = "support/dashboard.rs"]
 mod support_dashboard;
+#[path = "support/exchange_rate.rs"]
+mod support_exchange_rate;
 #[path = "support/install.rs"]
 mod support_install;
 #[path = "support/model_group_catalog.rs"]
@@ -44,6 +46,8 @@ mod support_monitoring;
 mod support_oauth;
 #[path = "support/payment.rs"]
 mod support_payment;
+#[path = "support/portal.rs"]
+mod support_portal;
 #[path = "support/test_connection.rs"]
 mod support_test_connection;
 #[path = "support/user_me.rs"]
@@ -53,6 +57,7 @@ mod support_wallet;
 
 pub(crate) use self::support_announcements::maybe_build_local_admin_announcements_response;
 pub(crate) use self::support_models::matches_model_mapping_for_models;
+pub(crate) use self::support_portal::{resolve_user_portal, PortalContext};
 
 use self::support_announcements::{
     maybe_build_local_announcement_user_response, maybe_build_local_public_announcements_response,
@@ -71,6 +76,7 @@ use self::support_auth::{
 use self::support_billing::maybe_build_local_billing_response;
 use self::support_ccswitch_usage::maybe_build_local_ccswitch_usage_response;
 use self::support_dashboard::maybe_build_local_dashboard_response;
+use self::support_exchange_rate::resolve_payment_exchange_rate;
 pub(crate) use self::support_install::{
     base_url_from_request, build_api_key_install_session_response,
     build_proxy_node_install_session_response, CreateApiKeyInstallSessionRequest,
@@ -86,6 +92,10 @@ use self::support_models::{
 use self::support_monitoring::maybe_build_local_user_monitoring_response;
 use self::support_oauth::maybe_build_local_oauth_response;
 use self::support_payment::maybe_build_local_payment_callback_response;
+use self::support_portal::{
+    build_portal_mismatch_response, resolve_request_portal,
+    validate_official_usd_registration_group,
+};
 use self::support_test_connection::maybe_build_local_test_connection_response;
 use self::support_user_me::maybe_build_local_users_me_response;
 use self::support_wallet::{
@@ -214,14 +224,26 @@ pub(crate) async fn maybe_build_local_public_support_response(
         if decision.route_kind.as_deref() == Some("registration_settings")
             && request_context.request_path == "/api/auth/registration-settings"
         {
-            let payload = build_auth_registration_settings_payload(state).await.ok()?;
+            let mut payload = build_auth_registration_settings_payload(state).await.ok()?;
+            let portal = resolve_request_portal(state, request_context, headers)
+                .await
+                .ok()?;
+            payload["portal"] = portal.public_payload();
             return Some(Json(payload).into_response());
         }
 
         if decision.route_kind.as_deref() == Some("settings")
             && request_context.request_path == "/api/auth/settings"
         {
-            let payload = build_auth_settings_payload(state).await.ok()?;
+            let mut payload = build_auth_settings_payload(state).await.ok()?;
+            let portal = resolve_request_portal(state, request_context, headers)
+                .await
+                .ok()?;
+            if portal.is_official_usd() {
+                payload["ldap_enabled"] = json!(false);
+                payload["ldap_exclusive"] = json!(false);
+            }
+            payload["portal"] = portal.public_payload();
             return Some(Json(payload).into_response());
         }
     }
@@ -235,14 +257,17 @@ pub(crate) async fn maybe_build_local_public_support_response(
         if decision.route_kind.as_deref() == Some("site_info")
             && request_context.request_path == "/api/public/site-info"
         {
-            let site_name = state
+            let portal = resolve_request_portal(state, request_context, headers)
+                .await
+                .ok()?;
+            let default_site_name = state
                 .read_system_config_json_value("site_name")
                 .await
                 .ok()
                 .flatten()
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .unwrap_or_else(|| "Niffler".to_string());
-            let site_subtitle = state
+            let default_site_subtitle = state
                 .read_system_config_json_value("site_subtitle")
                 .await
                 .ok()
@@ -251,8 +276,9 @@ pub(crate) async fn maybe_build_local_public_support_response(
                 .unwrap_or_else(|| "AI Gateway".to_string());
             return Some(
                 Json(json!({
-                    "site_name": site_name,
-                    "site_subtitle": site_subtitle,
+                    "site_name": portal.site_name.as_deref().unwrap_or(&default_site_name),
+                    "site_subtitle": portal.site_subtitle.as_deref().unwrap_or(&default_site_subtitle),
+                    "portal": portal.public_payload(),
                 }))
                 .into_response(),
             );
@@ -356,7 +382,9 @@ pub(crate) async fn maybe_build_local_public_support_response(
             {
                 return None;
             }
-            return Some(build_public_model_group_catalog_response(state).await);
+            return Some(
+                build_public_model_group_catalog_response(state, request_context, headers).await,
+            );
         }
 
         if decision.route_kind.as_deref() == Some("model_groups")
@@ -365,19 +393,43 @@ pub(crate) async fn maybe_build_local_public_support_response(
             if !state.has_user_data_reader() {
                 return None;
             }
+            let portal = resolve_request_portal(state, request_context, headers)
+                .await
+                .ok()?;
+            let official_group_id = if portal.is_official_usd() {
+                Some(
+                    validate_official_usd_registration_group(state, &portal)
+                        .await
+                        .ok()?,
+                )
+            } else {
+                None
+            };
+            let use_discount_terms = portal.is_official_usd();
             let groups = state.list_user_groups().await.ok()?;
             let groups = groups
                 .into_iter()
-                .filter(|group| group.visibility == "public")
+                .filter(|group| match official_group_id.as_deref() {
+                    Some(group_id) => group.id == group_id,
+                    None => group.visibility == "public",
+                })
                 .map(|group| {
-                    json!({
+                    let sales_multiplier = group.sales_multiplier;
+                    let model_sales_multipliers = group.model_sales_multipliers;
+                    let mut payload = json!({
                         "id": group.id,
                         "name": group.name,
-                        "sales_multiplier": group.sales_multiplier,
-                        "model_sales_multipliers": group.model_sales_multipliers,
                         "allowed_models": group.allowed_models,
                         "allowed_models_mode": group.allowed_models_mode,
-                    })
+                    });
+                    if use_discount_terms {
+                        payload["discount"] = json!(sales_multiplier);
+                        payload["model_discounts"] = json!(model_sales_multipliers);
+                    } else {
+                        payload["sales_multiplier"] = json!(sales_multiplier);
+                        payload["model_sales_multipliers"] = json!(model_sales_multipliers);
+                    }
+                    payload
                 })
                 .collect::<Vec<_>>();
             return Some(Json(json!({ "groups": groups })).into_response());

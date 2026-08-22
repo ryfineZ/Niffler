@@ -177,6 +177,9 @@ export interface WalletRechargeOption {
   payment_channel?: string
   pay_currency?: string
   usd_exchange_rate?: number
+  exchange_rate_source?: string
+  exchange_rate_as_of?: string | null
+  exchange_rate_live?: boolean
   min_recharge_usd?: number
 }
 

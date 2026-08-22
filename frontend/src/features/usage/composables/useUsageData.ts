@@ -519,6 +519,7 @@ export function useUsageData(options: UseUsageDataOptions) {
           official_cost: record.official_cost ?? existing.official_cost,
           cost: Number.isFinite(record.cost) ? record.cost : existing.cost,
           sales_multiplier: record.sales_multiplier ?? existing.sales_multiplier,
+          discount: record.discount ?? existing.discount,
           actual_cost: record.actual_cost ?? existing.actual_cost,
           charge_breakdown: record.charge_breakdown ?? existing.charge_breakdown,
           response_time_ms: existing.response_time_ms ?? record.response_time_ms,

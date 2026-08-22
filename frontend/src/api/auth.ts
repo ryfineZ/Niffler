@@ -17,6 +17,15 @@ export interface LoginResponse {
   role?: string
 }
 
+export interface PortalContext {
+  id: 'default' | 'official_usd' | string
+  display_currency: string
+  pricing_mode: 'default' | 'official_api' | string
+  discount?: number | null
+  model_discounts?: Record<string, number> | null
+  canonical_url?: string | null
+}
+
 export interface UserPreferences {
   theme?: 'light' | 'dark' | 'auto'
   language?: string
@@ -87,6 +96,7 @@ export interface RegisterResponse {
   email?: string
   username: string
   message: string
+  portal?: PortalContext
 }
 
 export interface RegistrationSettingsResponse {
@@ -99,6 +109,7 @@ export interface RegistrationSettingsResponse {
   turnstile_required_actions?: string[]
   privacy_policy?: RegistrationPrivacyPolicySettings
   contact_us?: ContactUsSettings
+  portal?: PortalContext
 }
 
 export interface RegistrationPrivacyPolicySettings {
@@ -117,6 +128,7 @@ export interface AuthSettingsResponse {
   local_enabled: boolean
   ldap_enabled: boolean
   ldap_exclusive: boolean
+  portal?: PortalContext
 }
 
 export interface BillingSummary {
@@ -150,6 +162,7 @@ export interface User {
   last_login_at?: string
   preferences?: UserPreferences
   stats?: UserStats
+  portal?: PortalContext
 }
 
 export const authApi = {

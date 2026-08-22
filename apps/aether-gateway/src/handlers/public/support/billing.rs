@@ -9,7 +9,8 @@ use super::support_payment::payment_epay::{
 };
 use super::{
     build_auth_error_response, build_auth_json_response, resolve_authenticated_local_user,
-    sanitize_wallet_gateway_response, unix_secs_to_rfc3339, AppState, GatewayPublicRequestContext,
+    resolve_payment_exchange_rate, sanitize_wallet_gateway_response, unix_secs_to_rfc3339,
+    AppState, GatewayPublicRequestContext,
 };
 use aether_data::repository::wallet::{
     CancelPaymentOrderInput, UpdatePendingPaymentOrderGatewayInput, WalletMutationOutcome,
@@ -410,10 +411,27 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
             }
         };
+        let exchange_rate = match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    detail,
+                    false,
+                )
+            }
+        };
         let (plan_amount_usd, plan_pay_amount) = match compute_dodopay_plan_payment_amounts(
             &plan,
             &config.pay_currency,
-            config.usd_exchange_rate,
+            exchange_rate.rate,
         ) {
             Ok(value) => value,
             Err(detail) => {
@@ -439,10 +457,11 @@ pub(super) async fn handle_billing_plan_checkout(
                 false,
             );
         };
-        let pending_gateway_response = json!({
+        let mut pending_gateway_response = json!({
             "gateway": "dodopay",
             "provider_order_status": "pending_checkout",
         });
+        exchange_rate.enrich_payload(&mut pending_gateway_response);
         let outcome = match state
             .create_plan_purchase_order(
                 aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
@@ -451,7 +470,7 @@ pub(super) async fn handle_billing_plan_checkout(
                     amount_usd: plan_amount_usd,
                     pay_amount: plan_pay_amount,
                     pay_currency: config.pay_currency.clone(),
-                    exchange_rate: config.usd_exchange_rate,
+                    exchange_rate: exchange_rate.rate,
                     payment_method: checkout_request.payment_method.clone(),
                     payment_provider: Some(checkout_request.payment_provider.clone()),
                     payment_channel: Some(payment_channel.clone()),
@@ -550,11 +569,13 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_GATEWAY, detail, false);
             }
         };
+        let mut gateway_response = checkout.payment_instructions.clone();
+        exchange_rate.enrich_payload(&mut gateway_response);
         let updated_order = match state
             .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
                 order_id: pending_order.id.clone(),
                 gateway_order_id: checkout.gateway_order_id.clone(),
-                gateway_response: checkout.payment_instructions.clone(),
+                gateway_response,
             })
             .await
         {
@@ -631,6 +652,19 @@ pub(super) async fn handle_billing_plan_checkout(
             return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
         }
     };
+    let resolved_exchange_rate = match resolve_payment_exchange_rate(
+        state,
+        &auth.user.id,
+        &config.pay_currency,
+        config.usd_exchange_rate,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(detail) => {
+            return build_auth_error_response(http::StatusCode::SERVICE_UNAVAILABLE, detail, false)
+        }
+    };
     let payment_channel =
         match resolve_epay_channel(&config, checkout_request.payment_channel.as_deref()) {
             Ok(value) => value,
@@ -638,13 +672,16 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
             }
         };
-    let (plan_amount_usd, plan_pay_amount) =
-        match compute_plan_payment_amounts(&plan, &config.pay_currency, config.usd_exchange_rate) {
-            Ok(value) => value,
-            Err(detail) => {
-                return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
-            }
-        };
+    let (plan_amount_usd, plan_pay_amount) = match compute_plan_payment_amounts(
+        &plan,
+        &config.pay_currency,
+        resolved_exchange_rate.rate,
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
+        }
+    };
     let Some(callback_base_url) = epay_callback_base_url(
         config.callback_base_url.as_deref(),
         headers,
@@ -657,12 +694,13 @@ pub(super) async fn handle_billing_plan_checkout(
         );
     };
     let pay_currency = config.pay_currency.clone();
-    let exchange_rate = config.usd_exchange_rate;
+    let exchange_rate = resolved_exchange_rate.rate;
     let gateway_order_id = order_no.clone();
-    let pending_gateway_response = json!({
+    let mut pending_gateway_response = json!({
         "gateway": "epay",
         "provider_order_status": "pending_checkout",
     });
+    resolved_exchange_rate.enrich_payload(&mut pending_gateway_response);
     let outcome = match state
         .create_plan_purchase_order(
             aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
@@ -737,7 +775,7 @@ pub(super) async fn handle_billing_plan_checkout(
             false,
         );
     };
-    let checkout = build_epay_checkout_url(
+    let mut checkout = build_epay_checkout_url(
         &config,
         &EpayCheckoutInput {
             order_no: order_no.clone(),
@@ -748,6 +786,7 @@ pub(super) async fn handle_billing_plan_checkout(
             return_url: format!("{callback_base_url}/api/payment/epay/return"),
         },
     );
+    resolved_exchange_rate.enrich_payload(&mut checkout);
     let updated_order = match state
         .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
             order_id: order.id.clone(),

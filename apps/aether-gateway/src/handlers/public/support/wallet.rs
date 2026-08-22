@@ -1,7 +1,7 @@
 pub(super) use super::{
     build_auth_error_response, build_auth_json_response, build_auth_wallet_summary_payload,
-    query_param_value, resolve_authenticated_local_user, unix_secs_to_rfc3339, AppState,
-    GatewayError, GatewayPublicRequestContext,
+    query_param_value, resolve_authenticated_local_user, resolve_payment_exchange_rate,
+    unix_secs_to_rfc3339, AppState, GatewayError, GatewayPublicRequestContext,
 };
 pub(super) use axum::{body::Body, http, response::Response};
 
@@ -65,6 +65,10 @@ const WALLET_SAFE_GATEWAY_RESPONSE_KEYS: &[&str] = &[
     "pay_currency",
     "payment_channel",
     "provider_order_status",
+    "usd_exchange_rate",
+    "exchange_rate_source",
+    "exchange_rate_as_of",
+    "exchange_rate_live",
     "manual_credit",
 ];
 

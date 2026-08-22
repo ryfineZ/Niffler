@@ -1,9 +1,10 @@
 use super::{
     auth_access_token_expiry_hours, auth_client_ip, auth_jwt_secret, auth_now,
     auth_refresh_cookie_name, auth_user_agent, build_auth_error_response, build_auth_json_response,
-    build_auth_refresh_cookie_clear_header, build_auth_refresh_cookie_header, extract_bearer_token,
-    extract_client_device_id, extract_cookie_value, http, json, AppState, Body,
-    GatewayPublicRequestContext, Response, AUTH_REFRESH_TOKEN_EXPIRATION_DAYS,
+    build_auth_refresh_cookie_clear_header, build_auth_refresh_cookie_header,
+    build_portal_mismatch_response, extract_bearer_token, extract_client_device_id,
+    extract_cookie_value, http, json, resolve_request_portal, resolve_user_portal, AppState, Body,
+    GatewayPublicRequestContext, PortalContext, Response, AUTH_REFRESH_TOKEN_EXPIRATION_DAYS,
 };
 use crate::GatewayUserSessionView;
 use uuid::Uuid;
@@ -175,6 +176,7 @@ fn build_auth_me_payload(
     user: &aether_data::repository::users::StoredUserAuthRecord,
     wallet: Option<&aether_data::repository::wallet::StoredWalletSnapshot>,
     feature_settings: Option<serde_json::Value>,
+    portal: &PortalContext,
 ) -> serde_json::Value {
     let billing = build_auth_wallet_summary_payload(wallet);
     let has_password = user
@@ -196,6 +198,7 @@ fn build_auth_me_payload(
         "auth_source": user.auth_source,
         "has_password": has_password,
         "feature_settings": feature_settings,
+        "portal": portal.public_payload(),
     })
 }
 
@@ -333,6 +336,29 @@ pub(crate) async fn handle_auth_me(
         Ok(value) => value,
         Err(response) => return response,
     };
+    let request_portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("portal settings lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    let user_portal = match resolve_user_portal(state, &auth.user.id).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    if request_portal.id != user_portal.id {
+        return build_portal_mismatch_response(&user_portal);
+    }
     let wallet = state
         .read_wallet_snapshot_for_auth(&auth.user.id, "", false)
         .await
@@ -350,7 +376,7 @@ pub(crate) async fn handle_auth_me(
     };
     build_auth_json_response(
         http::StatusCode::OK,
-        build_auth_me_payload(&auth.user, wallet.as_ref(), feature_settings),
+        build_auth_me_payload(&auth.user, wallet.as_ref(), feature_settings, &user_portal),
         None,
     )
 }
@@ -416,6 +442,29 @@ pub(super) async fn handle_auth_refresh(
     }
     if !auth_token_identity_matches_user(&claims, &user) {
         return build_auth_error_response(http::StatusCode::UNAUTHORIZED, "无效的刷新令牌", true);
+    }
+    let request_portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("portal settings lookup failed: {err:?}"),
+                true,
+            )
+        }
+    };
+    let user_portal = match resolve_user_portal(state, &user.id).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                true,
+            )
+        }
+    };
+    if request_portal.id != user_portal.id {
+        return build_portal_mismatch_response(&user_portal);
     }
     let client_device_id = match extract_client_device_id(request_context, headers) {
         Ok(value) => value,

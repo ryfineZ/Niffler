@@ -3,10 +3,11 @@ use super::{
     auth_verification_code_expire_minutes, auth_verification_send_cooldown_seconds,
     build_auth_error_response, build_auth_json_response, clear_auth_email_pending_code,
     clear_auth_email_verification, generate_auth_verification_code, http, json,
-    mark_auth_email_verified, read_auth_email_verification_code,
+    mark_auth_email_verified, read_auth_email_verification_code, resolve_request_portal,
     store_auth_email_verification_code_with_delivery, system_config_bool, system_config_f64,
-    system_config_string, system_config_string_list, verify_auth_turnstile, AppState,
-    AuthTurnstileAction, Body, GatewayError, Regex, Response,
+    system_config_string, system_config_string_list, validate_official_usd_registration_group,
+    verify_auth_turnstile, AppState, AuthTurnstileAction, Body, GatewayError,
+    GatewayPublicRequestContext, Regex, Response,
 };
 use aether_data_contracts::repository::background_tasks::BackgroundTaskStatus;
 use serde::Deserialize;
@@ -412,6 +413,7 @@ pub(super) async fn handle_auth_send_verification_code(
 
 pub(super) async fn handle_auth_register(
     state: &AppState,
+    request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
     cf_connecting_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
@@ -467,6 +469,30 @@ pub(super) async fn handle_auth_register(
     if !enable_registration {
         return build_auth_error_response(http::StatusCode::FORBIDDEN, "系统暂不开放注册", false);
     }
+    let portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("auth portal lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    let official_usd_group_id = if portal.is_official_usd() {
+        match validate_official_usd_registration_group(state, &portal).await {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return build_auth_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    format!("official USD portal is unavailable: {err:?}"),
+                    false,
+                )
+            }
+        }
+    } else {
+        None
+    };
     let privacy_policy = match read_registration_privacy_policy_settings(state).await {
         Ok(value) => value,
         Err(err) => {
@@ -648,14 +674,26 @@ pub(super) async fn handle_auth_register(
             false,
         );
     };
-    if let Err(err) = state
-        .assign_default_group_to_self_registered_user(&user.id)
-        .await
-    {
+    let group_assignment = match official_usd_group_id.as_deref() {
+        Some(group_id) => match state.add_user_to_group(group_id, &user.id).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(GatewayError::Internal(format!(
+                "failed to add new user {} to official USD portal group {group_id}",
+                user.id
+            ))),
+            Err(err) => Err(err),
+        },
+        None => {
+            state
+                .assign_default_group_to_self_registered_user(&user.id)
+                .await
+        }
+    };
+    if let Err(err) = group_assignment {
         let _ = state.delete_local_auth_user(&user.id).await;
         return build_auth_error_response(
             http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("auth default user group assignment failed: {err:?}"),
+            format!("auth portal user group assignment failed: {err:?}"),
             false,
         );
     }
@@ -729,6 +767,7 @@ pub(super) async fn handle_auth_register(
             "email": user.email,
             "username": user.username,
             "message": "注册成功",
+            "portal": portal.public_payload(),
         }),
         None,
     )

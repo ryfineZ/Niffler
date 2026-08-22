@@ -187,6 +187,7 @@ export interface RequestDetail {
     package_multiplier?: number | null
     wallet_debit?: number | null
     wallet_multiplier?: number | null
+    wallet_discount?: number | null
     user_debit?: number | null
   } | null
   // Additional token fields

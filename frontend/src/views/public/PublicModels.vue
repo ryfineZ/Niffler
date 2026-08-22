@@ -18,7 +18,7 @@
         <CircleDollarSign class="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
         <div class="min-w-0">
           <h2 id="pricing-note-title" class="text-sm font-semibold text-foreground">{{ t('models.pricingNoteTitle') }}</h2>
-          <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ t('models.pricingNote') }}</p>
+          <p class="mt-1 text-sm leading-6 text-muted-foreground">{{ t(usesDedicatedDiscountPricing ? 'models.pricingNoteOfficialUsd' : 'models.pricingNote') }}</p>
         </div>
       </section>
 
@@ -60,7 +60,7 @@
                 @click="selectedGroup = group.id"
               >
                 <span class="min-w-0 truncate">{{ group.id === ALL_GROUP ? t('common.all') : group.name }}</span>
-                <span v-if="group.id !== ALL_GROUP" class="shrink-0 text-xs font-mono text-muted-foreground">×{{ formatMultiplier(groupMultiplier(group.id)) }}</span>
+                <span v-if="group.id !== ALL_GROUP" class="shrink-0 text-xs font-mono text-muted-foreground">{{ groupPriceLabel(group.id) }}</span>
                 <span v-else aria-hidden="true"></span>
                 <span class="shrink-0 text-xs tabular-nums text-muted-foreground">{{ groupCount(group.id) }}</span>
               </button>
@@ -151,11 +151,11 @@
                   </div>
                   <div class="col-span-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
                     <span>{{ t('models.perMillion') }}</span>
-                    <span v-if="modelMultiplier(model) > 0 && modelMultiplier(model) < 1" class="font-semibold text-emerald-600 dark:text-emerald-400">{{ t('models.multiplierSavings', { percent: Math.round((1 - modelMultiplier(model)) * 100) }) }}</span>
+                    <span v-if="modelDiscount(model) > 0 && modelDiscount(model) < 1" class="font-semibold text-emerald-600 dark:text-emerald-400">{{ t('models.discountSavings', { percent: Math.round((1 - modelDiscount(model)) * 100) }) }}</span>
                   </div>
                 </template>
                 <div v-else-if="model.default_price_per_request" class="col-span-2 font-mono font-semibold">
-                  {{ t('models.perRequest', { price: formatPrice(model.default_price_per_request * modelMultiplier(model)) }) }}
+                  {{ t('models.perRequest', { price: formatPrice(model.default_price_per_request * modelDiscount(model)) }) }}
                 </div>
                 <div v-else class="col-span-2 text-xs text-muted-foreground">{{ t('models.noPricing') }}</div>
               </div>
@@ -169,7 +169,7 @@
                   :key="group.id"
                   class="border border-primary/25 bg-primary/5 px-2 py-1 text-[10px] font-semibold text-primary"
                 >
-                  {{ group.name }} <span class="font-mono text-muted-foreground">×{{ formatMultiplier(groupModelMultiplier(group, model)) }}</span>
+                  {{ group.name }} <span class="font-mono text-muted-foreground">{{ groupModelPriceLabel(group, model) }}</span>
                 </span>
                 <span
                   v-for="provider in modelProviderNames(model)"
@@ -238,6 +238,8 @@ const groups = computed(() => [
   ...groupCatalog.value.map(group => ({ id: group.id, name: group.name })),
 ])
 
+const usesDedicatedDiscountPricing = computed(() => groupCatalog.value.some(groupUsesDiscountTerms))
+
 const filteredModels = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase()
   const result = models.value.filter(model => {
@@ -269,21 +271,29 @@ function modelGroups(model: PublicGlobalModel): PublicModelGroupCatalog[] {
   return groupCatalog.value.filter(group => group.models.some(candidate => candidate.id === model.id || candidate.name === model.name))
 }
 
-function groupModelMultiplier(group: PublicModelGroup, model: PublicGlobalModel): number {
-  const overrides = group.model_sales_multipliers || {}
-  const override = overrides[model.id] ?? overrides[model.name]
-  if (typeof override === 'number' && Number.isFinite(override)) return override
-  return Number.isFinite(group.sales_multiplier) ? group.sales_multiplier : 1
+function groupUsesDiscountTerms(group: PublicModelGroup): boolean {
+  return Object.prototype.hasOwnProperty.call(group, 'discount')
+    || Object.prototype.hasOwnProperty.call(group, 'model_discounts')
 }
 
-function modelMultiplier(model: PublicGlobalModel): number {
+function groupModelDiscount(group: PublicModelGroup, model: PublicGlobalModel): number {
+  const overrides = group.model_discounts || group.model_sales_multipliers || {}
+  const override = overrides[model.id] ?? overrides[model.name]
+  if (typeof override === 'number' && Number.isFinite(override)) return override
+  if (typeof group.discount === 'number' && Number.isFinite(group.discount)) return group.discount
+  return typeof group.sales_multiplier === 'number' && Number.isFinite(group.sales_multiplier)
+    ? group.sales_multiplier
+    : 1
+}
+
+function modelDiscount(model: PublicGlobalModel): number {
   const memberships = modelGroups(model)
   if (selectedGroup.value !== ALL_GROUP) {
     const selectedMembership = memberships.find(group => group.id === selectedGroup.value)
-    if (selectedMembership) return groupModelMultiplier(selectedMembership, model)
+    if (selectedMembership) return groupModelDiscount(selectedMembership, model)
   }
   // 未指定分组时展示所有公开方案中的最低可用价格。
-  if (memberships.length) return Math.min(...memberships.map(group => groupModelMultiplier(group, model)))
+  if (memberships.length) return Math.min(...memberships.map(group => groupModelDiscount(group, model)))
   const config = model.config || {}
   const billing = config.billing
   const candidates = [
@@ -297,8 +307,25 @@ function modelMultiplier(model: PublicGlobalModel): number {
   return typeof value === 'number' ? value : 1
 }
 
-function groupMultiplier(groupId: string): number {
-  return groupCatalog.value.find(group => group.id === groupId)?.sales_multiplier ?? 1
+function groupDiscount(groupId: string): number {
+  const group = groupCatalog.value.find(group => group.id === groupId)
+  if (!group) return 1
+  if (typeof group.discount === 'number' && Number.isFinite(group.discount)) return group.discount
+  return typeof group.sales_multiplier === 'number' && Number.isFinite(group.sales_multiplier)
+    ? group.sales_multiplier
+    : 1
+}
+
+function groupPriceLabel(groupId: string): string {
+  const group = groupCatalog.value.find(group => group.id === groupId)
+  if (!group) return ''
+  const value = formatDiscount(groupDiscount(groupId))
+  return groupUsesDiscountTerms(group) ? t('models.discountFactor', { value }) : `×${value}`
+}
+
+function groupModelPriceLabel(group: PublicModelGroup, model: PublicGlobalModel): string {
+  const value = formatDiscount(groupModelDiscount(group, model))
+  return groupUsesDiscountTerms(group) ? t('models.discountFactor', { value }) : `×${value}`
 }
 
 function modelHealth(model: PublicGlobalModel) {
@@ -313,7 +340,7 @@ function groupAllowsModel(groupId: string, model: PublicGlobalModel): boolean {
   return group?.models.some(candidate => candidate.id === model.id || candidate.name === model.name) ?? false
 }
 
-function formatMultiplier(value: number): string {
+function formatDiscount(value: number): string {
   return new Intl.NumberFormat(locale.value, { maximumFractionDigits: 3 }).format(value)
 }
 
@@ -386,7 +413,7 @@ function capabilities(model: PublicGlobalModel): string[] {
 
 function firstTierPrice(model: PublicGlobalModel, type: 'input' | 'output'): number | null {
   const base = baseTierPrice(model, type)
-  return base === null ? null : base * modelMultiplier(model)
+  return base === null ? null : base * modelDiscount(model)
 }
 
 function baseTierPrice(model: PublicGlobalModel, type: 'input' | 'output'): number | null {

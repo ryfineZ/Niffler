@@ -1,9 +1,10 @@
 pub(super) use super::{
-    base_url_from_request, build_unhandled_public_support_response,
+    base_url_from_request, build_portal_mismatch_response, build_unhandled_public_support_response,
     decrypt_catalog_secret_with_fallbacks, escape_admin_email_template_html,
     ldap_module_config_is_valid, module_available_from_env, read_admin_email_template_payload,
-    render_admin_email_template_html, system_config_bool, system_config_string, AppState,
-    GatewayError, GatewayPublicRequestContext,
+    render_admin_email_template_html, resolve_request_portal, resolve_user_portal,
+    system_config_bool, system_config_string, validate_official_usd_registration_group, AppState,
+    GatewayError, GatewayPublicRequestContext, PortalContext,
 };
 pub(super) use axum::{
     body::Body,
@@ -127,6 +128,23 @@ async fn handle_auth_login(
         Err(response) => return response,
     };
     let auth_type = payload.auth_type.trim().to_ascii_lowercase();
+    let request_portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("portal settings lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    if request_portal.is_official_usd() && auth_type != "local" {
+        return build_auth_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "专属门户仅支持邮箱密码登录",
+            false,
+        );
+    }
     let user = match auth_type.as_str() {
         "local" => {
             let user = match state.find_user_auth_by_identifier(&identifier).await {
@@ -260,6 +278,20 @@ async fn handle_auth_login(
         }
     };
 
+    let user_portal = match resolve_user_portal(state, &user.id).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    if request_portal.id != user_portal.id {
+        return build_portal_mismatch_response(&user_portal);
+    }
+
     build_auth_login_success_response(state, headers, client_device_id, user).await
 }
 
@@ -287,9 +319,16 @@ pub(super) async fn maybe_build_local_auth_response(
         Some("login") if request_context.request_path == "/api/auth/login" => {
             Some(handle_auth_login(state, request_context, headers, request_body).await)
         }
-        Some("register") if request_context.request_path == "/api/auth/register" => {
-            Some(handle_auth_register(state, headers, cf_connecting_ip, request_body).await)
-        }
+        Some("register") if request_context.request_path == "/api/auth/register" => Some(
+            handle_auth_register(
+                state,
+                request_context,
+                headers,
+                cf_connecting_ip,
+                request_body,
+            )
+            .await,
+        ),
         Some("verify_email") if request_context.request_path == "/api/auth/verify-email" => {
             Some(handle_auth_verify_email(state, request_body).await)
         }
