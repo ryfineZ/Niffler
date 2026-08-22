@@ -56,6 +56,14 @@ fn default_auth_login_type() -> String {
     "local".to_string()
 }
 
+fn build_auth_login_invalid_credentials_response() -> Response<Body> {
+    build_auth_error_response(
+        http::StatusCode::UNAUTHORIZED,
+        "邮箱或密码错误",
+        false,
+    )
+}
+
 fn system_config_f64(value: Option<&serde_json::Value>, default: f64) -> f64 {
     match value {
         Some(serde_json::Value::Number(value)) => value.as_f64().unwrap_or(default),
@@ -289,7 +297,8 @@ async fn handle_auth_login(
         }
     };
     if request_portal.id != user_portal.id {
-        return build_portal_mismatch_response(&user_portal);
+        // A login response must not reveal that the account exists on another portal.
+        return build_auth_login_invalid_credentials_response();
     }
 
     build_auth_login_success_response(state, headers, client_device_id, user).await
@@ -363,7 +372,10 @@ pub(super) async fn maybe_build_local_auth_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{maybe_build_local_auth_response, AppState, GatewayPublicRequestContext};
+    use super::{
+        build_auth_login_invalid_credentials_response, maybe_build_local_auth_response, AppState,
+        GatewayPublicRequestContext,
+    };
     use crate::control::GatewayControlDecision;
     use axum::body::to_bytes;
     use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -411,5 +423,22 @@ mod tests {
         assert_eq!(payload["route_family"], "auth");
         assert_eq!(payload["route_kind"], "login");
         assert_eq!(payload["request_path"], "/api/auth/login/history");
+    }
+
+    #[tokio::test]
+    async fn login_invalid_credentials_response_does_not_disclose_portal() {
+        let response = build_auth_login_invalid_credentials_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+
+        assert_eq!(payload["detail"], "邮箱或密码错误");
+        assert!(payload.get("portal_mismatch").is_none());
+        assert!(payload.get("portal").is_none());
+        assert!(payload.get("canonical_url").is_none());
     }
 }
