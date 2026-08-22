@@ -79,7 +79,7 @@
                   <CheckCircle2 class="h-4 w-4 text-emerald-500" />{{ proof }}
                 </span>
               </div>
-              <PublicEndpointLatency />
+              <PublicEndpointLatency v-if="showPublicEndpointLatency" />
             </div>
 
             <div class="hero-visual relative flex min-h-[360px] flex-col justify-between overflow-hidden bg-[#26231f] px-7 py-5 text-[#f7f3ea] sm:px-10 sm:py-6 lg:px-12 lg:py-7">
@@ -587,6 +587,7 @@ import { useI18n } from 'vue-i18n'
 import { ArrowDownRight, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, HelpCircle, Layers, Sparkles, X } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { usePublicLoginDialog } from '@/composables/usePublicLoginDialog'
+import { useSiteInfo } from '@/composables/useSiteInfo'
 import { getPublicGlobalModels, type PublicGlobalModel } from '@/api/public-models'
 import { getInfiniteCanvasUrl } from '@/utils/infiniteCanvasUrl'
 import ApiNetworkVisual from '@/components/home/ApiNetworkVisual.vue'
@@ -600,6 +601,7 @@ const router = useRouter()
 const { t } = useI18n()
 const authStore = useAuthStore()
 const { showLoginDialog } = usePublicLoginDialog()
+const { portal } = useSiteInfo()
 const models = ref<PublicGlobalModel[]>([])
 const modelsLoading = ref(true)
 const openFaqId = ref<number | null>(null)
@@ -626,6 +628,7 @@ let launcherDragOrigin = { x: 0, y: 0 }
 let launcherWasDragged = false
 
 const dashboardPath = computed(() => authStore.canAccessAdmin ? '/admin/dashboard' : '/dashboard')
+const showPublicEndpointLatency = computed(() => portal.value?.id === 'default')
 const imageStudioPath = computed(() => authStore.canAccessAdmin ? '/admin/image-studio' : '/dashboard/image-studio')
 const infiniteCanvasUrl = getInfiniteCanvasUrl('canvas')
 const activeScene = computed<HomeCinematicScene>(() => sceneIds[activeSceneIndex.value] || 'hero')
