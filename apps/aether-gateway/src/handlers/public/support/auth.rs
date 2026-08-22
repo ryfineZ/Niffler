@@ -57,11 +57,7 @@ fn default_auth_login_type() -> String {
 }
 
 fn build_auth_login_invalid_credentials_response() -> Response<Body> {
-    build_auth_error_response(
-        http::StatusCode::UNAUTHORIZED,
-        "邮箱或密码错误",
-        false,
-    )
+    build_auth_error_response(http::StatusCode::UNAUTHORIZED, "邮箱或密码错误", false)
 }
 
 fn system_config_f64(value: Option<&serde_json::Value>, default: f64) -> f64 {
