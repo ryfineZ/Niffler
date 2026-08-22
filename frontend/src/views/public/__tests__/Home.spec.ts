@@ -76,7 +76,9 @@ describe('home quick start and FAQ', () => {
   it('shows endpoint latency only on the default portal', async () => {
     const root = await mountHome()
 
-    expect(root.querySelector('[data-endpoint-latency]')).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(root.querySelector('[data-endpoint-latency]')).not.toBeNull()
+    })
   })
 
   it('does not expose or request main-site endpoints on the official USD portal', async () => {

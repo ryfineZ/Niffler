@@ -581,7 +581,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowDownRight, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, HelpCircle, Layers, Sparkles, X } from 'lucide-vue-next'
@@ -591,11 +591,14 @@ import { useSiteInfo } from '@/composables/useSiteInfo'
 import { getPublicGlobalModels, type PublicGlobalModel } from '@/api/public-models'
 import { getInfiniteCanvasUrl } from '@/utils/infiniteCanvasUrl'
 import ApiNetworkVisual from '@/components/home/ApiNetworkVisual.vue'
-import PublicEndpointLatency from '@/components/home/PublicEndpointLatency.vue'
 import HomeCinematicVisual, {
   type HomeCinematicScene,
   type HomeScrollDirection,
 } from '@/components/home/HomeCinematicVisual.vue'
+
+const PublicEndpointLatency = defineAsyncComponent(
+  () => import('@/components/home/PublicEndpointLatency.vue'),
+)
 
 const router = useRouter()
 const { t } = useI18n()
