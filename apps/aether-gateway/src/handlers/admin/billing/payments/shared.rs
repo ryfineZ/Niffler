@@ -202,6 +202,8 @@ pub(super) fn build_admin_payment_order_payload(
         "order_no": record.order_no,
         "wallet_id": record.wallet_id,
         "user_id": record.user_id,
+        "owner_type": record.owner_type,
+        "owner_name": record.owner_name,
         "amount_usd": record.amount_usd,
         "debt_repayment_usd": record.debt_repayment_usd,
         "pay_amount": record.pay_amount,

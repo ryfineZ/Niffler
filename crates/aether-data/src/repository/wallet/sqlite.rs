@@ -745,6 +745,12 @@ WHERE (? IS NULL OR po.payment_method = ?)
             r#"
 SELECT
   po.id, po.order_no, po.wallet_id, po.user_id, po.amount_usd,
+  CASE
+    WHEN w.user_id IS NOT NULL THEN 'user'
+    WHEN w.api_key_id IS NOT NULL THEN 'api_key'
+    ELSE NULL
+  END AS owner_type,
+  COALESCE(wallet_users.username, wallet_api_keys.name) AS owner_name,
   po.debt_repayment_usd, po.pay_amount, po.pay_currency,
   po.exchange_rate, po.refunded_amount_usd, po.refundable_amount_usd, po.payment_method,
   po.payment_provider, po.payment_channel, po.order_kind, po.product_id, po.product_snapshot,
@@ -758,6 +764,7 @@ FROM payment_orders po
 LEFT JOIN wallets w ON w.id = po.wallet_id
 LEFT JOIN users order_users ON order_users.id = po.user_id
 LEFT JOIN users wallet_users ON wallet_users.id = w.user_id
+LEFT JOIN api_keys wallet_api_keys ON wallet_api_keys.id = w.api_key_id
 WHERE (? IS NULL OR po.payment_method = ?)
   AND (? IS NULL OR po.order_kind = ?)
   AND (
@@ -4936,6 +4943,8 @@ fn map_payment_order_row(row: &SqliteRow) -> Result<StoredAdminPaymentOrder, Dat
         order_no: get(row, "order_no")?,
         wallet_id: get(row, "wallet_id")?,
         user_id: get(row, "user_id")?,
+        owner_type: row.try_get("owner_type").ok().flatten(),
+        owner_name: row.try_get("owner_name").ok().flatten(),
         amount_usd: sqlite_real(row, "amount_usd")?,
         debt_repayment_usd: sqlite_real(row, "debt_repayment_usd")?,
         pay_amount: sqlite_optional_real(row, "pay_amount")?,
@@ -5336,6 +5345,11 @@ mod tests {
             .expect("payment orders should support user search");
         assert_eq!(searched_orders.total, 1);
         assert_eq!(searched_orders.items[0].id, "order-1");
+        assert_eq!(searched_orders.items[0].owner_type.as_deref(), Some("user"));
+        assert_eq!(
+            searched_orders.items[0].owner_name.as_deref(),
+            Some("Alice")
+        );
 
         let searched_refunds = repository
             .list_admin_wallet_refund_requests(&AdminWalletRefundRequestListQuery {

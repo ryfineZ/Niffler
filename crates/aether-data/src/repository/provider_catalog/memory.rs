@@ -568,6 +568,20 @@ impl ProviderCatalogWriteRepository for InMemoryProviderCatalogReadRepository {
         Ok(index.keys.remove(key_id).is_some())
     }
 
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        let mut index = self
+            .index
+            .write()
+            .expect("provider catalog repository lock");
+        let mut deleted = 0u64;
+        for key_id in key_ids {
+            if index.keys.remove(key_id).is_some() {
+                deleted = deleted.saturating_add(1);
+            }
+        }
+        Ok(deleted)
+    }
+
     async fn clear_key_oauth_invalid_marker(&self, key_id: &str) -> Result<bool, DataLayerError> {
         let mut index = self
             .index
@@ -1149,6 +1163,36 @@ mod tests {
             .await
             .expect("keys should read");
         assert!(reloaded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deletes_keys_in_one_batch() {
+        let repository = InMemoryProviderCatalogReadRepository::seed(
+            vec![sample_provider("provider-1")],
+            vec![],
+            vec![
+                sample_key("key-1", "provider-1"),
+                sample_key("key-2", "provider-1"),
+                sample_key("key-3", "provider-1"),
+            ],
+        );
+
+        let deleted = repository
+            .delete_keys(&["key-1".to_string(), "key-3".to_string()])
+            .await
+            .expect("batch delete should succeed");
+
+        assert_eq!(deleted, 2);
+        let reloaded = repository
+            .list_keys_by_ids(&[
+                "key-1".to_string(),
+                "key-2".to_string(),
+                "key-3".to_string(),
+            ])
+            .await
+            .expect("keys should read");
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].id, "key-2");
     }
 
     #[tokio::test]

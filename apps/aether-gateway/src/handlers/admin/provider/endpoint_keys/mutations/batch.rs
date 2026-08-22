@@ -63,21 +63,14 @@ pub(super) async fn maybe_handle(
             return Ok(Some(response));
         }
     }
-    let mut failed = payload
+    let failed = payload
         .ids
         .iter()
         .filter(|key_id| !found_ids.contains(*key_id))
         .map(|key_id| json!({ "id": key_id, "error": "not found" }))
         .collect::<Vec<_>>();
 
-    let mut success_count = 0usize;
-    for key_id in found_ids {
-        if state.delete_provider_catalog_key(&key_id).await? {
-            success_count += 1;
-        } else {
-            failed.push(json!({ "id": key_id, "error": "not found" }));
-        }
-    }
+    let success_count = state.delete_provider_catalog_keys(&found_keys).await?;
 
     Ok(Some(attach_admin_audit_response(
         Json(json!({

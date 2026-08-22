@@ -531,6 +531,12 @@ SELECT
   po.order_no,
   po.wallet_id,
   po.user_id,
+  CASE
+    WHEN w.user_id IS NOT NULL THEN 'user'
+    WHEN w.api_key_id IS NOT NULL THEN 'api_key'
+    ELSE NULL
+  END AS owner_type,
+  COALESCE(wallet_users.username, wallet_api_keys.name) AS owner_name,
   CAST(po.amount_usd AS DOUBLE PRECISION) AS amount_usd,
   CAST(po.debt_repayment_usd AS DOUBLE PRECISION) AS debt_repayment_usd,
   CAST(po.pay_amount AS DOUBLE PRECISION) AS pay_amount,
@@ -557,6 +563,7 @@ FROM payment_orders po
 LEFT JOIN wallets w ON w.id = po.wallet_id
 LEFT JOIN users order_users ON order_users.id = po.user_id
 LEFT JOIN users wallet_users ON wallet_users.id = w.user_id
+LEFT JOIN api_keys wallet_api_keys ON wallet_api_keys.id = w.api_key_id
 WHERE ($1::TEXT IS NULL OR po.payment_method = $1)
   AND ($2::TEXT IS NULL OR po.order_kind = $2)
   AND (
@@ -6366,6 +6373,8 @@ fn map_admin_payment_order_row(row: &PgRow) -> Result<StoredAdminPaymentOrder, D
         order_no: row_get(row, "order_no")?,
         wallet_id: row_get(row, "wallet_id")?,
         user_id: row_get(row, "user_id")?,
+        owner_type: row.try_get("owner_type").ok().flatten(),
+        owner_name: row.try_get("owner_name").ok().flatten(),
         amount_usd: row_get(row, "amount_usd")?,
         debt_repayment_usd: row_get(row, "debt_repayment_usd")?,
         pay_amount: row_get(row, "pay_amount")?,

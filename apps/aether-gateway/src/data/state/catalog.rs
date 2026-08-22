@@ -511,6 +511,16 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn delete_provider_catalog_keys(
+        &self,
+        key_ids: &[String],
+    ) -> Result<u64, DataLayerError> {
+        match &self.provider_catalog_writer {
+            Some(repository) => repository.delete_keys(key_ids).await,
+            None => Ok(0),
+        }
+    }
+
     pub(crate) async fn clear_provider_catalog_key_oauth_invalid_marker(
         &self,
         key_id: &str,

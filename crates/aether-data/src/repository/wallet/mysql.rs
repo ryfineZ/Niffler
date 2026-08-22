@@ -487,10 +487,134 @@ WHERE wallet_id = ?
         &self,
         query: &AdminPaymentOrderListQuery,
     ) -> Result<StoredAdminPaymentOrderPage, DataLayerError> {
-        self.load_memory()
-            .await?
-            .list_admin_payment_orders(query)
-            .await
+        let now = current_unix_secs_i64();
+        let user_search = query
+            .user_search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let total: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)
+FROM payment_orders po
+LEFT JOIN wallets w ON w.id = po.wallet_id
+LEFT JOIN users order_users ON order_users.id = po.user_id
+LEFT JOIN users wallet_users ON wallet_users.id = w.user_id
+WHERE (? IS NULL OR po.payment_method = ?)
+  AND (? IS NULL OR po.order_kind = ?)
+  AND (
+    ? IS NULL
+    OR (
+      CASE
+        WHEN po.status = 'pending' AND po.expires_at IS NOT NULL AND po.expires_at < ? THEN 'expired'
+        ELSE po.status
+      END
+    ) = ?
+  )
+  AND (
+    ? IS NULL
+    OR order_users.username LIKE CONCAT('%', ?, '%')
+    OR order_users.email LIKE CONCAT('%', ?, '%')
+    OR po.user_id LIKE CONCAT('%', ?, '%')
+    OR wallet_users.username LIKE CONCAT('%', ?, '%')
+    OR wallet_users.email LIKE CONCAT('%', ?, '%')
+    OR w.user_id LIKE CONCAT('%', ?, '%')
+  )
+"#,
+        )
+        .bind(query.payment_method.as_deref())
+        .bind(query.payment_method.as_deref())
+        .bind(query.order_kind.as_deref())
+        .bind(query.order_kind.as_deref())
+        .bind(query.status.as_deref())
+        .bind(now)
+        .bind(query.status.as_deref())
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .fetch_one(&self.pool)
+        .await
+        .map_sql_err()?;
+
+        let rows = sqlx::query(
+            r#"
+SELECT
+  po.id, po.order_no, po.wallet_id, po.user_id,
+  CASE
+    WHEN w.user_id IS NOT NULL THEN 'user'
+    WHEN w.api_key_id IS NOT NULL THEN 'api_key'
+    ELSE NULL
+  END AS owner_type,
+  COALESCE(wallet_users.username, wallet_api_keys.name) AS owner_name,
+  po.amount_usd, po.debt_repayment_usd, po.pay_amount, po.pay_currency,
+  po.exchange_rate, po.refunded_amount_usd, po.refundable_amount_usd,
+  po.payment_method, po.payment_provider, po.payment_channel, po.order_kind,
+  po.product_id, po.product_snapshot, po.fulfillment_status, po.fulfillment_error,
+  po.gateway_order_id, po.gateway_response, po.status,
+  po.created_at AS created_at_unix_ms,
+  po.paid_at AS paid_at_unix_secs,
+  po.credited_at AS credited_at_unix_secs,
+  po.expires_at AS expires_at_unix_secs
+FROM payment_orders po
+LEFT JOIN wallets w ON w.id = po.wallet_id
+LEFT JOIN users order_users ON order_users.id = po.user_id
+LEFT JOIN users wallet_users ON wallet_users.id = w.user_id
+LEFT JOIN api_keys wallet_api_keys ON wallet_api_keys.id = w.api_key_id
+WHERE (? IS NULL OR po.payment_method = ?)
+  AND (? IS NULL OR po.order_kind = ?)
+  AND (
+    ? IS NULL
+    OR (
+      CASE
+        WHEN po.status = 'pending' AND po.expires_at IS NOT NULL AND po.expires_at < ? THEN 'expired'
+        ELSE po.status
+      END
+    ) = ?
+  )
+  AND (
+    ? IS NULL
+    OR order_users.username LIKE CONCAT('%', ?, '%')
+    OR order_users.email LIKE CONCAT('%', ?, '%')
+    OR po.user_id LIKE CONCAT('%', ?, '%')
+    OR wallet_users.username LIKE CONCAT('%', ?, '%')
+    OR wallet_users.email LIKE CONCAT('%', ?, '%')
+    OR w.user_id LIKE CONCAT('%', ?, '%')
+  )
+ORDER BY po.created_at DESC
+LIMIT ? OFFSET ?
+"#,
+        )
+        .bind(query.payment_method.as_deref())
+        .bind(query.payment_method.as_deref())
+        .bind(query.order_kind.as_deref())
+        .bind(query.order_kind.as_deref())
+        .bind(query.status.as_deref())
+        .bind(now)
+        .bind(query.status.as_deref())
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(user_search)
+        .bind(i64::try_from(query.limit).unwrap_or(i64::MAX))
+        .bind(i64::try_from(query.offset).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_sql_err()?;
+        let items = rows
+            .iter()
+            .map(map_payment_order_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(StoredAdminPaymentOrderPage {
+            items,
+            total: total.max(0) as u64,
+        })
     }
 
     async fn find_admin_payment_order(
@@ -4304,6 +4428,8 @@ fn map_payment_order_row(row: &MySqlRow) -> Result<StoredAdminPaymentOrder, Data
         order_no: get(row, "order_no")?,
         wallet_id: get(row, "wallet_id")?,
         user_id: get(row, "user_id")?,
+        owner_type: row.try_get("owner_type").ok().flatten(),
+        owner_name: row.try_get("owner_name").ok().flatten(),
         amount_usd: get(row, "amount_usd")?,
         debt_repayment_usd: get(row, "debt_repayment_usd")?,
         pay_amount: get(row, "pay_amount")?,
@@ -4656,6 +4782,8 @@ mod tests {
             .await
             .expect("payment orders should list");
         assert_eq!(orders.total, 1);
+        assert_eq!(orders.items[0].owner_type.as_deref(), Some("user"));
+        assert_eq!(orders.items[0].owner_name.as_deref(), Some("Alice"));
         assert_eq!(
             orders.items[0].gateway_response.as_ref().unwrap()["ok"],
             true

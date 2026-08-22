@@ -136,6 +136,8 @@ fn sample_payment_order_record(
         order_no: format!("po-{order_id}"),
         wallet_id: wallet_id.to_string(),
         user_id: user_id.map(ToOwned::to_owned),
+        owner_type: None,
+        owner_name: None,
         amount_usd,
         debt_repayment_usd: 0.0,
         pay_amount: None,

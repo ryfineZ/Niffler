@@ -4,7 +4,8 @@ import { createApp, nextTick, type App, type Component } from '@/test/vue'
 
 import WalletsManagement from '../WalletsManagement.vue'
 
-const { batch } = vi.hoisted(() => ({
+const { batch, listAllWallets } = vi.hoisted(() => ({
+  listAllWallets: vi.fn().mockResolvedValue([]),
   batch: {
     id: 'batch-mobile',
     name: '移动端回归批次',
@@ -29,7 +30,7 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/api/admin-wallets', () => ({
   adminWalletApi: {
-    listAllWallets: vi.fn().mockResolvedValue([]),
+    listAllWallets,
     listLedger: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     listGlobalRefunds: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   },
@@ -37,7 +38,34 @@ vi.mock('@/api/admin-wallets', () => ({
 
 vi.mock('@/api/admin-payments', () => ({
   adminPaymentsApi: {
-    listOrders: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    listOrders: vi.fn().mockResolvedValue({
+      items: [{
+        id: 'order-mobile',
+        order_no: 'po-order-mobile',
+        wallet_id: 'wallet-mobile',
+        user_id: 'user-mobile',
+        owner_type: 'user',
+        owner_name: 'Alice Wallet',
+        amount_usd: 10,
+        debt_repayment_usd: 0,
+        pay_amount: null,
+        pay_currency: null,
+        exchange_rate: null,
+        refunded_amount_usd: 0,
+        refundable_amount_usd: 10,
+        payment_method: 'wechat',
+        order_kind: 'wallet_recharge',
+        fulfillment_status: null,
+        gateway_order_id: null,
+        gateway_response: null,
+        status: 'credited',
+        created_at: '2026-07-15T00:00:00Z',
+        paid_at: null,
+        credited_at: '2026-07-15T00:00:00Z',
+        expires_at: null,
+      }],
+      total: 1,
+    }),
     listCallbacks: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     listRedeemCodeBatches: vi.fn().mockResolvedValue({ items: [batch], total: 1 }),
     listRedeemCodes: vi.fn().mockResolvedValue({
@@ -172,6 +200,9 @@ describe('wallet redeem codes drawer on narrow screens', () => {
     app.mount(root)
     mountedApps.push({ app, root })
     await flushView()
+
+    expect(listAllWallets).not.toHaveBeenCalled()
+    expect(root.textContent).toContain('Alice Wallet')
 
     const viewCodesButton = Array.from(root.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === '查看码')

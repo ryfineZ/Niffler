@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::{mysql::MySqlRow, Row};
+use sqlx::{mysql::MySqlRow, MySql, QueryBuilder, Row};
 
 use super::{
     InMemoryProviderCatalogReadRepository, ProviderCatalogKeyListQuery,
@@ -692,13 +692,46 @@ WHERE id = ?
 
     pub async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         validate_non_empty(key_id, "provider catalog key_id")?;
-        let rows_affected = sqlx::query("DELETE FROM provider_api_keys WHERE id = ?")
-            .bind(key_id)
-            .execute(&self.pool)
-            .await
-            .map_sql_err()?
-            .rows_affected();
-        Ok(rows_affected > 0)
+        Ok(self.delete_keys(&[key_id.to_string()]).await? > 0)
+    }
+
+    pub async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        if key_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self.pool.begin().await.map_sql_err()?;
+        let mut deleted = 0u64;
+        for chunk in key_ids.chunks(1_000) {
+            execute_mysql_key_id_statement(
+                &mut tx,
+                "DELETE FROM gemini_file_mappings WHERE key_id IN (",
+                chunk,
+            )
+            .await?;
+            execute_mysql_key_id_statement(
+                &mut tx,
+                "UPDATE `usage` SET provider_api_key_id = NULL WHERE provider_api_key_id IN (",
+                chunk,
+            )
+            .await?;
+            execute_mysql_key_id_statement(
+                &mut tx,
+                "UPDATE video_tasks SET key_id = NULL WHERE key_id IN (",
+                chunk,
+            )
+            .await?;
+            deleted = deleted.saturating_add(
+                execute_mysql_key_id_statement(
+                    &mut tx,
+                    "DELETE FROM provider_api_keys WHERE id IN (",
+                    chunk,
+                )
+                .await?,
+            );
+        }
+        tx.commit().await.map_sql_err()?;
+        Ok(deleted)
     }
 
     pub async fn update_key_upstream_metadata(
@@ -862,6 +895,25 @@ WHERE id = ?
     }
 }
 
+async fn execute_mysql_key_id_statement(
+    tx: &mut sqlx::Transaction<'_, MySql>,
+    prefix: &'static str,
+    key_ids: &[String],
+) -> Result<u64, DataLayerError> {
+    let mut builder = QueryBuilder::<MySql>::new(prefix);
+    let mut separated = builder.separated(", ");
+    for key_id in key_ids {
+        separated.push_bind(key_id);
+    }
+    separated.push_unseparated(")");
+    Ok(builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_sql_err()?
+        .rows_affected())
+}
+
 #[async_trait]
 impl ProviderCatalogReadRepository for MysqlProviderCatalogReadRepository {
     async fn list_providers(
@@ -1020,6 +1072,10 @@ impl ProviderCatalogWriteRepository for MysqlProviderCatalogReadRepository {
 
     async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         Self::delete_key(self, key_id).await
+    }
+
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        Self::delete_keys(self, key_ids).await
     }
 
     async fn clear_key_oauth_invalid_marker(&self, key_id: &str) -> Result<bool, DataLayerError> {

@@ -1792,6 +1792,24 @@ WHERE id = $1
         Ok(rows_affected > 0)
     }
 
+    pub async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        if key_ids.is_empty() {
+            return Ok(0);
+        }
+        let rows_affected = sqlx::query(
+            r#"
+DELETE FROM provider_api_keys
+WHERE id = ANY($1)
+"#,
+        )
+        .bind(key_ids)
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?
+        .rows_affected();
+        Ok(rows_affected)
+    }
+
     pub async fn update_key_upstream_metadata(
         &self,
         key_id: &str,
@@ -2004,6 +2022,10 @@ impl ProviderCatalogWriteRepository for SqlxProviderCatalogReadRepository {
 
     async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         Self::delete_key(self, key_id).await
+    }
+
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        Self::delete_keys(self, key_ids).await
     }
 
     async fn clear_key_oauth_invalid_marker(&self, key_id: &str) -> Result<bool, DataLayerError> {

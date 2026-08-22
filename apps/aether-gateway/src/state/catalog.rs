@@ -1,6 +1,7 @@
 use super::{AppState, GatewayError, LocalMutationOutcome, LocalProviderDeleteTaskState};
 use crate::handlers::shared::sync_provider_key_oauth_status_snapshot;
 use aether_data_contracts::repository::{candidates, global_models, pool_scores, provider_catalog};
+use futures_util::{stream, StreamExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
@@ -714,6 +715,47 @@ impl AppState {
             }
             self.invalidate_provider_routing_caches();
         }
+        Ok(deleted)
+    }
+
+    pub(crate) async fn delete_provider_catalog_keys(
+        &self,
+        keys: &[provider_catalog::StoredProviderCatalogKey],
+    ) -> Result<usize, GatewayError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+
+        let key_ids = keys.iter().map(|key| key.id.clone()).collect::<Vec<_>>();
+        let deleted = self
+            .data
+            .delete_provider_catalog_keys(&key_ids)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))? as usize;
+
+        stream::iter(keys)
+            .for_each_concurrent(16, |key| async move {
+                if let Err(err) = self
+                    .data
+                    .delete_pool_member_scores_for_member(
+                        &pool_scores::PoolMemberIdentity::provider_api_key(
+                            key.provider_id.clone(),
+                            key.id.clone(),
+                        ),
+                    )
+                    .await
+                {
+                    warn!(
+                        provider_id = %key.provider_id,
+                        key_id = %key.id,
+                        error = ?err,
+                        "gateway provider catalog key batch delete: failed to delete pool member scores"
+                    );
+                }
+            })
+            .await;
+        self.invalidate_provider_routing_caches();
+
         Ok(deleted)
     }
 

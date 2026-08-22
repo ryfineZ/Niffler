@@ -1098,13 +1098,46 @@ WHERE id = ?
 
     pub async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         validate_non_empty(key_id, "provider catalog key_id")?;
-        let rows_affected = sqlx::query("DELETE FROM provider_api_keys WHERE id = ?")
-            .bind(key_id)
-            .execute(&self.pool)
-            .await
-            .map_sql_err()?
-            .rows_affected();
-        Ok(rows_affected > 0)
+        Ok(self.delete_keys(&[key_id.to_string()]).await? > 0)
+    }
+
+    pub async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        if key_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self.pool.begin().await.map_sql_err()?;
+        let mut deleted = 0u64;
+        for chunk in key_ids.chunks(500) {
+            execute_sqlite_key_id_statement(
+                &mut tx,
+                "DELETE FROM gemini_file_mappings WHERE key_id IN (",
+                chunk,
+            )
+            .await?;
+            execute_sqlite_key_id_statement(
+                &mut tx,
+                "UPDATE \"usage\" SET provider_api_key_id = NULL WHERE provider_api_key_id IN (",
+                chunk,
+            )
+            .await?;
+            execute_sqlite_key_id_statement(
+                &mut tx,
+                "UPDATE video_tasks SET key_id = NULL WHERE key_id IN (",
+                chunk,
+            )
+            .await?;
+            deleted = deleted.saturating_add(
+                execute_sqlite_key_id_statement(
+                    &mut tx,
+                    "DELETE FROM provider_api_keys WHERE id IN (",
+                    chunk,
+                )
+                .await?,
+            );
+        }
+        tx.commit().await.map_sql_err()?;
+        Ok(deleted)
     }
 
     pub async fn update_key_upstream_metadata(
@@ -1268,6 +1301,25 @@ WHERE id = ?
     }
 }
 
+async fn execute_sqlite_key_id_statement(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    prefix: &'static str,
+    key_ids: &[String],
+) -> Result<u64, DataLayerError> {
+    let mut builder = QueryBuilder::<Sqlite>::new(prefix);
+    let mut separated = builder.separated(", ");
+    for key_id in key_ids {
+        separated.push_bind(key_id);
+    }
+    separated.push_unseparated(")");
+    Ok(builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_sql_err()?
+        .rows_affected())
+}
+
 #[async_trait]
 impl ProviderCatalogReadRepository for SqliteProviderCatalogReadRepository {
     async fn list_providers(
@@ -1408,6 +1460,10 @@ impl ProviderCatalogWriteRepository for SqliteProviderCatalogReadRepository {
 
     async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         Self::delete_key(self, key_id).await
+    }
+
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        Self::delete_keys(self, key_ids).await
     }
 
     async fn clear_key_oauth_invalid_marker(&self, key_id: &str) -> Result<bool, DataLayerError> {
@@ -2294,6 +2350,107 @@ mod tests {
             .delete_provider("provider-write-1")
             .await
             .expect("provider should delete"));
+    }
+
+    #[tokio::test]
+    async fn sqlite_batch_key_delete_is_atomic_across_chunks() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+
+        sqlx::query(
+            r#"
+WITH RECURSIVE key_numbers(value) AS (
+  SELECT 0
+  UNION ALL
+  SELECT value + 1 FROM key_numbers WHERE value < 500
+)
+INSERT INTO provider_api_keys (id, provider_id, name, auth_type, created_at, updated_at)
+SELECT printf('key-%04d', value), 'provider-batch', 'Batch Key', 'api_key', 1, 1
+FROM key_numbers
+"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("batch keys should seed");
+        sqlx::query(
+            "INSERT INTO gemini_file_mappings (id, file_name, key_id, created_at, expires_at) VALUES ('mapping-1', 'files/1', 'key-0000', 1, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("key mapping should seed");
+        sqlx::query(
+            "INSERT INTO video_tasks (id, request_id, key_id, created_at, updated_at) VALUES ('video-1', 'request-1', 'key-0001', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("video task should seed");
+        sqlx::query(
+            r#"
+CREATE TRIGGER fail_second_key_delete_chunk
+BEFORE DELETE ON provider_api_keys
+WHEN OLD.id = 'key-0500'
+BEGIN
+  SELECT RAISE(ABORT, 'forced batch delete failure');
+END
+"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("failure trigger should create");
+
+        let repository = SqliteProviderCatalogReadRepository::new(pool.clone());
+        let key_ids = (0..=500)
+            .map(|value| format!("key-{value:04}"))
+            .collect::<Vec<_>>();
+        assert!(repository.delete_keys(&key_ids).await.is_err());
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM provider_api_keys")
+            .fetch_one(&pool)
+            .await
+            .expect("remaining keys should count");
+        assert_eq!(remaining, 501);
+        let mapping_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gemini_file_mappings WHERE id = 'mapping-1'")
+                .fetch_one(&pool)
+                .await
+                .expect("mapping should count");
+        assert_eq!(mapping_count, 1);
+        let video_key_id: Option<String> =
+            sqlx::query_scalar("SELECT key_id FROM video_tasks WHERE id = 'video-1'")
+                .fetch_one(&pool)
+                .await
+                .expect("video task should read");
+        assert_eq!(video_key_id.as_deref(), Some("key-0001"));
+
+        sqlx::query("DROP TRIGGER fail_second_key_delete_chunk")
+            .execute(&pool)
+            .await
+            .expect("failure trigger should drop");
+        assert_eq!(
+            repository
+                .delete_keys(&key_ids)
+                .await
+                .expect("batch delete should succeed"),
+            501
+        );
+        let mapping_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gemini_file_mappings WHERE id = 'mapping-1'")
+                .fetch_one(&pool)
+                .await
+                .expect("mapping should count after delete");
+        assert_eq!(mapping_count, 0);
+        let video_key_id: Option<String> =
+            sqlx::query_scalar("SELECT key_id FROM video_tasks WHERE id = 'video-1'")
+                .fetch_one(&pool)
+                .await
+                .expect("video task should read after delete");
+        assert_eq!(video_key_id, None);
     }
 
     async fn seed_rows(pool: &sqlx::SqlitePool) {

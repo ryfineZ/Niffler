@@ -611,10 +611,10 @@
                       </TableCell>
                       <TableCell>
                         <div class="text-sm font-medium">
-                          {{ orderWalletName(order.wallet_id) }}
+                          {{ orderWalletName(order) }}
                         </div>
                         <div class="text-xs text-muted-foreground mt-1">
-                          {{ orderWalletTypeLabel(order.wallet_id) }}
+                          {{ orderWalletTypeLabel(order) }}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -1893,8 +1893,6 @@ const canExportLatestGeneratedRedeemCodes = computed(
   () => !!latestGeneratedRedeemBatch.value && latestGeneratedRedeemCodes.value.length > 0
 )
 
-const walletMetaMap = ref<Record<string, { ownerName: string; ownerType: 'user' | 'api_key' }>>({})
-
 const showLedgerDrawer = ref(false)
 const showRefundDrawer = ref(false)
 const currentLedger = ref<AdminLedgerTransaction | null>(null)
@@ -2026,7 +2024,6 @@ watch(
 
 onMounted(async () => {
   await Promise.all([
-    loadWalletMetaMap(),
     loadLedger(),
     loadRefunds(),
     loadOrders(),
@@ -2043,26 +2040,6 @@ onBeforeUnmount(() => {
 
 function isValidTab(tab: unknown): tab is WalletManagementTab {
   return tab === 'ledger' || tab === 'refunds' || tab === 'orders' || tab === 'callbacks' || tab === 'redeem_codes'
-}
-
-async function loadWalletMetaMap() {
-  try {
-    const wallets = await adminWalletApi.listAllWallets()
-    walletMetaMap.value = wallets.reduce<Record<string, { ownerName: string; ownerType: 'user' | 'api_key' }>>(
-      (acc, wallet) => {
-        const ownerName =
-          wallet.owner_name || (wallet.owner_type === 'user' ? t('walletExtra.unnamedUser') : t('walletExtra.unnamedKey'))
-        acc[wallet.id] = {
-          ownerName,
-          ownerType: wallet.owner_type,
-        }
-        return acc
-      },
-      {}
-    )
-  } catch (error) {
-    log.error('加载钱包名称映射失败:', error)
-  }
 }
 
 async function loadLedger() {
@@ -2357,12 +2334,14 @@ async function disableRedeemCode(codeId: string) {
   }
 }
 
-function orderWalletName(walletId: string) {
-  return walletMetaMap.value[walletId]?.ownerName || t('walletExtra.unknownWallet')
+function orderWalletName(order: PaymentOrder) {
+  const ownerName = order.owner_name?.trim()
+  if (ownerName) return ownerName
+  return order.user_id || order.wallet_id || t('walletExtra.unknownWallet')
 }
 
-function orderWalletTypeLabel(walletId: string) {
-  const ownerType = walletMetaMap.value[walletId]?.ownerType
+function orderWalletTypeLabel(order: PaymentOrder) {
+  const ownerType = order.owner_type || (order.user_id ? 'user' : null)
   if (!ownerType) return t('walletExtra.unknownOwner')
   return ownerType === 'user' ? t('walletExtra.userWallet') : t('walletExtra.independentKeyWallet')
 }
@@ -2514,7 +2493,7 @@ async function submitCreditOrder() {
     })
     success(t('walletExtra.orderActionCompleted', { action: actionLabel }))
     showCreditDialog.value = false
-    await Promise.all([loadOrders(), loadLedger(), loadWalletMetaMap()])
+    await Promise.all([loadOrders(), loadLedger()])
   } catch (error) {
     const actionLabel = paymentOrderCreditActionLabel(currentOrder.value)
     log.error(`${actionLabel}失败:`, error)
