@@ -94,25 +94,28 @@ const PROBE_TIMEOUT_MS = 5000
 const INITIAL_MEASUREMENT_DELAY_MS = 250
 const INITIAL_LOAD_FALLBACK_MS = 1500
 
+const props = defineProps<{
+  baseDomain: string
+}>()
 const { t } = useI18n()
 const endpoints: EndpointDefinition[] = [
   {
     id: 'us1',
-    host: 'us1.niffler.org',
+    host: `us1.${props.baseDomain}`,
     labelKey: 'home.endpointLatencyUs1',
-    probeUrl: 'https://us1.niffler.org/__niffler_latency',
+    probeUrl: `https://us1.${props.baseDomain}/__niffler_latency`,
   },
   {
     id: 'us2',
-    host: 'us2.niffler.org',
+    host: `us2.${props.baseDomain}`,
     labelKey: 'home.endpointLatencyUs2',
-    probeUrl: 'https://us2.niffler.org/__niffler_latency',
+    probeUrl: `https://us2.${props.baseDomain}/__niffler_latency`,
   },
   {
     id: 'cn',
-    host: 'cn.niffler.org',
+    host: `cn.${props.baseDomain}`,
     labelKey: 'home.endpointLatencyCn',
-    probeUrl: 'https://cn.niffler.org/__niffler_latency',
+    probeUrl: `https://cn.${props.baseDomain}/__niffler_latency`,
   },
 ]
 const results = reactive<Record<EndpointId, MeasurementResult>>({

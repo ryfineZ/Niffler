@@ -79,7 +79,10 @@
                   <CheckCircle2 class="h-4 w-4 text-emerald-500" />{{ proof }}
                 </span>
               </div>
-              <PublicEndpointLatency v-if="showPublicEndpointLatency" />
+              <PublicEndpointLatency
+                v-if="showPublicEndpointLatency"
+                :base-domain="defaultPortalBaseDomain"
+              />
             </div>
 
             <div class="hero-visual relative flex min-h-[360px] flex-col justify-between overflow-hidden bg-[#26231f] px-7 py-5 text-[#f7f3ea] sm:px-10 sm:py-6 lg:px-12 lg:py-7">
@@ -631,7 +634,15 @@ let launcherDragOrigin = { x: 0, y: 0 }
 let launcherWasDragged = false
 
 const dashboardPath = computed(() => authStore.canAccessAdmin ? '/admin/dashboard' : '/dashboard')
-const showPublicEndpointLatency = computed(() => portal.value?.id === 'default')
+const defaultPortalBaseDomain = computed(() => {
+  if (portal.value?.id !== 'default' || !portal.value.canonical_url) return ''
+  try {
+    return new URL(portal.value.canonical_url).hostname
+  } catch {
+    return ''
+  }
+})
+const showPublicEndpointLatency = computed(() => defaultPortalBaseDomain.value.length > 0)
 const imageStudioPath = computed(() => authStore.canAccessAdmin ? '/admin/image-studio' : '/dashboard/image-studio')
 const infiniteCanvasUrl = getInfiniteCanvasUrl('canvas')
 const activeScene = computed<HomeCinematicScene>(() => sceneIds[activeSceneIndex.value] || 'hero')

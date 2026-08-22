@@ -11,7 +11,10 @@ const authStore = vi.hoisted(() => ({
   canAccessAdmin: false,
 }))
 const sitePortal = vi.hoisted(() => ({
-  value: { id: 'default' } as { id: string } | null,
+  value: {
+    id: 'default',
+    canonical_url: 'https://niffler.org',
+  } as { id: string, canonical_url?: string | null } | null,
 }))
 
 vi.mock('@/api/public-models', () => ({
@@ -57,7 +60,7 @@ beforeEach(() => {
   window.localStorage.clear()
   authStore.isAuthenticated = false
   authStore.canAccessAdmin = false
-  sitePortal.value = { id: 'default' }
+  sitePortal.value = { id: 'default', canonical_url: 'https://niffler.org' }
   getPublicGlobalModels.mockResolvedValue({ models: [], total: 0 })
   i18n.global.locale.value = 'zh-CN'
 })
@@ -82,7 +85,7 @@ describe('home quick start and FAQ', () => {
   })
 
   it('does not expose or request main-site endpoints on the official USD portal', async () => {
-    sitePortal.value = { id: 'official_usd' }
+    sitePortal.value = { id: 'official_usd', canonical_url: 'https://global.niffler.org' }
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -92,6 +95,14 @@ describe('home quick start and FAQ', () => {
     expect(root.querySelector('[data-endpoint-latency]')).toBeNull()
     expect(root.textContent).not.toContain('niffler.org')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not load endpoint probes when the default portal URL is unavailable', async () => {
+    sitePortal.value = { id: 'default', canonical_url: null }
+
+    const root = await mountHome()
+
+    expect(root.querySelector('[data-endpoint-latency]')).toBeNull()
   })
 
   it('renders four cinematic scenes with one active indicator', async () => {

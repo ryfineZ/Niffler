@@ -10,7 +10,7 @@ const fetchMock = vi.fn()
 async function mountLatencyPanel() {
   const root = document.createElement('div')
   document.body.appendChild(root)
-  const app = createApp(PublicEndpointLatency)
+  const app = createApp(PublicEndpointLatency, { baseDomain: 'niffler.org' })
   app.mount(root)
   mountedApps.push({ app, root })
   await nextTick()
