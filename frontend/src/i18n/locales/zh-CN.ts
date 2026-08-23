@@ -393,10 +393,10 @@ export default {
       stepKey: '创建 API Key', stepKeyDesc: '建议按项目分别创建密钥，设置清晰的名称、模型范围和额度，创建后立即保存完整 Key。',
       stepModel: '选择并复制模型 ID', stepModelDesc: '在模型广场比较价格与能力，完整复制模型 ID，包括大小写、连字符和版本号。',
       openDashboard: '进入控制台', openWallet: '打开钱包', openKeys: '管理 API Key', openModels: '打开模型广场',
-      connectionTitle: '填写接入信息', connectionDesc: '大多数 OpenAI 兼容 SDK 和客户端只需要下面三项。', baseUrl: 'Base URL', apiKey: 'API Key', modelId: 'Model ID', connectionHint: '如果客户端把地址拆成“Base URL / Endpoint / 服务地址”，优先填写 https://niffler.org/v1。Claude Code 和 Gemini CLI 使用不带 /v1 的地址，详见“客户端接入”。',
+      connectionTitle: '填写接入信息', connectionDesc: '大多数 OpenAI 兼容 SDK 和客户端只需要下面三项。', baseUrl: 'Base URL', apiKey: 'API Key', modelId: 'Model ID', connectionHint: '如果客户端把地址拆成“Base URL / Endpoint / 服务地址”，优先填写 {baseUrl}。Claude Code 和 Gemini CLI 使用不带 /v1 的地址，详见“客户端接入”。',
       firstCall: '发起第一次请求', firstCallDesc: '先用 cURL 完成最小验证，再把相同的 Key、地址和模型 ID 放入 SDK 或客户端。请替换示例中的 YOUR_NIFFLER_KEY 和 YOUR_MODEL_ID。', pythonHint: '使用 Python 前先执行 pip install openai。',
       keepSafeTitle: '请妥善保存 API Key', keepSafeDesc: '密钥只会在创建时完整显示。不要提交到代码仓库，也不要在浏览器前端或公开日志中暴露。',
-      troubleshootTitle: '调用失败时先检查', troubleshootDesc: '首次接入的大多数问题都可以从下面四项快速定位。', checkKey: 'API Key', checkKeyDesc: '确认 Key 复制完整、没有多余空格，且未被禁用或删除。', checkBalance: '余额与额度', checkBalanceDesc: '确认钱包余额、套餐额度和 Key 自身限额仍然可用。', checkModel: '模型 ID 与权限', checkModelDesc: '从模型广场重新复制模型 ID，并确认当前 Key 有权访问该模型。', checkUrl: 'Base URL', checkUrlDesc: 'OpenAI 兼容接口应使用 https://niffler.org/v1，不要重复添加 /v1。',
+      troubleshootTitle: '调用失败时先检查', troubleshootDesc: '首次接入的大多数问题都可以从下面四项快速定位。', checkKey: 'API Key', checkKeyDesc: '确认 Key 复制完整、没有多余空格，且未被禁用或删除。', checkBalance: '余额与额度', checkBalanceDesc: '确认钱包余额、套餐额度和 Key 自身限额仍然可用。', checkModel: '模型 ID 与权限', checkModelDesc: '从模型广场重新复制模型 ID，并确认当前 Key 有权访问该模型。', checkUrl: 'Base URL', checkUrlDesc: 'OpenAI 兼容接口应使用 {baseUrl}，不要重复添加 /v1。',
       whatNext: '接下来可以做什么',
     },
     models: {
@@ -419,7 +419,7 @@ export default {
     },
     faq: {
       eyebrow: 'HELP CENTER', title: '常见问题', subtitle: '客户接入和调用过程中最常见的问题与处理方式。',
-      q1: '返回 401 Unauthorized 怎么处理？', a1: '确认使用的是 Niffler 创建的 API Key，密钥没有多余空格、未被禁用，并且 Base URL 使用 https://niffler.org/v1。Claude 和 Gemini CLI 请按对应文档使用不带 /v1 的地址。',
+      q1: '返回 401 Unauthorized 怎么处理？', a1: '确认使用的是 Niffler 创建的 API Key，密钥没有多余空格、未被禁用，并且 Base URL 使用 {baseUrl}。Claude 和 Gemini CLI 请按对应文档使用不带 /v1 的地址。',
       q2: '为什么提示余额或额度不足？', a2: '前往钱包中心检查钱包余额、套餐剩余额度和套餐有效期。如果 API Key 设置了独立限额，也需要确认该密钥仍有可用额度。',
       q3: '为什么提示模型不存在或无权使用？', a3: '请从模型广场复制准确的模型 ID，并确认当前 API Key 被授权使用该模型。模型可能因维护临时下线。',
       q4: '请求失败会扣费吗？', a4: '通常未产生有效用量的失败请求不会正常结算，但具体以使用记录为准。部分上游在返回错误前可能已经产生 Token 消耗。',

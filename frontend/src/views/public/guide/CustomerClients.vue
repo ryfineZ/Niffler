@@ -30,16 +30,18 @@
 import { computed, ref } from 'vue'
 import { Bot, Braces, Terminal } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { usePortalBaseUrl } from '@/composables/usePortalBaseUrl'
 import CustomerCodeBlock from './components/CustomerCodeBlock.vue'
 type ClientId = 'openai' | 'claude' | 'codex' | 'gemini'
 const { t } = useI18n()
+const { portalOrigin, apiBaseUrl } = usePortalBaseUrl()
 const activeClient = ref<ClientId>('openai')
 const clients = computed(() => [
   { id: 'openai' as const, name: 'OpenAI SDK', icon: Braces, description: t('guide.clients.openaiDesc'), blocks: [{ label: t('guide.clients.python'), file: 'app.py', code: `from openai import OpenAI
 
 client = OpenAI(
     api_key="YOUR_NIFFLER_KEY",
-    base_url="https://niffler.org/v1"
+    base_url="${apiBaseUrl.value}"
 )
 
 response = client.chat.completions.create(
@@ -49,7 +51,7 @@ response = client.chat.completions.create(
   { id: 'claude' as const, name: 'Claude Code', icon: Bot, description: t('guide.clients.claudeDesc'), blocks: [{ label: t('guide.clients.environment'), file: '~/.claude/settings.json', code: `{
   "env": {
     "ANTHROPIC_AUTH_TOKEN": "YOUR_NIFFLER_KEY",
-    "ANTHROPIC_BASE_URL": "https://niffler.org"
+    "ANTHROPIC_BASE_URL": "${portalOrigin.value}"
   }
 }` }, { label: t('guide.clients.launch'), file: 'Terminal', code: 'claude' }] },
   { id: 'codex' as const, name: 'Codex CLI', icon: Terminal, description: t('guide.clients.codexDesc'), blocks: [{ label: t('guide.clients.providerConfig'), file: '~/.codex/config.toml', code: `model_provider = "niffler"
@@ -58,13 +60,13 @@ model_reasoning_effort = "high"
 
 [model_providers.niffler]
 name = "Niffler"
-base_url = "https://niffler.org/v1"
+base_url = "${apiBaseUrl.value}"
 wire_api = "responses"
 requires_openai_auth = true` }, { label: t('guide.clients.authConfig'), file: '~/.codex/auth.json', code: `{
   "OPENAI_API_KEY": "YOUR_NIFFLER_KEY"
 }` }] },
   { id: 'gemini' as const, name: 'Gemini CLI', icon: Bot, description: t('guide.clients.geminiDesc'), blocks: [{ label: t('guide.clients.environment'), file: '~/.gemini/.env', code: `GEMINI_API_KEY=YOUR_NIFFLER_KEY
-GOOGLE_GEMINI_BASE_URL=https://niffler.org
+GOOGLE_GEMINI_BASE_URL=${portalOrigin.value}
 GEMINI_MODEL=gemini-3-pro` }, { label: t('guide.clients.settings'), file: '~/.gemini/settings.json', code: `{
   "security": {
     "auth": { "selectedType": "gemini-api-key" }

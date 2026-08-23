@@ -6,6 +6,10 @@
 	tls /etc/caddy/tls/niffler-origin.pem /etc/caddy/tls/niffler-origin.key
 }
 
+(no3realms_origin_tls) {
+	tls /etc/caddy/tls/no3realms-origin.pem /etc/caddy/tls/no3realms-origin.key
+}
+
 (niffler_latency_probe) {
 	@latency_probe path /__niffler_latency
 	handle @latency_probe {
@@ -33,10 +37,16 @@ api.niffler.org {
 	reverse_proxy 127.0.0.1:18084
 }
 
+no3realms.com, www.no3realms.com {
+	import niffler_common
+	import no3realms_origin_tls
+	reverse_proxy 127.0.0.1:18084
+}
+
 global.niffler.org {
 	import niffler_common
 	import niffler_origin_tls
-	reverse_proxy 127.0.0.1:18084
+	respond 404
 }
 
 niffler.org {

@@ -19,10 +19,12 @@ import { computed, ref } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { marked } from 'marked'
+import { usePortalBaseUrl } from '@/composables/usePortalBaseUrl'
 import { sanitizeMarkdown } from '@/utils/sanitize'
 const { t } = useI18n()
+const { apiBaseUrl } = usePortalBaseUrl()
 const openId = ref('')
-const fallbackFaqs = computed(() => [1, 2, 3, 4, 5, 6].map(index => ({ id: `default-${index}`, question: t(`guide.faq.q${index}`), answer: sanitizeMarkdown(marked.parse(t(`guide.faq.a${index}`)) as string) })))
+const fallbackFaqs = computed(() => [1, 2, 3, 4, 5, 6].map(index => ({ id: `default-${index}`, question: t(`guide.faq.q${index}`), answer: sanitizeMarkdown(marked.parse(t(`guide.faq.a${index}`, { baseUrl: apiBaseUrl.value })) as string) })))
 const faqs = fallbackFaqs
 if (faqs.value.length) openId.value = faqs.value[0].id
 </script>
