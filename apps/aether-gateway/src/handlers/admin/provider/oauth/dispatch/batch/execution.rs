@@ -12,8 +12,7 @@ use super::progress::{
     maybe_report_admin_provider_oauth_batch_import_progress,
     AdminProviderOAuthBatchProgressReporter,
 };
-use crate::handlers::admin::provider::oauth::duplicates::
-    find_duplicate_provider_oauth_key_for_import;
+use crate::handlers::admin::provider::oauth::duplicates::find_duplicate_provider_oauth_key_for_import;
 use crate::handlers::admin::provider::oauth::provisioning::build_provider_oauth_auth_config_from_token_payload;
 use crate::handlers::admin::provider::oauth::provisioning::{
     create_provider_oauth_catalog_key_with_fingerprint, provider_oauth_active_api_formats,

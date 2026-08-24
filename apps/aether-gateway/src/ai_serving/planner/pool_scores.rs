@@ -184,10 +184,8 @@ mod tests {
         let now_unix_secs = 1_776_395_200;
         let mut key = oauth_key();
         key.oauth_invalid_at_unix_secs = Some(now_unix_secs);
-        key.oauth_invalid_reason = Some(
-            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
-                .to_string(),
-        );
+        key.oauth_invalid_reason =
+            Some("[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换".to_string());
         key.expires_at_unix_secs = Some(now_unix_secs + 3_600);
 
         let score = build_provider_key_pool_score_upsert(
@@ -206,10 +204,8 @@ mod tests {
         let now_unix_secs = 1_776_395_200;
         let mut key = oauth_key();
         key.oauth_invalid_at_unix_secs = Some(now_unix_secs - 60);
-        key.oauth_invalid_reason = Some(
-            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
-                .to_string(),
-        );
+        key.oauth_invalid_reason =
+            Some("[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换".to_string());
         key.expires_at_unix_secs = Some(now_unix_secs);
 
         let score = build_provider_key_pool_score_upsert(

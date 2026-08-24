@@ -381,9 +381,7 @@ fn incoming_oauth_credentials_are_verified(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        incoming_oauth_credentials_are_verified, provider_oauth_duplicate_error_message,
-    };
+    use super::{incoming_oauth_credentials_are_verified, provider_oauth_duplicate_error_message};
 
     #[test]
     fn provider_oauth_duplicate_error_message_labels_existing_pool_record() {

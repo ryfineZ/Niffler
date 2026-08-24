@@ -251,9 +251,7 @@ fn derive_hard_state(
     if input.oauth_invalid {
         if let Some(reason) = input.oauth_invalid_reason.as_deref() {
             let reason = reason.to_ascii_lowercase();
-            if reason.contains("ban")
-                || reason.contains("blocked")
-                || reason.contains("suspended")
+            if reason.contains("ban") || reason.contains("blocked") || reason.contains("suspended")
             {
                 return PoolMemberHardState::Banned;
             }
@@ -406,10 +404,8 @@ mod tests {
     #[test]
     fn non_blocking_oauth_warning_does_not_set_auth_invalid_hard_state() {
         let mut input = input();
-        input.oauth_invalid_reason = Some(
-            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
-                .to_string(),
-        );
+        input.oauth_invalid_reason =
+            Some("[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换".to_string());
 
         let output = score_pool_member(&input);
 

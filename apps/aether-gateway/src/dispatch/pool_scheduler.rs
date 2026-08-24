@@ -16,8 +16,8 @@ use aether_pool_core::{
     run_pool_scheduler, PoolCandidateFacts, PoolCandidateInput, PoolCandidateOrchestration,
     PoolMemberSignals, PoolRuntimeState, PoolSchedulingConfig, PoolSchedulingPreset,
     POOL_ACCOUNT_BLOCKED_SKIP_REASON, POOL_ACCOUNT_EXHAUSTED_SKIP_REASON,
-    POOL_COOLDOWN_SKIP_REASON, POOL_COST_LIMIT_REACHED_SKIP_REASON,
-    POOL_SCORE_VERSION, POOL_TEMPORARY_UNAVAILABLE_SKIP_REASON,
+    POOL_COOLDOWN_SKIP_REASON, POOL_COST_LIMIT_REACHED_SKIP_REASON, POOL_SCORE_VERSION,
+    POOL_TEMPORARY_UNAVAILABLE_SKIP_REASON,
 };
 use aether_provider_pool::ProviderPoolService;
 use aether_routing_core::{RankingOverlay, ResolvedRoutingPolicy, RoutingSchedulingPreset};
@@ -1775,7 +1775,7 @@ mod tests {
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
-    use aether_pool_core::PoolSchedulingPreset;
+    use aether_pool_core::{PoolSchedulingPreset, POOL_SCORE_VERSION};
     use aether_provider_pool::ProviderPoolService;
     use aether_provider_transport::snapshot::{
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
