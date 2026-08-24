@@ -83,19 +83,21 @@ pub(crate) fn build_local_execution_report_context(
         parts.original_request_body_base64,
     );
     let mut extra_fields = parts.extra_fields;
-    if let Some(trace_id) =
-        crate::headers::header_value_str(parts.original_headers, crate::constants::TRACE_ID_HEADER)
+    if let Some(trace_id) = original_headers
+        .get(crate::constants::TRACE_ID_HEADER)
+        .filter(|value| !value.is_empty())
     {
         extra_fields
             .entry("trace_id".to_string())
-            .or_insert_with(|| Value::String(trace_id));
+            .or_insert_with(|| Value::String(trace_id.clone()));
     }
-    if let Some(client_request_id) =
-        crate::headers::header_value_str(parts.original_headers, "x-request-id")
+    if let Some(client_request_id) = original_headers
+        .get("x-request-id")
+        .filter(|value| !value.is_empty())
     {
         extra_fields
             .entry("client_request_id".to_string())
-            .or_insert_with(|| Value::String(client_request_id));
+            .or_insert_with(|| Value::String(client_request_id.clone()));
     }
     if let Some(value) = parts
         .client_session_affinity
