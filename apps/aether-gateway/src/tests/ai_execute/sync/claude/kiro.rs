@@ -1066,6 +1066,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -1084,7 +1085,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .expect("execution runtime sync should be captured");
     assert_eq!(
         seen_execution_runtime_request.trace_id,
-        "trace-kiro-cli-local-refresh-123"
+        request_id
     );
     assert_eq!(
         seen_execution_runtime_request.authorization,

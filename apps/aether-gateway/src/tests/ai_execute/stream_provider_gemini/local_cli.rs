@@ -1945,10 +1945,7 @@ async fn gateway_executes_antigravity_gemini_cli_stream_via_local_decision_gate_
         seen_execution_runtime_request.project,
         "project-antigravity-stream-local-1"
     );
-    assert_eq!(
-        seen_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_execution_runtime_request.request_id, request_id);
     assert_eq!(seen_execution_runtime_request.model, "claude-sonnet-4-5");
     assert_eq!(seen_execution_runtime_request.user_agent, "antigravity");
     assert_eq!(seen_execution_runtime_request.request_type, "agent");
