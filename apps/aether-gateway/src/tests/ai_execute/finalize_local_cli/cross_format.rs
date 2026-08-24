@@ -431,10 +431,7 @@ async fn gateway_executes_openai_responses_cross_format_upstream_stream_via_loca
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-cli-xfmt-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent"
@@ -894,10 +891,7 @@ async fn gateway_executes_openai_responses_cross_format_function_call_upstream_s
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-cli-xfmt-tool-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent"
@@ -1507,10 +1501,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
         seen_remote_execution_runtime_request.project,
         "project-antigravity-local-1"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.model,
         "claude-sonnet-4-5"

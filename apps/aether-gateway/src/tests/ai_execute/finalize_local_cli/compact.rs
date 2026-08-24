@@ -431,10 +431,7 @@ async fn gateway_executes_openai_responses_compact_openai_family_upstream_stream
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-compact-openai-family-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://api.openai.example/custom/v1/responses/compact"

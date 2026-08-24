@@ -447,10 +447,7 @@ async fn gateway_executes_openai_responses_sync_upstream_stream_via_local_finali
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-cli-stream-sync-direct-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://api.openai.example/custom/v1/responses"
@@ -1048,10 +1045,7 @@ async fn gateway_executes_kiro_claude_cli_sync_upstream_stream_via_local_finaliz
         seen_remote_execution_runtime_request.trace_id,
         "trace-kiro-cli-finalize-local-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        request_id
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://kiro.us-east-1.example/generateAssistantResponse?tenant=demo"
