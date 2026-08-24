@@ -1,3 +1,4 @@
+use aether_admin::provider::pool as admin_provider_pool_pure;
 use aether_data_contracts::repository::pool_scores::{
     PoolMemberIdentity, PoolMemberProbeStatus, PoolScoreScope, UpsertPoolMemberScore,
     POOL_SCORE_CAPABILITY_ACCOUNT, POOL_SCORE_SCOPE_KIND_ACCOUNT,
@@ -124,6 +125,7 @@ fn provider_key_score_input(
             .and_then(|account| account.get("blocked"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        oauth_invalid: admin_provider_pool_pure::admin_pool_is_oauth_invalid(key, now_unix_secs),
         oauth_invalid_reason: key.oauth_invalid_reason.clone(),
         circuit_open: any_circuit_open,
         success_count: key.success_count.unwrap_or(0).into(),
@@ -158,4 +160,66 @@ fn stable_hash(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_data_contracts::repository::pool_scores::PoolMemberHardState;
+
+    fn oauth_key() -> StoredProviderCatalogKey {
+        StoredProviderCatalogKey::new(
+            "key-1".to_string(),
+            "provider-1".to_string(),
+            "key-1".to_string(),
+            "oauth".to_string(),
+            None,
+            true,
+        )
+        .expect("key should build")
+    }
+
+    #[test]
+    fn refresh_failed_oauth_score_stays_available_before_access_token_expiry() {
+        let now_unix_secs = 1_776_395_200;
+        let mut key = oauth_key();
+        key.oauth_invalid_at_unix_secs = Some(now_unix_secs);
+        key.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
+                .to_string(),
+        );
+        key.expires_at_unix_secs = Some(now_unix_secs + 3_600);
+
+        let score = build_provider_key_pool_score_upsert(
+            &key,
+            "codex",
+            None,
+            now_unix_secs,
+            PoolMemberScoreRules::default(),
+        );
+
+        assert_eq!(score.hard_state, PoolMemberHardState::Available);
+    }
+
+    #[test]
+    fn refresh_failed_oauth_score_becomes_auth_invalid_after_access_token_expiry() {
+        let now_unix_secs = 1_776_395_200;
+        let mut key = oauth_key();
+        key.oauth_invalid_at_unix_secs = Some(now_unix_secs - 60);
+        key.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
+                .to_string(),
+        );
+        key.expires_at_unix_secs = Some(now_unix_secs);
+
+        let score = build_provider_key_pool_score_upsert(
+            &key,
+            "codex",
+            None,
+            now_unix_secs,
+            PoolMemberScoreRules::default(),
+        );
+
+        assert_eq!(score.hard_state, PoolMemberHardState::AuthInvalid);
+    }
 }

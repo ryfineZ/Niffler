@@ -17,7 +17,7 @@ use aether_pool_core::{
     PoolMemberSignals, PoolRuntimeState, PoolSchedulingConfig, PoolSchedulingPreset,
     POOL_ACCOUNT_BLOCKED_SKIP_REASON, POOL_ACCOUNT_EXHAUSTED_SKIP_REASON,
     POOL_COOLDOWN_SKIP_REASON, POOL_COST_LIMIT_REACHED_SKIP_REASON,
-    POOL_TEMPORARY_UNAVAILABLE_SKIP_REASON,
+    POOL_SCORE_VERSION, POOL_TEMPORARY_UNAVAILABLE_SKIP_REASON,
 };
 use aether_provider_pool::ProviderPoolService;
 use aether_routing_core::{RankingOverlay, ResolvedRoutingPolicy, RoutingSchedulingPreset};
@@ -1219,6 +1219,7 @@ async fn read_pool_score_hard_states_by_key_id(
 
     scores
         .into_iter()
+        .filter(|score| score.score_version == POOL_SCORE_VERSION)
         .filter_map(|score| {
             score_id_to_key_id
                 .get(&score.id)
@@ -3602,6 +3603,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_key_cursor_ignores_stale_unschedulable_pool_score_version() {
+        let provider_config = Some(json!({ "pool_advanced": {} }));
+        let (provider, endpoint, keys, rows) = large_pool_fixture(1, provider_config.clone());
+        let identity = PoolMemberIdentity::provider_api_key("provider-pool", "key-00000");
+        let mut score = sample_pool_member_score(identity, PoolMemberHardState::AuthInvalid);
+        score.score_version = POOL_SCORE_VERSION.saturating_sub(1);
+        let data_state =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider],
+                    vec![endpoint],
+                    keys,
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_pool_score_repository_for_tests(Arc::new(
+                InMemoryPoolMemberScoreRepository::seed(vec![score]),
+            ))
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY);
+        let app = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(data_state);
+        let group = sample_eligible_candidate(
+            "provider-pool",
+            "endpoint-1",
+            "pool-group",
+            10,
+            provider_config,
+        );
+        let mut cursor = PoolKeyCursor::new(PlannerAppState::new(&app), group, None, None, None);
+        cursor.page_size = 1;
+        cursor.max_scanned_keys = 1;
+
+        let candidate = cursor
+            .next_key()
+            .await
+            .expect("stale score hard state must not block the key");
+
+        assert_eq!(candidate.candidate.key_id, "key-00000");
+    }
+
+    #[tokio::test]
     async fn pool_key_cursor_simulates_large_lru_pool_with_lazy_pages_and_dynamic_skips() {
         const KEY_COUNT: usize = 2048;
         let provider_config = Some(json!({
@@ -3951,7 +3994,7 @@ mod tests {
             scope_id: scope.scope_id,
             score: 0.5,
             hard_state,
-            score_version: 1,
+            score_version: POOL_SCORE_VERSION,
             score_reason: json!({}),
             last_ranked_at: Some(1_700_000_000),
             last_scheduled_at: None,

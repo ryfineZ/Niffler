@@ -12,7 +12,8 @@ use super::progress::{
     maybe_report_admin_provider_oauth_batch_import_progress,
     AdminProviderOAuthBatchProgressReporter,
 };
-use crate::handlers::admin::provider::oauth::duplicates::find_duplicate_provider_oauth_key;
+use crate::handlers::admin::provider::oauth::duplicates::
+    find_duplicate_provider_oauth_key_for_import;
 use crate::handlers::admin::provider::oauth::provisioning::build_provider_oauth_auth_config_from_token_payload;
 use crate::handlers::admin::provider::oauth::provisioning::{
     create_provider_oauth_catalog_key_with_fingerprint, provider_oauth_active_api_formats,
@@ -344,28 +345,35 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
         apply_admin_provider_oauth_batch_import_hints(provider_type, entry, &mut auth_config);
         let is_active = !entry.disabled;
 
-        let duplicate =
-            match find_duplicate_provider_oauth_key(state, provider_id, &auth_config, None).await {
-                Ok(value) => value,
-                Err(detail) => {
-                    failed += 1;
-                    results.push(json!({
-                        "index": index,
-                        "status": "error",
-                        "error": detail,
-                        "replaced": false,
-                    }));
-                    maybe_report_admin_provider_oauth_batch_import_progress(
-                        &mut progress,
-                        entries.len(),
-                        success,
-                        failed,
-                        &results,
-                    )
-                    .await;
-                    continue;
-                }
-            };
+        let duplicate = match find_duplicate_provider_oauth_key_for_import(
+            state,
+            provider_id,
+            &auth_config,
+            None,
+            false,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(detail) => {
+                failed += 1;
+                results.push(json!({
+                    "index": index,
+                    "status": "error",
+                    "error": detail,
+                    "replaced": false,
+                }));
+                maybe_report_admin_provider_oauth_batch_import_progress(
+                    &mut progress,
+                    entries.len(),
+                    success,
+                    failed,
+                    &results,
+                )
+                .await;
+                continue;
+            }
+        };
 
         let replaced = duplicate.is_some();
         let (persisted_key, key_name) = if let Some(existing_key) = duplicate {

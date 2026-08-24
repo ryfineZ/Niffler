@@ -1,4 +1,4 @@
-use super::super::duplicates::find_duplicate_provider_oauth_key_with_replace_policy;
+use super::super::duplicates::find_duplicate_provider_oauth_key_for_import;
 use super::super::errors::build_internal_control_error_response;
 use super::super::provisioning::{
     build_provider_oauth_auth_config_from_token_payload, create_provider_oauth_catalog_key,
@@ -476,7 +476,7 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
         .is_some_and(|value| !value.is_empty());
 
     let api_formats = provider_oauth_active_api_formats(&endpoints);
-    let duplicate = match find_duplicate_provider_oauth_key_with_replace_policy(
+    let duplicate = match find_duplicate_provider_oauth_key_for_import(
         state,
         &provider_id,
         &auth_config,

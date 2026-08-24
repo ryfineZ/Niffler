@@ -201,6 +201,43 @@ pub(crate) async fn find_duplicate_provider_oauth_key_with_replace_policy(
     exclude_key_id: Option<&str>,
     allow_active_replace: bool,
 ) -> Result<Option<StoredProviderCatalogKey>, String> {
+    find_duplicate_provider_oauth_key_internal(
+        state,
+        provider_id,
+        auth_config,
+        exclude_key_id,
+        allow_active_replace,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn find_duplicate_provider_oauth_key_for_import(
+    state: &AdminAppState<'_>,
+    provider_id: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    exclude_key_id: Option<&str>,
+    allow_active_replace: bool,
+) -> Result<Option<StoredProviderCatalogKey>, String> {
+    find_duplicate_provider_oauth_key_internal(
+        state,
+        provider_id,
+        auth_config,
+        exclude_key_id,
+        allow_active_replace,
+        true,
+    )
+    .await
+}
+
+async fn find_duplicate_provider_oauth_key_internal(
+    state: &AdminAppState<'_>,
+    provider_id: &str,
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    exclude_key_id: Option<&str>,
+    allow_active_replace: bool,
+    allow_verified_import_replace: bool,
+) -> Result<Option<StoredProviderCatalogKey>, String> {
     let new_email = normalize_provider_oauth_identity_value(auth_config.get("email"));
     let new_user_id = normalize_provider_oauth_identity_value(auth_config.get("user_id"));
     let new_auth_method = normalize_provider_oauth_identity_value(auth_config.get("auth_method"));
@@ -289,7 +326,10 @@ pub(crate) async fn find_duplicate_provider_oauth_key_with_replace_policy(
         if !is_duplicate {
             continue;
         }
-        if allow_active_replace || existing_provider_oauth_key_is_replaceable(&existing_key) {
+        if allow_active_replace
+            || existing_provider_oauth_key_is_replaceable(&existing_key)
+            || incoming_oauth_credentials_are_verified(auth_config, allow_verified_import_replace)
+        {
             return Ok(Some(existing_key));
         }
         let identifier =
@@ -307,9 +347,43 @@ pub(crate) async fn find_duplicate_provider_oauth_key_with_replace_policy(
     Ok(None)
 }
 
+fn incoming_oauth_credentials_are_verified(
+    auth_config: &serde_json::Map<String, serde_json::Value>,
+    allow_verified_import_replace: bool,
+) -> bool {
+    // An OAuth import has already performed a refresh-token exchange before
+    // duplicate detection. A successful exchange proves that the incoming
+    // credential is usable and, for rotated providers, yields the next RT
+    // generation. Never replace an active record with the access-token
+    // fallback that carries a refresh error.
+    if !allow_verified_import_replace {
+        return false;
+    }
+    if auth_config
+        .get("refresh_token")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        return false;
+    }
+    if auth_config
+        .get("refresh_token_import_error")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::provider_oauth_duplicate_error_message;
+    use super::{
+        incoming_oauth_credentials_are_verified, provider_oauth_duplicate_error_message,
+    };
 
     #[test]
     fn provider_oauth_duplicate_error_message_labels_existing_pool_record() {
@@ -328,5 +402,30 @@ mod tests {
             message,
             "该 OAuth 账号已添加到当前提供商，不能重复添加。已存在的号池记录：ChatGPT"
         );
+    }
+
+    #[test]
+    fn verified_oauth_import_can_replace_active_record() {
+        let auth_config = serde_json::json!({
+            "refresh_token": "new-refresh-token"
+        })
+        .as_object()
+        .cloned()
+        .expect("auth config should be an object");
+
+        assert!(incoming_oauth_credentials_are_verified(&auth_config, true));
+    }
+
+    #[test]
+    fn failed_refresh_fallback_cannot_replace_active_record() {
+        let auth_config = serde_json::json!({
+            "refresh_token": "stale-refresh-token",
+            "refresh_token_import_error": "refresh_token 已被使用并轮换"
+        })
+        .as_object()
+        .cloned()
+        .expect("auth config should be an object");
+
+        assert!(!incoming_oauth_credentials_are_verified(&auth_config, true));
     }
 }

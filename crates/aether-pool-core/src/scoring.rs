@@ -3,7 +3,7 @@ use aether_data_contracts::repository::pool_scores::{
 };
 use serde_json::{json, Value};
 
-pub const POOL_SCORE_VERSION: u64 = 1;
+pub const POOL_SCORE_VERSION: u64 = 2;
 pub const PROBE_FRESHNESS_TTL_SECONDS: u64 = 30 * 60;
 pub const UNSCHEDULABLE_SCORE_CAP: f64 = 0.05;
 pub const PROBE_FAILURE_PENALTY: f64 = 0.05;
@@ -137,6 +137,7 @@ pub struct PoolMemberScoreInput {
     pub quota_usage_ratio: Option<f64>,
     pub quota_exhausted: bool,
     pub account_blocked: bool,
+    pub oauth_invalid: bool,
     pub oauth_invalid_reason: Option<String>,
     pub circuit_open: bool,
     pub success_count: u64,
@@ -247,10 +248,15 @@ fn derive_hard_state(
     if !input.is_active {
         return PoolMemberHardState::Inactive;
     }
-    if let Some(reason) = input.oauth_invalid_reason.as_deref() {
-        let reason = reason.to_ascii_lowercase();
-        if reason.contains("ban") || reason.contains("blocked") || reason.contains("suspended") {
-            return PoolMemberHardState::Banned;
+    if input.oauth_invalid {
+        if let Some(reason) = input.oauth_invalid_reason.as_deref() {
+            let reason = reason.to_ascii_lowercase();
+            if reason.contains("ban")
+                || reason.contains("blocked")
+                || reason.contains("suspended")
+            {
+                return PoolMemberHardState::Banned;
+            }
         }
         return PoolMemberHardState::AuthInvalid;
     }
@@ -369,6 +375,7 @@ mod tests {
             quota_usage_ratio: Some(0.1),
             quota_exhausted: false,
             account_blocked: false,
+            oauth_invalid: false,
             oauth_invalid_reason: None,
             circuit_open: false,
             success_count: 10,
@@ -387,12 +394,26 @@ mod tests {
     #[test]
     fn hard_state_caps_unavailable_member_score() {
         let mut input = input();
+        input.oauth_invalid = true;
         input.oauth_invalid_reason = Some("token invalid".to_string());
 
         let output = score_pool_member(&input);
 
         assert_eq!(output.hard_state, PoolMemberHardState::AuthInvalid);
         assert!(output.score <= 0.05);
+    }
+
+    #[test]
+    fn non_blocking_oauth_warning_does_not_set_auth_invalid_hard_state() {
+        let mut input = input();
+        input.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
+                .to_string(),
+        );
+
+        let output = score_pool_member(&input);
+
+        assert_eq!(output.hard_state, PoolMemberHardState::Available);
     }
 
     #[test]

@@ -286,9 +286,7 @@ pub fn admin_pool_resolve_scheduling_state(
             None,
             input.account_status_reason,
         )
-    } else if input.key.oauth_invalid_at_unix_secs.is_some()
-        || admin_pool_is_oauth_invalid(input.key, input.now_unix_secs)
-    {
+    } else if admin_pool_is_oauth_invalid(input.key, input.now_unix_secs) {
         (
             ProviderKeySchedulingState::Invalid,
             "oauth_invalid",
@@ -399,6 +397,9 @@ pub fn admin_pool_is_oauth_invalid(key: &StoredProviderCatalogKey, now_unix_secs
         if !reason.is_empty() {
             return true;
         }
+    }
+    if key.oauth_invalid_at_unix_secs.is_some() {
+        return true;
     }
     key.expires_at_unix_secs
         .is_some_and(|value| value > 0 && value <= now_unix_secs)
@@ -914,6 +915,88 @@ mod tests {
         assert_eq!(state.state, ProviderKeySchedulingState::Invalid);
         assert_eq!(state.reason, "oauth_invalid");
         assert_eq!(state.reason_label, "已失效");
+    }
+
+    #[test]
+    fn scheduling_state_keeps_refresh_failed_oauth_available_before_access_token_expiry() {
+        let now_unix_secs = 1_776_395_200;
+        let mut key = sample_key(None);
+        key.oauth_invalid_at_unix_secs = Some(now_unix_secs);
+        key.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
+                .to_string(),
+        );
+        key.expires_at_unix_secs = Some(now_unix_secs + 3_600);
+
+        let state = admin_pool_resolve_scheduling_state(AdminPoolSchedulingStateInput {
+            key: &key,
+            now_unix_secs,
+            cooldown_reason: None,
+            cooldown_ttl_seconds: None,
+            account_blocked: false,
+            account_status_code: None,
+            account_status_label: None,
+            account_status_reason: None,
+            account_status_source: None,
+            account_quota_exhausted: false,
+        });
+
+        assert_eq!(state.state, ProviderKeySchedulingState::Available);
+        assert_eq!(state.reason, "available");
+        assert!(!state.blocking);
+    }
+
+    #[test]
+    fn scheduling_state_blocks_refresh_failed_oauth_after_access_token_expiry() {
+        let now_unix_secs = 1_776_395_200;
+        let mut key = sample_key(None);
+        key.oauth_invalid_at_unix_secs = Some(now_unix_secs - 60);
+        key.oauth_invalid_reason = Some(
+            "[REFRESH_FAILED] Token 续期失败 (401): refresh_token 已被使用并轮换"
+                .to_string(),
+        );
+        key.expires_at_unix_secs = Some(now_unix_secs);
+
+        let state = admin_pool_resolve_scheduling_state(AdminPoolSchedulingStateInput {
+            key: &key,
+            now_unix_secs,
+            cooldown_reason: None,
+            cooldown_ttl_seconds: None,
+            account_blocked: false,
+            account_status_code: None,
+            account_status_label: None,
+            account_status_reason: None,
+            account_status_source: None,
+            account_quota_exhausted: false,
+        });
+
+        assert_eq!(state.state, ProviderKeySchedulingState::Invalid);
+        assert_eq!(state.reason, "oauth_invalid");
+        assert!(state.blocking);
+    }
+
+    #[test]
+    fn scheduling_state_preserves_legacy_oauth_invalid_marker_without_reason() {
+        let now_unix_secs = 1_776_395_200;
+        let mut key = sample_key(None);
+        key.oauth_invalid_at_unix_secs = Some(now_unix_secs - 60);
+        key.expires_at_unix_secs = Some(now_unix_secs + 3_600);
+
+        let state = admin_pool_resolve_scheduling_state(AdminPoolSchedulingStateInput {
+            key: &key,
+            now_unix_secs,
+            cooldown_reason: None,
+            cooldown_ttl_seconds: None,
+            account_blocked: false,
+            account_status_code: None,
+            account_status_label: None,
+            account_status_reason: None,
+            account_status_source: None,
+            account_quota_exhausted: false,
+        });
+
+        assert_eq!(state.state, ProviderKeySchedulingState::Invalid);
+        assert!(state.blocking);
     }
 }
 
