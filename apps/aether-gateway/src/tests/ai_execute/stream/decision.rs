@@ -899,7 +899,10 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_responses_cross_fo
         seen_execution_runtime_request.authorization,
         "Bearer sk-upstream-openai-chat-cli"
     );
-    assert_eq!(seen_execution_runtime_request.x_client_request_id, request_id);
+    assert_eq!(
+        seen_execution_runtime_request.x_client_request_id,
+        request_id
+    );
     assert_eq!(
         seen_execution_runtime_request.prompt_cache_key,
         "b6741389-8b9e-5c00-bef6-fbce92aee45a"
