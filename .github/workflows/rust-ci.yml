@@ -192,6 +192,7 @@ jobs:
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
+          RUST_MIN_STACK: "16777216"
         run: cargo nextest run -p aether-gateway
 
       - name: Show sccache stats
