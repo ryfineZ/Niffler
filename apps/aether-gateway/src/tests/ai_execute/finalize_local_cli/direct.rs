@@ -402,6 +402,7 @@ async fn gateway_executes_openai_responses_sync_upstream_stream_via_local_finali
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -448,7 +449,7 @@ async fn gateway_executes_openai_responses_sync_upstream_stream_via_local_finali
     );
     assert_eq!(
         seen_remote_execution_runtime_request.request_id,
-        "trace-openai-cli-stream-sync-direct-123"
+        request_id
     );
     assert_eq!(
         seen_remote_execution_runtime_request.url,
@@ -470,7 +471,7 @@ async fn gateway_executes_openai_responses_sync_upstream_stream_via_local_finali
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-cli-stream-sync-direct-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -990,6 +991,7 @@ async fn gateway_executes_kiro_claude_cli_sync_upstream_stream_via_local_finaliz
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_text = response.text().await.expect("body should read");
@@ -1048,7 +1050,7 @@ async fn gateway_executes_kiro_claude_cli_sync_upstream_stream_via_local_finaliz
     );
     assert_eq!(
         seen_remote_execution_runtime_request.request_id,
-        "trace-kiro-cli-finalize-local-123"
+        request_id
     );
     assert_eq!(
         seen_remote_execution_runtime_request.url,
@@ -1098,7 +1100,7 @@ async fn gateway_executes_kiro_claude_cli_sync_upstream_stream_via_local_finaliz
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-kiro-cli-finalize-local-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
