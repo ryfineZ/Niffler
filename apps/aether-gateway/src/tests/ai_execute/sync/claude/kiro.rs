@@ -1083,10 +1083,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .expect("mutex should lock")
         .clone()
         .expect("execution runtime sync should be captured");
-    assert_eq!(
-        seen_execution_runtime_request.trace_id,
-        request_id
-    );
+    assert_eq!(seen_execution_runtime_request.trace_id, request_id);
     assert_eq!(
         seen_execution_runtime_request.authorization,
         "Bearer refreshed-kiro-access-token"

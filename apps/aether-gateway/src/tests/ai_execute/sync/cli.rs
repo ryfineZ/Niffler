@@ -3544,6 +3544,7 @@ async fn gateway_executes_codex_cli_sync_via_local_decision_gate_after_oauth_ref
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -3593,7 +3594,7 @@ async fn gateway_executes_codex_cli_sync_via_local_decision_gate_after_oauth_ref
     );
     assert_eq!(
         seen_execution_runtime_request.x_client_request_id,
-        "trace-codex-cli-local-123"
+        request_id
     );
     assert!(seen_execution_runtime_request.stream_present);
     assert!(seen_execution_runtime_request.plan_stream);
