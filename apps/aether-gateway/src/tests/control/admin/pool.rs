@@ -3177,6 +3177,7 @@ async fn gateway_resolve_selection_applies_status_filter() {
         "sk-invalid",
     );
     invalid_key.name = "invalid account".to_string();
+    invalid_key.auth_type = "oauth".to_string();
     invalid_key.oauth_invalid_at_unix_secs = Some(1_700_000_000);
     invalid_key.oauth_invalid_reason = Some("refresh token expired".to_string());
     let mut available_key = sample_key(
