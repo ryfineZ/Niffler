@@ -415,6 +415,7 @@ async fn gateway_executes_claude_chat_sync_via_local_decision_gate_with_local_sy
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -613,7 +614,7 @@ async fn gateway_surfaces_candidate_list_empty_reason_for_claude_chat_runtime_mi
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-claude-chat-empty-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert!(stored_candidates.is_empty());

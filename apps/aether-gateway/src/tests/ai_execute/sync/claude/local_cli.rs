@@ -417,6 +417,7 @@ async fn gateway_executes_claude_cli_sync_via_local_decision_gate_with_local_syn
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_body = response.text().await.expect("body should read");
@@ -1022,7 +1023,7 @@ async fn gateway_marks_claude_cli_cross_format_runtime_miss_when_format_conversi
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-claude-cli-openai-local-miss-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert!(stored_candidates.is_empty());

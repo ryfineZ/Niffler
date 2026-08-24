@@ -1092,11 +1092,12 @@ async fn gateway_routes_openai_chat_stream_image_intent_to_openai_image_plan_wit
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_text = response.text().await.expect("body should read");
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-chat-stream-image-bridge-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidates should read");
     assert_eq!(

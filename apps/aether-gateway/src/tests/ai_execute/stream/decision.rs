@@ -4,6 +4,7 @@ use super::{
     Json, Mutex, Request, Response, Router, StatusCode, EXECUTION_PATH_EXECUTION_RUNTIME_STREAM,
     EXECUTION_PATH_HEADER, TRACE_ID_HEADER,
 };
+use crate::constants::CONTROL_REQUEST_ID_HEADER;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
     InMemoryAuthApiKeySnapshotRepository, StoredAuthApiKeySnapshot,
@@ -21,6 +22,15 @@ use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
 };
 use sha2::{Digest, Sha256};
+
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
 
 #[tokio::test]
 async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_execution_runtime_override(
@@ -381,6 +391,7 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_exe
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -411,7 +422,7 @@ async fn gateway_executes_openai_chat_stream_via_local_decision_gate_without_exe
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-chat-local-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -852,6 +863,7 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_responses_cross_fo
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -887,10 +899,7 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_responses_cross_fo
         seen_execution_runtime_request.authorization,
         "Bearer sk-upstream-openai-chat-cli"
     );
-    assert_eq!(
-        seen_execution_runtime_request.x_client_request_id,
-        "trace-openai-chat-cli-local-123"
-    );
+    assert_eq!(seen_execution_runtime_request.x_client_request_id, request_id);
     assert_eq!(
         seen_execution_runtime_request.prompt_cache_key,
         "b6741389-8b9e-5c00-bef6-fbce92aee45a"
@@ -920,7 +929,7 @@ async fn gateway_executes_openai_chat_stream_via_local_openai_responses_cross_fo
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-chat-cli-local-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -1308,6 +1317,7 @@ async fn gateway_executes_openai_chat_stream_via_local_cross_format_gemini_candi
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1351,7 +1361,7 @@ async fn gateway_executes_openai_chat_stream_via_local_cross_format_gemini_candi
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-chat-gemini-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -1799,6 +1809,7 @@ async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1860,7 +1871,7 @@ async fn gateway_executes_openai_chat_stream_with_custom_path_via_local_decision
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-chat-custom-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -2319,6 +2330,7 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
         .send()
         .await
         .expect("request should succeed");
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -2370,7 +2382,7 @@ async fn gateway_retries_next_local_openai_chat_stream_candidate_after_retryable
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-chat-local-stream-failover-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 2
