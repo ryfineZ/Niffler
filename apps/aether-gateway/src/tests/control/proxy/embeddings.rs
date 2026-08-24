@@ -663,13 +663,14 @@ async fn embeddings_route_converts_openai_payload_to_vertex_gemini_embedding_pro
         .get(CONTROL_ENDPOINT_SIGNATURE_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let response_headers = response.headers().clone();
     let status = response.status();
     let body_text = response.text().await.expect("body should read");
     assert_eq!(
         status,
         StatusCode::OK,
         "unexpected response headers: {:?}; body: {body_text}",
-        response.headers()
+        response_headers
     );
     assert_eq!(endpoint_signature.as_deref(), Some("openai:embedding"));
     let payload: serde_json::Value = serde_json::from_str(&body_text).expect("body should parse");
