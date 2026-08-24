@@ -415,6 +415,7 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_syn
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let response_status = response.status();
     let response_body = response.text().await.expect("body should read");
@@ -468,7 +469,7 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_with_local_syn
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-gemini-cli-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -731,6 +732,7 @@ async fn gateway_returns_gemini_cli_error_for_local_sync_failure_impl() {
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -754,7 +756,7 @@ async fn gateway_returns_gemini_cli_error_for_local_sync_failure_impl() {
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-gemini-cli-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;
@@ -1208,6 +1210,7 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_re
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -1274,7 +1277,7 @@ async fn gateway_executes_gemini_cli_sync_via_local_decision_gate_after_oauth_re
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-gemini-cli-oauth-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -1682,6 +1685,7 @@ async fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -1717,7 +1721,7 @@ async fn gateway_executes_vertex_ai_gemini_cli_sync_via_local_decision_gate_with
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-vertex-cli-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -2214,6 +2218,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -2307,7 +2312,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-antigravity-cli-oauth-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;

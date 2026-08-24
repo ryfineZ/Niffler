@@ -43,6 +43,15 @@ use sha2::{Digest, Sha256};
 mod local_chat;
 mod local_cli;
 
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(crate::constants::CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
+
 async fn wait_for_request_candidate_status(
     gateway_state: &AppState,
     request_candidate_repository: &Arc<InMemoryRequestCandidateRepository>,

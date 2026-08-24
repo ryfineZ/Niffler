@@ -401,6 +401,7 @@ async fn gateway_executes_gemini_chat_stream_via_local_decision_gate_with_local_
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -450,7 +451,7 @@ async fn gateway_executes_gemini_chat_stream_via_local_decision_gate_with_local_
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-gemini-chat-local-stream-1",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;

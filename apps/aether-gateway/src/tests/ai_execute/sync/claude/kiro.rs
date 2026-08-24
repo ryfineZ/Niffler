@@ -516,6 +516,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_body = response.text().await.expect("body should read");
@@ -588,7 +589,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-kiro-cli-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;

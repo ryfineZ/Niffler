@@ -415,6 +415,7 @@ async fn gateway_executes_claude_chat_sync_via_local_decision_gate_with_local_sy
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -470,7 +471,7 @@ async fn gateway_executes_claude_chat_sync_via_local_decision_gate_with_local_sy
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-claude-chat-local-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -900,6 +901,7 @@ async fn gateway_returns_claude_chat_error_for_local_sync_failure_impl() {
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -924,7 +926,7 @@ async fn gateway_returns_claude_chat_error_for_local_sync_failure_impl() {
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-claude-chat-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;
