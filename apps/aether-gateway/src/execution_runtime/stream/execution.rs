@@ -5964,7 +5964,7 @@ event: response.completed
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let live_usage = loop {
             let usage = usage_repository
-                .find_by_request_id("req-live-stream-first-data")
+                .find_by_request_id("trace-live-stream-first-data")
                 .await
                 .expect("usage should read");
             if usage.as_ref().is_some_and(|usage| {
@@ -6240,7 +6240,7 @@ event: response.completed
         let usage = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Some(usage) = usage_repository
-                    .find_by_request_id("req-remote-runtime-stream-redirect")
+                    .find_by_request_id("trace-remote-runtime-stream-redirect")
                     .await
                     .expect("usage should read")
                     .filter(|usage| usage.status == "failed")
@@ -6283,7 +6283,7 @@ event: response.completed
         );
         flush_request_candidate_status_writes(&state).await;
         let candidates = request_candidate_repository
-            .list_by_request_id("req-remote-runtime-stream-redirect")
+            .list_by_request_id("trace-remote-runtime-stream-redirect")
             .await
             .expect("candidate trace should read");
         let candidate_extra = candidates
