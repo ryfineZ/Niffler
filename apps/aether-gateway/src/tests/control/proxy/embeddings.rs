@@ -102,6 +102,7 @@ fn gemini_embedding_success_state(
         ]));
     let mut provider = sample_provider("provider-gemini-embedding", "Gemini Embeddings", 1);
     provider.provider_type = "gemini".to_string();
+    provider.enable_format_conversion = true;
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![provider],
         vec![sample_endpoint(
@@ -150,6 +151,7 @@ fn vertex_gemini_embedding_success_state(execution_runtime_url: String) -> AppSt
         ]));
     let mut provider = sample_provider("provider-vertex-gemini-embedding", "Vertex AI", 1);
     provider.provider_type = "vertex_ai".to_string();
+    provider.enable_format_conversion = true;
     let mut key = sample_key(
         "key-upstream-vertex-gemini-embedding",
         "provider-vertex-gemini-embedding",
