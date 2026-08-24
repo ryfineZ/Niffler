@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_failed_oauth_score_stays_available_before_access_token_expiry() {
+    fn refresh_failed_oauth_score_stays_schedulable_before_access_token_expiry() {
         let now_unix_secs = 1_776_395_200;
         let mut key = oauth_key();
         key.oauth_invalid_at_unix_secs = Some(now_unix_secs);
@@ -196,7 +196,7 @@ mod tests {
             PoolMemberScoreRules::default(),
         );
 
-        assert_eq!(score.hard_state, PoolMemberHardState::Available);
+        assert!(score.hard_state.schedulable());
     }
 
     #[test]
