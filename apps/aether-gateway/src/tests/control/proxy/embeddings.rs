@@ -523,7 +523,12 @@ async fn embeddings_route_accepts_openai_payload() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "unexpected response headers: {:?}",
+        response.headers()
+    );
     assert_eq!(
         response
             .headers()
@@ -599,7 +604,12 @@ async fn embeddings_route_converts_openai_payload_to_gemini_embedding_provider()
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "unexpected response headers: {:?}",
+        response.headers()
+    );
     assert_eq!(
         response
             .headers()
@@ -658,7 +668,8 @@ async fn embeddings_route_converts_openai_payload_to_vertex_gemini_embedding_pro
     assert_eq!(
         status,
         StatusCode::OK,
-        "unexpected response body: {body_text}"
+        "unexpected response headers: {:?}; body: {body_text}",
+        response.headers()
     );
     assert_eq!(endpoint_signature.as_deref(), Some("openai:embedding"));
     let payload: serde_json::Value = serde_json::from_str(&body_text).expect("body should parse");
@@ -694,7 +705,12 @@ async fn embeddings_route_converts_openai_batch_payload_to_gemini_batch_endpoint
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "unexpected response headers: {:?}",
+        response.headers()
+    );
     assert_eq!(
         response
             .headers()
