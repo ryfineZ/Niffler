@@ -2300,7 +2300,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_via_local_decision_gate_af
     );
     assert_eq!(
         seen_execution_runtime_request.request_id,
-        "trace-antigravity-cli-oauth-local-sync-123"
+        request_id
     );
     assert_eq!(seen_execution_runtime_request.model, "claude-sonnet-4-5");
     assert_eq!(seen_execution_runtime_request.user_agent, "antigravity");
