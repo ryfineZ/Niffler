@@ -852,6 +852,17 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                     self.billing_provider_scope = Some((global_model_id.to_string(), scope));
                 }
             }
+            if self.requested_model == "gemini-embedding-2-preview" && !page.candidates.is_empty() {
+                eprintln!(
+                    "embedding-debug trace={} thread={:?} pre-resolution requested_model={:?} has_scope={} candidates={} candidate_keys={:?}",
+                    self.trace_id,
+                    std::thread::current().id(),
+                    self.requested_model,
+                    self.billing_provider_scope.is_some(),
+                    page.candidates.len(),
+                    embedding_debug_candidate_keys(&page.candidates)
+                );
+            }
             let (candidates, resolved_skipped) = if let Some((_, scope)) =
                 self.billing_provider_scope.as_ref()
             {
@@ -903,6 +914,15 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 )
                 .await
             };
+            if self.requested_model == "gemini-embedding-2-preview" {
+                eprintln!(
+                    "embedding-debug trace={} thread={:?} post-resolution candidates={} skipped={}",
+                    self.trace_id,
+                    std::thread::current().id(),
+                    candidates.len(),
+                    resolved_skipped.len()
+                );
+            }
             let skipped_candidates = page
                 .skipped_candidates
                 .into_iter()

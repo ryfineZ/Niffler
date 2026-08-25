@@ -401,7 +401,8 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
 ) {
     if requested_model == Some("gemini-embedding-2-preview") {
         eprintln!(
-            "embedding-debug resolution-entry candidates={} candidate_keys={:?} preloaded_scope={}",
+            "embedding-debug thread={:?} resolution-entry candidates={} candidate_keys={:?} preloaded_scope={}",
+            std::thread::current().id(),
             candidates.len(),
             embedding_debug_candidate_keys(&candidates),
             preloaded_billing_provider_scope.is_some()
