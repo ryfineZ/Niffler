@@ -106,10 +106,25 @@ impl RequestBillingScopeRegistry {
     {
         let mut entry = self.entry.lock().await;
         if let Some(stored) = entry.as_ref() {
-            if stored.identity != identity {
+            let same_request = stored.identity.user_id == identity.user_id
+                && stored.identity.api_key_id == identity.api_key_id;
+            let refines_unknown_model = stored.identity.global_model_id.is_none()
+                && identity.global_model_id.is_some();
+            if !same_request
+                || (!refines_unknown_model
+                    && stored.identity.global_model_id != identity.global_model_id)
+            {
                 return Err(GatewayError::Internal(
                     "同一次调用的用户、密钥或模型发生变化，已停止重新计算收费条件".to_string(),
                 ));
+            }
+            if refines_unknown_model {
+                let scope = load().await?;
+                *entry = Some(RequestBillingScopeEntry {
+                    identity,
+                    scope: scope.clone(),
+                });
+                return Ok(scope);
             }
             return Ok(stored.scope.clone());
         }
@@ -1202,6 +1217,50 @@ mod tests {
         assert!(first.wallet_payment_allowed);
         assert!(second.wallet_payment_allowed);
         assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn request_billing_scope_registry_refines_unknown_model_once() {
+        let registry = RequestBillingScopeRegistry::default();
+        let reads = AtomicUsize::new(0);
+        let unknown_model = RequestBillingScopeIdentity {
+            user_id: "user-1".to_string(),
+            api_key_id: "key-1".to_string(),
+            global_model_id: None,
+        };
+        let concrete_model = RequestBillingScopeIdentity {
+            user_id: "user-1".to_string(),
+            api_key_id: "key-1".to_string(),
+            global_model_id: Some("model-1".to_string()),
+        };
+
+        registry
+            .resolve(unknown_model, || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope::default())
+            })
+            .await
+            .expect("unknown-model scope should resolve");
+        registry
+            .resolve(concrete_model.clone(), || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope {
+                    wallet_payment_allowed: true,
+                    ..BillingProviderRoutingScope::default()
+                })
+            })
+            .await
+            .expect("concrete-model scope should refine the unknown scope");
+        let reused = registry
+            .resolve(concrete_model, || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope::default())
+            })
+            .await
+            .expect("concrete-model scope should be reused");
+
+        assert!(reused.wallet_payment_allowed);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
     }
 
     #[test]
