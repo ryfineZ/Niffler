@@ -412,7 +412,7 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
         .first()
         .map(|candidate| candidate.global_model_id.as_str());
     let mut resolved_billing_provider_scope = None;
-    if preloaded_billing_provider_scope.is_none() {
+    if preloaded_billing_provider_scope.is_none() && !candidates.is_empty() {
         if let Some(auth_snapshot) = auth_snapshot {
             match resolve_billing_provider_routing_scope(
                 state,
