@@ -108,8 +108,8 @@ impl RequestBillingScopeRegistry {
         if let Some(stored) = entry.as_ref() {
             let same_request = stored.identity.user_id == identity.user_id
                 && stored.identity.api_key_id == identity.api_key_id;
-            let refines_unknown_model = stored.identity.global_model_id.is_none()
-                && identity.global_model_id.is_some();
+            let refines_unknown_model =
+                stored.identity.global_model_id.is_none() && identity.global_model_id.is_some();
             if !same_request
                 || (!refines_unknown_model
                     && stored.identity.global_model_id != identity.global_model_id)
