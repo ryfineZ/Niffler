@@ -438,6 +438,18 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
 
     match run_ai_candidate_resolution(&port, candidates, request).await {
         Ok(mut outcome) => {
+            if requested_model == Some("gemini-embedding-2-preview") {
+                eprintln!(
+                    "embedding-debug resolution client_format={} eligible={} skipped={:?}",
+                    client_api_format,
+                    outcome.eligible_candidates.len(),
+                    outcome
+                        .skipped_candidates
+                        .iter()
+                        .map(|item| item.skip_reason)
+                        .collect::<Vec<_>>()
+                );
+            }
             if let Some(scope) = billing_provider_scope {
                 outcome
                     .eligible_candidates

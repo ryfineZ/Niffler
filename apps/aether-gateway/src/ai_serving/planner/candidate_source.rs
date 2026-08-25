@@ -912,7 +912,10 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             candidates.push(candidate);
         }
         if debug_embedding {
-            eprintln!("embedding-debug candidates_after_page_filter={}", candidates.len());
+            eprintln!(
+                "embedding-debug candidates_after_page_filter={}",
+                candidates.len()
+            );
         }
 
         let matches_client_format = matches_client_api_format(
