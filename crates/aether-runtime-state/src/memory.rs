@@ -319,9 +319,8 @@ impl MemoryRuntimeBackend {
                 })
                 .value;
             let window_remaining = window.limit.saturating_sub(next);
-            remaining = Some(remaining.map_or(window_remaining, |value| {
-                value.min(window_remaining)
-            }));
+            remaining =
+                Some(remaining.map_or(window_remaining, |value| value.min(window_remaining)));
         }
 
         Ok(crate::RateLimitWindowsCheck::Allowed {

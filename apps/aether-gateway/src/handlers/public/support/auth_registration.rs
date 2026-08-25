@@ -17,8 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const AUTH_REGISTRATION_STORAGE_UNAVAILABLE_DETAIL: &str = "注册数据存储暂不可用";
 const AUTH_VERIFICATION_IP_PER_MINUTE_CONFIG_KEY: &str =
     "auth_verification_code_ip_per_minute_limit";
-const AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY: &str =
-    "auth_verification_code_ip_per_hour_limit";
+const AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY: &str = "auth_verification_code_ip_per_hour_limit";
 const AUTH_VERIFICATION_EMAIL_PER_DAY_CONFIG_KEY: &str =
     "auth_verification_code_email_per_day_limit";
 const AUTH_VERIFICATION_GLOBAL_PER_MINUTE_CONFIG_KEY: &str =
@@ -369,7 +368,9 @@ async fn consume_auth_verification_send_rate_limit(
                 None,
             );
             if let Ok(value) = http::HeaderValue::from_str(&retry_after.to_string()) {
-                response.headers_mut().insert(http::header::RETRY_AFTER, value);
+                response
+                    .headers_mut()
+                    .insert(http::header::RETRY_AFTER, value);
             }
             Ok(Err(response))
         }
@@ -403,7 +404,11 @@ async fn refund_auth_verification_send_rate_limit(
     state: &AppState,
     permit: &AuthVerificationSendRateLimitPermit,
 ) {
-    if let Err(err) = state.runtime_state().refund_rate_limit_windows(&permit.keys).await {
+    if let Err(err) = state
+        .runtime_state()
+        .refund_rate_limit_windows(&permit.keys)
+        .await
+    {
         tracing::warn!(
             error = ?err,
             "auth verification email send rate limit refund failed"

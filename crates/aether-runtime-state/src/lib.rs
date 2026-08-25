@@ -733,9 +733,7 @@ impl RuntimeState {
                     .get(2)
                     .copied()
                     .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or_else(|| {
-                        windows.get(index).map(|window| window.limit).unwrap_or(0)
-                    });
+                    .unwrap_or_else(|| windows.get(index).map(|window| window.limit).unwrap_or(0));
                 Ok(RateLimitWindowsCheck::Rejected { index, limit })
             }
         }
@@ -749,9 +747,7 @@ impl RuntimeState {
             return Ok(0);
         }
         match self.backend.as_ref() {
-            RuntimeStateBackend::Memory(memory) => {
-                Ok(memory.refund_rate_limit_windows(keys).await)
-            }
+            RuntimeStateBackend::Memory(memory) => Ok(memory.refund_rate_limit_windows(keys).await),
             RuntimeStateBackend::Redis(redis) => {
                 let namespaced = keys
                     .iter()

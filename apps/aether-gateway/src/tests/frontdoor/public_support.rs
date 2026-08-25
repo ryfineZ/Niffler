@@ -8989,6 +8989,8 @@ fn turnstile_enabled_data_state() -> crate::data::GatewayDataState {
         ("enable_registration".to_string(), json!(true)),
         ("require_email_verification".to_string(), json!(true)),
         ("smtp_host".to_string(), json!("smtp.example.com")),
+        ("smtp_user".to_string(), json!("smtp-user")),
+        ("smtp_password".to_string(), json!("smtp-password")),
         ("smtp_from_email".to_string(), json!("ops@example.com")),
         ("default_user_initial_gift_usd".to_string(), json!(12.5)),
         ("turnstile_enabled".to_string(), json!(true)),
