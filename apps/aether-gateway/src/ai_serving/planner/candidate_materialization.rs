@@ -51,6 +51,20 @@ const POOL_KEY_RETRY_INDEX_STRIDE: u32 = 100;
 const AUTH_API_KEY_CONCURRENCY_WAIT_BUDGET: Duration = Duration::from_millis(100);
 const AUTH_API_KEY_CONCURRENCY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
+fn embedding_debug_candidate_keys(
+    candidates: &[SchedulerMinimalCandidateSelectionCandidate],
+) -> Vec<String> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{}:{}:{}:{}",
+                candidate.provider_id, candidate.endpoint_id, candidate.key_id, candidate.model_id
+            )
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalExecutionCandidateAttempt {
     pub(crate) eligible: EligibleLocalExecutionCandidate,
@@ -803,16 +817,7 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                     "embedding-debug trace={} page-after-concurrency candidates={} candidate_keys={:?} skipped={}",
                     self.trace_id,
                     page.candidates.len(),
-                    page.candidates
-                        .iter()
-                        .map(|candidate| format!(
-                            "{}:{}:{}:{}",
-                            candidate.provider_id,
-                            candidate.endpoint_id,
-                            candidate.key_id,
-                            candidate.model_id
-                        ))
-                        .collect::<Vec<_>>(),
+                    embedding_debug_candidate_keys(&page.candidates),
                     page.skipped_candidates.len()
                 );
             }
@@ -854,16 +859,7 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                             "embedding-debug trace={} page-before-resolution candidates={} candidate_keys={:?} scope={:?}",
                             self.trace_id,
                             page.candidates.len(),
-                            page.candidates
-                                .iter()
-                                .map(|candidate| format!(
-                                    "{}:{}:{}:{}",
-                                    candidate.provider_id,
-                                    candidate.endpoint_id,
-                                    candidate.key_id,
-                                    candidate.model_id
-                                ))
-                                .collect::<Vec<_>>(),
+                            embedding_debug_candidate_keys(&page.candidates),
                             scope
                         );
                     }
@@ -888,16 +884,7 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                             "embedding-debug trace={} page-before-resolution-no-scope candidates={} candidate_keys={:?}",
                             self.trace_id,
                             page.candidates.len(),
-                            page.candidates
-                                .iter()
-                                .map(|candidate| format!(
-                                    "{}:{}:{}:{}",
-                                    candidate.provider_id,
-                                    candidate.endpoint_id,
-                                    candidate.key_id,
-                                    candidate.model_id
-                                ))
-                                .collect::<Vec<_>>()
+                            embedding_debug_candidate_keys(&page.candidates)
                         );
                     }
                     resolve_and_rank_logical_local_execution_candidates(
