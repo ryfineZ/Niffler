@@ -414,9 +414,23 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     }
     let billing_provider_scope =
         preloaded_billing_provider_scope.or(resolved_billing_provider_scope.as_ref());
+    if requested_model == Some("gemini-embedding-2-preview") {
+        eprintln!(
+            "embedding-debug billing before_retain={} scope={:?}",
+            candidates.len(),
+            billing_provider_scope
+        );
+    }
     if let Some(scope) = billing_provider_scope {
         let plan_applies = scope.plan_applies();
         candidates.retain(|candidate| scope.allows(&candidate.provider_id, plan_applies));
+        if requested_model == Some("gemini-embedding-2-preview") {
+            eprintln!(
+                "embedding-debug billing after_retain={} plan_applies={}",
+                candidates.len(),
+                plan_applies
+            );
+        }
     }
     let scheduler_affinity_epoch = state.app().scheduler_affinity_epoch();
     let port = GatewayLocalCandidateResolutionPort {
