@@ -106,6 +106,15 @@ impl RequestBillingScopeRegistry {
     {
         let mut entry = self.entry.lock().await;
         if let Some(stored) = entry.as_ref() {
+            eprintln!(
+                "billing-debug stored=({},{},{:?}) requested=({},{},{:?})",
+                stored.identity.user_id,
+                stored.identity.api_key_id,
+                stored.identity.global_model_id,
+                identity.user_id,
+                identity.api_key_id,
+                identity.global_model_id
+            );
             let same_request = stored.identity.user_id == identity.user_id
                 && stored.identity.api_key_id == identity.api_key_id;
             let refines_unknown_model =
@@ -118,11 +127,13 @@ impl RequestBillingScopeRegistry {
                 _ => true,
             };
             if !same_request || !compatible_model_identity {
+                eprintln!("billing-debug rejected");
                 return Err(GatewayError::Internal(
                     "同一次调用的用户、密钥或模型发生变化，已停止重新计算收费条件".to_string(),
                 ));
             }
             if refines_unknown_model {
+                eprintln!("billing-debug refined");
                 let scope = stored.scope.clone();
                 *entry = Some(RequestBillingScopeEntry {
                     identity,
@@ -130,9 +141,14 @@ impl RequestBillingScopeRegistry {
                 });
                 return Ok(scope);
             }
+            eprintln!("billing-debug reused");
             return Ok(stored.scope.clone());
         }
 
+        eprintln!(
+            "billing-debug initial=({},{},{:?})",
+            identity.user_id, identity.api_key_id, identity.global_model_id
+        );
         let scope = load().await?;
         *entry = Some(RequestBillingScopeEntry {
             identity,
