@@ -119,7 +119,7 @@ impl RequestBillingScopeRegistry {
                 ));
             }
             if refines_unknown_model {
-                let scope = load().await?;
+                let scope = stored.scope.clone();
                 *entry = Some(RequestBillingScopeEntry {
                     identity,
                     scope: scope.clone(),
@@ -1259,8 +1259,8 @@ mod tests {
             .await
             .expect("concrete-model scope should be reused");
 
-        assert!(reused.wallet_payment_allowed);
-        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert!(!reused.wallet_payment_allowed);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]
