@@ -385,6 +385,13 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
 ) {
+    if requested_model == Some("gemini-embedding-2-preview") {
+        eprintln!(
+            "embedding-debug resolution-entry candidates={} preloaded_scope={}",
+            candidates.len(),
+            preloaded_billing_provider_scope.is_some()
+        );
+    }
     let billing_global_model_id = candidates
         .first()
         .map(|candidate| candidate.global_model_id.as_str());

@@ -831,6 +831,13 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
             }
             let (candidates, resolved_skipped) =
                 if let Some((_, scope)) = self.billing_provider_scope.as_ref() {
+                    if self.requested_model == "gemini-embedding-2-preview" {
+                        eprintln!(
+                            "embedding-debug page-before-resolution candidates={} scope={:?}",
+                            page.candidates.len(),
+                            scope
+                        );
+                    }
                     resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
                         self.state,
                         page.candidates,
