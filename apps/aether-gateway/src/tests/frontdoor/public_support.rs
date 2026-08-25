@@ -1584,6 +1584,14 @@ async fn gateway_handles_auth_registration_settings_without_proxying_upstream() 
                 "format": "markdown",
                 "content": "",
             },
+            "portal": {
+                "id": "default",
+                "display_currency": "USD",
+                "pricing_mode": "default",
+                "discount": null,
+                "model_discounts": null,
+                "canonical_url": null,
+            },
         })
     );
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
