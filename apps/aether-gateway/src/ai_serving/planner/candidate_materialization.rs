@@ -798,6 +798,13 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 return false;
             }
 
+            if self.requested_model == "gemini-embedding-2-preview" {
+                eprintln!(
+                    "embedding-debug page-after-concurrency candidates={} skipped={}",
+                    page.candidates.len(),
+                    page.skipped_candidates.len()
+                );
+            }
             let billing_global_model_id = page
                 .candidates
                 .first()
@@ -854,6 +861,12 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                     )
                     .await
                 } else {
+                    if self.requested_model == "gemini-embedding-2-preview" {
+                        eprintln!(
+                            "embedding-debug page-before-resolution-no-scope candidates={}",
+                            page.candidates.len()
+                        );
+                    }
                     resolve_and_rank_logical_local_execution_candidates(
                         self.state,
                         page.candidates,
