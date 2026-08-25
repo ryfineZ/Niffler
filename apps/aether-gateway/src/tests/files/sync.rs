@@ -2,9 +2,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use super::{
     any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
-    sample_auth_snapshot, sample_files_candidate_row, sample_files_provider_catalog_endpoint,
-    sample_files_provider_catalog_key, sample_files_provider_catalog_provider, start_server,
-    to_bytes, Arc, Body, InMemoryAuthApiKeySnapshotRepository,
+    response_request_id, sample_auth_snapshot, sample_files_candidate_row,
+    sample_files_provider_catalog_endpoint, sample_files_provider_catalog_key,
+    sample_files_provider_catalog_provider, start_server, to_bytes, Arc, Body,
+    InMemoryAuthApiKeySnapshotRepository,
     InMemoryMinimalCandidateSelectionReadRepository, InMemoryProviderCatalogReadRepository,
     InMemoryRequestCandidateRepository, Json, Mutex, Request, RequestCandidateReadRepository,
     RequestCandidateStatus, Router, StatusCode, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
@@ -222,7 +223,7 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_with_local
                 DEVELOPMENT_ENCRYPTION_KEY,
             ),
         );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state.clone());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -238,6 +239,7 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_with_local
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     assert_eq!(
         response
             .json::<serde_json::Value>()
@@ -283,8 +285,9 @@ async fn gateway_executes_gemini_files_upload_via_local_decision_gate_with_local
         "chrome_136"
     );
 
+    crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state).await;
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-gemini-files-upload-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);
@@ -457,7 +460,7 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_with_local_p
                 DEVELOPMENT_ENCRYPTION_KEY,
             ),
         );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state.clone());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -471,6 +474,7 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_with_local_p
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     assert_eq!(
         response.text().await.expect("body should read"),
         "{\"files\":[]}"
@@ -491,8 +495,9 @@ async fn gateway_executes_gemini_files_list_via_local_decision_gate_with_local_p
         "sk-upstream-gemini-files"
     );
 
+    crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state).await;
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-gemini-files-list-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);
@@ -663,7 +668,7 @@ async fn gateway_executes_gemini_files_delete_via_local_decision_gate_with_local
                 DEVELOPMENT_ENCRYPTION_KEY,
             ),
         );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state.clone());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -677,6 +682,7 @@ async fn gateway_executes_gemini_files_delete_via_local_decision_gate_with_local
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     assert_eq!(
         response
             .json::<serde_json::Value>()
@@ -700,8 +706,9 @@ async fn gateway_executes_gemini_files_delete_via_local_decision_gate_with_local
         "sk-upstream-gemini-files"
     );
 
+    crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state).await;
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-gemini-files-delete-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

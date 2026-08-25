@@ -24,7 +24,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::constants::TRACE_ID_HEADER;
 
-use super::{build_router_with_state, build_state_with_execution_runtime_override, start_server};
+use super::{
+    build_router_with_state, build_state_with_execution_runtime_override, response_request_id,
+    start_server,
+};
 
 #[tokio::test]
 async fn gateway_executes_gemini_video_create_via_local_decision_gate_with_local_planning_only() {
@@ -405,7 +408,7 @@ async fn gateway_executes_gemini_video_create_via_local_decision_gate_with_local
             DEVELOPMENT_ENCRYPTION_KEY,
         ),
     );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state.clone());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -422,6 +425,7 @@ async fn gateway_executes_gemini_video_create_via_local_decision_gate_with_local
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     let body: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(body.get("done"), Some(&json!(false)));
     assert!(body
@@ -472,8 +476,9 @@ async fn gateway_executes_gemini_video_create_via_local_decision_gate_with_local
         "chrome_136"
     );
 
+    crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state).await;
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-gemini-video-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::constants::{
     CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, EXECUTION_PATH_HEADER,
-    TRACE_ID_HEADER,
+    CONTROL_REQUEST_ID_HEADER, TRACE_ID_HEADER,
 };
 
 use super::{
@@ -30,3 +30,12 @@ mod openai_sync_task;
 mod registry_poller;
 mod routing;
 mod stream;
+
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
