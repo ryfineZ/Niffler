@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 use crate::constants::{CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, TRACE_ID_HEADER};
 
 use super::{
-    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    build_router_with_state, build_state_with_execution_runtime_override, response_request_id,
+    start_server,
     VideoTaskTruthSourceMode,
 };
 
@@ -307,6 +308,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
         .await
         .expect("request should succeed");
 
+    let request_id = response_request_id(&response);
     let response_status = response.status();
     let response_text = response.text().await.expect("body should read");
     assert_eq!(
@@ -345,7 +347,7 @@ async fn gateway_executes_openai_video_delete_via_reconstructed_data_backed_loca
             crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state)
                 .await;
             let stored_candidates = request_candidate_repository
-                .list_by_request_id("request-openai-video-delete-local-123")
+                .list_by_request_id(&request_id)
                 .await
                 .expect("request candidate trace should read");
             if stored_candidates

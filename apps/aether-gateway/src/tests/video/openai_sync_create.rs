@@ -764,6 +764,7 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     let body: serde_json::Value = response.json().await.expect("body should parse");
     assert_eq!(body.get("object"), Some(&json!("video")));
     assert_eq!(body.get("status"), Some(&json!("queued")));
@@ -790,7 +791,7 @@ async fn gateway_executes_openai_video_remix_via_data_backed_local_follow_up_wit
     assert_eq!(seen_execution_runtime_request.prompt, "remix this");
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("request-openai-video-remix-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

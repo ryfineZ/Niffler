@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 use crate::constants::{CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, TRACE_ID_HEADER};
 
 use super::{
-    build_router_with_state, build_state_with_execution_runtime_override, start_server,
+    build_router_with_state, build_state_with_execution_runtime_override, response_request_id,
+    start_server,
     VideoTaskTruthSourceMode,
 };
 
@@ -266,6 +267,7 @@ async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_wi
         .await
         .expect("request should succeed");
 
+    let request_id = response_request_id(&response);
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response
@@ -295,7 +297,7 @@ async fn gateway_executes_gemini_video_cancel_via_data_backed_local_follow_up_wi
             crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state)
                 .await;
             let stored_candidates = request_candidate_repository
-                .list_by_request_id("request-gemini-video-cancel-local-123")
+                .list_by_request_id(&request_id)
                 .await
                 .expect("request candidate trace should read");
             if stored_candidates
@@ -607,6 +609,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
         .await
         .expect("request should succeed");
 
+    let request_id = response_request_id(&response);
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response
@@ -636,7 +639,7 @@ async fn gateway_executes_gemini_video_cancel_via_reconstructed_data_backed_loca
             crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state)
                 .await;
             let stored_candidates = request_candidate_repository
-                .list_by_request_id("request-gemini-video-cancel-op-123")
+                .list_by_request_id(&request_id)
                 .await
                 .expect("request candidate trace should read");
             if stored_candidates
