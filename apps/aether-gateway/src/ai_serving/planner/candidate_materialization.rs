@@ -800,8 +800,19 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
 
             if self.requested_model == "gemini-embedding-2-preview" {
                 eprintln!(
-                    "embedding-debug page-after-concurrency candidates={} skipped={}",
+                    "embedding-debug trace={} page-after-concurrency candidates={} candidate_keys={:?} skipped={}",
+                    self.trace_id,
                     page.candidates.len(),
+                    page.candidates
+                        .iter()
+                        .map(|candidate| format!(
+                            "{}:{}:{}:{}",
+                            candidate.provider_id,
+                            candidate.endpoint_id,
+                            candidate.key_id,
+                            candidate.model_id
+                        ))
+                        .collect::<Vec<_>>(),
                     page.skipped_candidates.len()
                 );
             }
@@ -840,8 +851,19 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 if let Some((_, scope)) = self.billing_provider_scope.as_ref() {
                     if self.requested_model == "gemini-embedding-2-preview" {
                         eprintln!(
-                            "embedding-debug page-before-resolution candidates={} scope={:?}",
+                            "embedding-debug trace={} page-before-resolution candidates={} candidate_keys={:?} scope={:?}",
+                            self.trace_id,
                             page.candidates.len(),
+                            page.candidates
+                                .iter()
+                                .map(|candidate| format!(
+                                    "{}:{}:{}:{}",
+                                    candidate.provider_id,
+                                    candidate.endpoint_id,
+                                    candidate.key_id,
+                                    candidate.model_id
+                                ))
+                                .collect::<Vec<_>>(),
                             scope
                         );
                     }
@@ -863,8 +885,19 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 } else {
                     if self.requested_model == "gemini-embedding-2-preview" {
                         eprintln!(
-                            "embedding-debug page-before-resolution-no-scope candidates={}",
-                            page.candidates.len()
+                            "embedding-debug trace={} page-before-resolution-no-scope candidates={} candidate_keys={:?}",
+                            self.trace_id,
+                            page.candidates.len(),
+                            page.candidates
+                                .iter()
+                                .map(|candidate| format!(
+                                    "{}:{}:{}:{}",
+                                    candidate.provider_id,
+                                    candidate.endpoint_id,
+                                    candidate.key_id,
+                                    candidate.model_id
+                                ))
+                                .collect::<Vec<_>>()
                         );
                     }
                     resolve_and_rank_logical_local_execution_candidates(

@@ -387,8 +387,18 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
 ) {
     if requested_model == Some("gemini-embedding-2-preview") {
         eprintln!(
-            "embedding-debug resolution-entry candidates={} preloaded_scope={}",
+            "embedding-debug resolution-entry candidates={} candidate_keys={:?} preloaded_scope={}",
             candidates.len(),
+            candidates
+                .iter()
+                .map(|candidate| format!(
+                    "{}:{}:{}:{}",
+                    candidate.provider_id,
+                    candidate.endpoint_id,
+                    candidate.key_id,
+                    candidate.model_id
+                ))
+                .collect::<Vec<_>>(),
             preloaded_billing_provider_scope.is_some()
         );
     }
