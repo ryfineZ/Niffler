@@ -699,7 +699,18 @@ async fn gateway_handles_public_catalog_site_info_without_proxying_upstream() {
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["site_name"], "Niffler Local");
     assert_eq!(payload["site_subtitle"], "Rust Only");
-    assert_eq!(payload.as_object().map(|object| object.len()), Some(2));
+    assert_eq!(
+        payload["portal"],
+        json!({
+            "id": "default",
+            "display_currency": "USD",
+            "pricing_mode": "default",
+            "discount": null,
+            "model_discounts": null,
+            "canonical_url": null,
+        })
+    );
+    assert_eq!(payload.as_object().map(|object| object.len()), Some(3));
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -1710,6 +1721,14 @@ async fn gateway_handles_auth_settings_without_proxying_upstream() {
             "local_enabled": false,
             "ldap_enabled": true,
             "ldap_exclusive": true,
+            "portal": {
+                "id": "default",
+                "display_currency": "USD",
+                "pricing_mode": "default",
+                "discount": null,
+                "model_discounts": null,
+                "canonical_url": null,
+            },
         })
     );
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
