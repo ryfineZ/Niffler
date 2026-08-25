@@ -852,56 +852,57 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                     self.billing_provider_scope = Some((global_model_id.to_string(), scope));
                 }
             }
-            let (candidates, resolved_skipped) =
-                if let Some((_, scope)) = self.billing_provider_scope.as_ref() {
-                    if self.requested_model == "gemini-embedding-2-preview" {
-                        eprintln!(
-                            "embedding-debug trace={} page-before-resolution candidates={} candidate_keys={:?} scope={:?}",
-                            self.trace_id,
-                            page.candidates.len(),
-                            embedding_debug_candidate_keys(&page.candidates),
-                            scope
-                        );
-                    }
-                    resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
-                        self.state,
-                        page.candidates,
-                        &self.client_api_format,
-                        Some(&self.requested_model),
-                        Some(&self.auth_snapshot),
-                        self.client_session_affinity.as_ref(),
-                        self.required_capabilities.as_ref(),
-                        self.routing_policy.as_ref(),
-                        self.sticky_session_token.as_deref(),
-                        self.request_auth_channel.as_deref(),
-                        self.resolution_mode,
-                        scope,
-                    )
-                    .await
-                } else {
-                    if self.requested_model == "gemini-embedding-2-preview" {
-                        eprintln!(
-                            "embedding-debug trace={} page-before-resolution-no-scope candidates={} candidate_keys={:?}",
-                            self.trace_id,
-                            page.candidates.len(),
-                            embedding_debug_candidate_keys(&page.candidates)
-                        );
-                    }
-                    resolve_and_rank_logical_local_execution_candidates(
-                        self.state,
-                        page.candidates,
-                        &self.client_api_format,
-                        Some(&self.requested_model),
-                        Some(&self.auth_snapshot),
-                        self.client_session_affinity.as_ref(),
-                        self.required_capabilities.as_ref(),
-                        self.routing_policy.as_ref(),
-                        self.sticky_session_token.as_deref(),
-                        self.request_auth_channel.as_deref(),
-                        self.resolution_mode,
-                    )
-                    .await
-                };
+            let (candidates, resolved_skipped) = if let Some((_, scope)) =
+                self.billing_provider_scope.as_ref()
+            {
+                if self.requested_model == "gemini-embedding-2-preview" {
+                    eprintln!(
+                        "embedding-debug trace={} page-before-resolution candidates={} candidate_keys={:?} scope={:?}",
+                        self.trace_id,
+                        page.candidates.len(),
+                        embedding_debug_candidate_keys(&page.candidates),
+                        scope
+                    );
+                }
+                resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
+                    self.state,
+                    page.candidates,
+                    &self.client_api_format,
+                    Some(&self.requested_model),
+                    Some(&self.auth_snapshot),
+                    self.client_session_affinity.as_ref(),
+                    self.required_capabilities.as_ref(),
+                    self.routing_policy.as_ref(),
+                    self.sticky_session_token.as_deref(),
+                    self.request_auth_channel.as_deref(),
+                    self.resolution_mode,
+                    scope,
+                )
+                .await
+            } else {
+                if self.requested_model == "gemini-embedding-2-preview" {
+                    eprintln!(
+                        "embedding-debug trace={} page-before-resolution-no-scope candidates={} candidate_keys={:?}",
+                        self.trace_id,
+                        page.candidates.len(),
+                        embedding_debug_candidate_keys(&page.candidates)
+                    );
+                }
+                resolve_and_rank_logical_local_execution_candidates(
+                    self.state,
+                    page.candidates,
+                    &self.client_api_format,
+                    Some(&self.requested_model),
+                    Some(&self.auth_snapshot),
+                    self.client_session_affinity.as_ref(),
+                    self.required_capabilities.as_ref(),
+                    self.routing_policy.as_ref(),
+                    self.sticky_session_token.as_deref(),
+                    self.request_auth_channel.as_deref(),
+                    self.resolution_mode,
+                )
+                .await
+            };
             let skipped_candidates = page
                 .skipped_candidates
                 .into_iter()
