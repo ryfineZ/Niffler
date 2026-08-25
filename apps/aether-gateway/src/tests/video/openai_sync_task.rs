@@ -24,8 +24,7 @@ use crate::constants::{CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER,
 
 use super::{
     build_router_with_state, build_state_with_execution_runtime_override, response_request_id,
-    start_server,
-    VideoTaskTruthSourceMode,
+    start_server, VideoTaskTruthSourceMode,
 };
 
 #[tokio::test]
