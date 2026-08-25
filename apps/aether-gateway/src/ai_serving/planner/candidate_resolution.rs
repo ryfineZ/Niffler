@@ -26,20 +26,6 @@ use super::candidate_source::{
     resolve_billing_provider_routing_scope, BillingProviderRoutingScope,
 };
 
-fn embedding_debug_candidate_keys(
-    candidates: &[SchedulerMinimalCandidateSelectionCandidate],
-) -> Vec<String> {
-    candidates
-        .iter()
-        .map(|candidate| {
-            format!(
-                "{}:{}:{}:{}",
-                candidate.provider_id, candidate.endpoint_id, candidate.key_id, candidate.model_id
-            )
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EligibleLocalExecutionCandidate {
     pub(crate) kind: LocalExecutionCandidateKind,
@@ -399,15 +385,6 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     Vec<EligibleLocalExecutionCandidate>,
     Vec<SkippedLocalExecutionCandidate>,
 ) {
-    if requested_model == Some("gemini-embedding-2-preview") {
-        eprintln!(
-            "embedding-debug thread={:?} resolution-entry candidates={} candidate_keys={:?} preloaded_scope={}",
-            std::thread::current().id(),
-            candidates.len(),
-            embedding_debug_candidate_keys(&candidates),
-            preloaded_billing_provider_scope.is_some()
-        );
-    }
     let billing_global_model_id = candidates
         .first()
         .map(|candidate| candidate.global_model_id.as_str());
@@ -437,23 +414,9 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
     }
     let billing_provider_scope =
         preloaded_billing_provider_scope.or(resolved_billing_provider_scope.as_ref());
-    if requested_model == Some("gemini-embedding-2-preview") {
-        eprintln!(
-            "embedding-debug billing before_retain={} scope={:?}",
-            candidates.len(),
-            billing_provider_scope
-        );
-    }
     if let Some(scope) = billing_provider_scope {
         let plan_applies = scope.plan_applies();
         candidates.retain(|candidate| scope.allows(&candidate.provider_id, plan_applies));
-        if requested_model == Some("gemini-embedding-2-preview") {
-            eprintln!(
-                "embedding-debug billing after_retain={} plan_applies={}",
-                candidates.len(),
-                plan_applies
-            );
-        }
     }
     let scheduler_affinity_epoch = state.app().scheduler_affinity_epoch();
     let port = GatewayLocalCandidateResolutionPort {
@@ -475,18 +438,6 @@ async fn resolve_and_rank_local_execution_candidates_with_pool_expansion(
 
     match run_ai_candidate_resolution(&port, candidates, request).await {
         Ok(mut outcome) => {
-            if requested_model == Some("gemini-embedding-2-preview") {
-                eprintln!(
-                    "embedding-debug resolution client_format={} eligible={} skipped={:?}",
-                    client_api_format,
-                    outcome.eligible_candidates.len(),
-                    outcome
-                        .skipped_candidates
-                        .iter()
-                        .map(|item| item.skip_reason)
-                        .collect::<Vec<_>>()
-                );
-            }
             if let Some(scope) = billing_provider_scope {
                 outcome
                     .eligible_candidates

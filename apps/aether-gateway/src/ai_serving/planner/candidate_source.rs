@@ -110,10 +110,14 @@ impl RequestBillingScopeRegistry {
                 && stored.identity.api_key_id == identity.api_key_id;
             let refines_unknown_model =
                 stored.identity.global_model_id.is_none() && identity.global_model_id.is_some();
-            if !same_request
-                || (!refines_unknown_model
-                    && stored.identity.global_model_id != identity.global_model_id)
-            {
+            let compatible_model_identity = match (
+                stored.identity.global_model_id.as_deref(),
+                identity.global_model_id.as_deref(),
+            ) {
+                (Some(stored_model), Some(requested_model)) => stored_model == requested_model,
+                _ => true,
+            };
+            if !same_request || !compatible_model_identity {
                 return Err(GatewayError::Internal(
                     "同一次调用的用户、密钥或模型发生变化，已停止重新计算收费条件".to_string(),
                 ));
@@ -830,15 +834,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
         >,
         GatewayError,
     > {
-        let debug_embedding = self.requested_model == "gemini-embedding-2-preview";
-        if debug_embedding {
-            eprintln!(
-                "embedding-debug format={} normalized={} input_rows={}",
-                candidate_api_format,
-                normalized_api_format,
-                rows.len()
-            );
-        }
         let mut rows = rows
             .into_iter()
             .filter(|row| {
@@ -849,9 +844,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            if debug_embedding {
-                eprintln!("embedding-debug rows_empty_after_seen_filter");
-            }
             return Ok(None);
         }
         let resolved_global_model_name =
@@ -872,9 +864,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             };
         rows.retain(|row| row.global_model_name == resolved_global_model_name);
         if rows.is_empty() {
-            if debug_embedding {
-                eprintln!("embedding-debug rows_empty_after_global_model_filter");
-            }
             return Ok(None);
         }
 
@@ -902,13 +891,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             enable_model_directives,
         )
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
-        if debug_embedding {
-            eprintln!(
-                "embedding-debug enumerated_candidates={} auth_constraints={:?}",
-                enumerated_candidates.len(),
-                auth_constraints
-            );
-        }
         let mut candidates = Vec::new();
         for candidate in enumerated_candidates {
             if !self.candidate_allowed_for_page(
@@ -925,12 +907,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                 continue;
             }
             candidates.push(candidate);
-        }
-        if debug_embedding {
-            eprintln!(
-                "embedding-debug candidates_after_page_filter={}",
-                candidates.len()
-            );
         }
 
         let matches_client_format = matches_client_api_format(
@@ -955,16 +931,6 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                 current_unix_secs(),
             )
             .await?;
-        if debug_embedding {
-            eprintln!(
-                "embedding-debug selectable_candidates={} skipped={:?}",
-                candidates.len(),
-                skipped_candidates
-                    .iter()
-                    .map(|item| item.skip_reason)
-                    .collect::<Vec<_>>()
-            );
-        }
         let skipped_candidates = skipped_candidates
             .into_iter()
             .map(skipped_local_execution_candidate_from_scheduler_skip)
@@ -1217,6 +1183,20 @@ mod tests {
         assert!(first.wallet_payment_allowed);
         assert!(second.wallet_payment_allowed);
         assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        let different_model = RequestBillingScopeIdentity {
+            user_id: "user-1".to_string(),
+            api_key_id: "key-1".to_string(),
+            global_model_id: Some("model-2".to_string()),
+        };
+        assert!(registry
+            .resolve(different_model, || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope::default())
+            })
+            .await
+            .is_err());
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1235,7 +1215,7 @@ mod tests {
         };
 
         registry
-            .resolve(unknown_model, || async {
+            .resolve(unknown_model.clone(), || async {
                 reads.fetch_add(1, Ordering::SeqCst);
                 Ok(BillingProviderRoutingScope::default())
             })
@@ -1260,6 +1240,18 @@ mod tests {
             .expect("concrete-model scope should be reused");
 
         assert!(!reused.wallet_payment_allowed);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        registry
+            .resolve(unknown_model, || async {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(BillingProviderRoutingScope {
+                    wallet_payment_allowed: true,
+                    ..BillingProviderRoutingScope::default()
+                })
+            })
+            .await
+            .expect("unknown-model scope should remain compatible after refinement");
         assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 

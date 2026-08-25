@@ -51,20 +51,6 @@ const POOL_KEY_RETRY_INDEX_STRIDE: u32 = 100;
 const AUTH_API_KEY_CONCURRENCY_WAIT_BUDGET: Duration = Duration::from_millis(100);
 const AUTH_API_KEY_CONCURRENCY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
-fn embedding_debug_candidate_keys(
-    candidates: &[SchedulerMinimalCandidateSelectionCandidate],
-) -> Vec<String> {
-    candidates
-        .iter()
-        .map(|candidate| {
-            format!(
-                "{}:{}:{}:{}",
-                candidate.provider_id, candidate.endpoint_id, candidate.key_id, candidate.model_id
-            )
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LocalExecutionCandidateAttempt {
     pub(crate) eligible: EligibleLocalExecutionCandidate,
@@ -812,15 +798,6 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 return false;
             }
 
-            if self.requested_model == "gemini-embedding-2-preview" {
-                eprintln!(
-                    "embedding-debug trace={} page-after-concurrency candidates={} candidate_keys={:?} skipped={}",
-                    self.trace_id,
-                    page.candidates.len(),
-                    embedding_debug_candidate_keys(&page.candidates),
-                    page.skipped_candidates.len()
-                );
-            }
             let billing_global_model_id = page
                 .candidates
                 .first()
@@ -852,29 +829,9 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                     self.billing_provider_scope = Some((global_model_id.to_string(), scope));
                 }
             }
-            if self.requested_model == "gemini-embedding-2-preview" && !page.candidates.is_empty() {
-                eprintln!(
-                    "embedding-debug trace={} thread={:?} pre-resolution requested_model={:?} has_scope={} candidates={} candidate_keys={:?}",
-                    self.trace_id,
-                    std::thread::current().id(),
-                    self.requested_model,
-                    self.billing_provider_scope.is_some(),
-                    page.candidates.len(),
-                    embedding_debug_candidate_keys(&page.candidates)
-                );
-            }
             let (candidates, resolved_skipped) = if let Some((_, scope)) =
                 self.billing_provider_scope.as_ref()
             {
-                if self.requested_model == "gemini-embedding-2-preview" {
-                    eprintln!(
-                        "embedding-debug trace={} page-before-resolution candidates={} candidate_keys={:?} scope={:?}",
-                        self.trace_id,
-                        page.candidates.len(),
-                        embedding_debug_candidate_keys(&page.candidates),
-                        scope
-                    );
-                }
                 resolve_and_rank_logical_local_execution_candidates_with_billing_scope(
                     self.state,
                     page.candidates,
@@ -891,14 +848,6 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 )
                 .await
             } else {
-                if self.requested_model == "gemini-embedding-2-preview" {
-                    eprintln!(
-                        "embedding-debug trace={} page-before-resolution-no-scope candidates={} candidate_keys={:?}",
-                        self.trace_id,
-                        page.candidates.len(),
-                        embedding_debug_candidate_keys(&page.candidates)
-                    );
-                }
                 resolve_and_rank_logical_local_execution_candidates(
                     self.state,
                     page.candidates,
@@ -914,15 +863,6 @@ impl<'a> RequestedModelAttemptPageCursor<'a> {
                 )
                 .await
             };
-            if self.requested_model == "gemini-embedding-2-preview" {
-                eprintln!(
-                    "embedding-debug trace={} thread={:?} post-resolution candidates={} skipped={}",
-                    self.trace_id,
-                    std::thread::current().id(),
-                    candidates.len(),
-                    resolved_skipped.len()
-                );
-            }
             let skipped_candidates = page
                 .skipped_candidates
                 .into_iter()
