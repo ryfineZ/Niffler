@@ -815,6 +815,15 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
         >,
         GatewayError,
     > {
+        let debug_embedding = self.requested_model == "gemini-embedding-2-preview";
+        if debug_embedding {
+            eprintln!(
+                "embedding-debug format={} normalized={} input_rows={}",
+                candidate_api_format,
+                normalized_api_format,
+                rows.len()
+            );
+        }
         let mut rows = rows
             .into_iter()
             .filter(|row| {
@@ -825,6 +834,9 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
+            if debug_embedding {
+                eprintln!("embedding-debug rows_empty_after_seen_filter");
+            }
             return Ok(None);
         }
         let resolved_global_model_name =
@@ -845,6 +857,9 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             };
         rows.retain(|row| row.global_model_name == resolved_global_model_name);
         if rows.is_empty() {
+            if debug_embedding {
+                eprintln!("embedding-debug rows_empty_after_global_model_filter");
+            }
             return Ok(None);
         }
 
@@ -872,6 +887,13 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
             enable_model_directives,
         )
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
+        if debug_embedding {
+            eprintln!(
+                "embedding-debug enumerated_candidates={} auth_constraints={:?}",
+                enumerated_candidates.len(),
+                auth_constraints
+            );
+        }
         let mut candidates = Vec::new();
         for candidate in enumerated_candidates {
             if !self.candidate_allowed_for_page(
@@ -888,6 +910,9 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                 continue;
             }
             candidates.push(candidate);
+        }
+        if debug_embedding {
+            eprintln!("embedding-debug candidates_after_page_filter={}", candidates.len());
         }
 
         let matches_client_format = matches_client_api_format(
@@ -912,6 +937,16 @@ impl<'a> LocalCandidatePreselectionPageCursor<'a> {
                 current_unix_secs(),
             )
             .await?;
+        if debug_embedding {
+            eprintln!(
+                "embedding-debug selectable_candidates={} skipped={:?}",
+                candidates.len(),
+                skipped_candidates
+                    .iter()
+                    .map(|item| item.skip_reason)
+                    .collect::<Vec<_>>()
+            );
+        }
         let skipped_candidates = skipped_candidates
             .into_iter()
             .map(skipped_local_execution_candidate_from_scheduler_skip)
