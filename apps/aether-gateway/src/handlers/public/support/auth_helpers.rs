@@ -339,8 +339,9 @@ pub(super) fn auth_client_ip(headers: &http::HeaderMap) -> Option<String> {
         .and_then(|value| {
             value
                 .split(',')
-                .next()
-                .map(|segment| segment.trim().to_string())
+                .map(str::trim)
+                .find(|segment| !segment.is_empty() && !segment.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
         })
         .filter(|value| !value.is_empty())
         .map(|value| value.chars().take(45).collect())
@@ -348,7 +349,7 @@ pub(super) fn auth_client_ip(headers: &http::HeaderMap) -> Option<String> {
             crate::headers::header_value_str(headers, "x-real-ip")
                 .as_deref()
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("unknown"))
                 .map(|value| value.chars().take(45).collect())
         })
 }
@@ -359,7 +360,7 @@ pub(super) fn auth_client_ip_with_cf(
 ) -> Option<String> {
     cf_connecting_ip
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("unknown"))
         .map(|value| value.chars().take(45).collect())
         .or_else(|| auth_client_ip(headers))
 }

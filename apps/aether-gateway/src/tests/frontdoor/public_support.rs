@@ -9531,7 +9531,11 @@ async fn gateway_handles_auth_send_verification_code_locally_without_proxying_up
                 .with_data_state_for_tests(
                     crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
                         vec![
+                            ("enable_registration".to_string(), json!(true)),
+                            ("require_email_verification".to_string(), json!(true)),
                             ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
                             ("smtp_from_email".to_string(), json!("noreply@example.com")),
                             ("smtp_from_name".to_string(), json!("Niffler Mail")),
                         ],
@@ -9602,6 +9606,214 @@ async fn gateway_handles_auth_send_verification_code_locally_without_proxying_up
 }
 
 #[tokio::test]
+async fn gateway_rejects_auth_send_verification_code_when_registration_is_disabled() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(
+                    crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
+                        vec![
+                            ("enable_registration".to_string(), json!(false)),
+                            ("require_email_verification".to_string(), json!(true)),
+                            ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
+                            ("smtp_from_email".to_string(), json!("noreply@example.com")),
+                        ],
+                    ),
+                )
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/auth/send-verification-code"))
+        .json(&json!({ "email": "alice@example.com" }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "系统暂不开放注册");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_rate_limits_auth_send_verification_code_by_client_ip() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(
+                    crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
+                        vec![
+                            ("enable_registration".to_string(), json!(true)),
+                            ("require_email_verification".to_string(), json!(true)),
+                            ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
+                            ("smtp_from_email".to_string(), json!("noreply@example.com")),
+                            (
+                                "auth_verification_code_ip_per_minute_limit".to_string(),
+                                json!(1),
+                            ),
+                            (
+                                "auth_verification_code_ip_per_hour_limit".to_string(),
+                                json!(100),
+                            ),
+                            (
+                                "auth_verification_code_global_per_minute_limit".to_string(),
+                                json!(100),
+                            ),
+                        ],
+                    ),
+                )
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    let first_response = client
+        .post(format!("{gateway_url}/api/auth/send-verification-code"))
+        .header("cf-connecting-ip", "203.0.113.55")
+        .json(&json!({ "email": "alice@example.com" }))
+        .send()
+        .await
+        .expect("first request should succeed");
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let second_response = client
+        .post(format!("{gateway_url}/api/auth/send-verification-code"))
+        .header("cf-connecting-ip", "203.0.113.55")
+        .json(&json!({ "email": "bob@example.com" }))
+        .send()
+        .await
+        .expect("second request should succeed");
+
+    assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(second_response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|value| value > 0));
+    let payload: serde_json::Value = second_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(payload["detail"], "验证码发送过于频繁，请稍后重试");
+    assert!(payload["retry_after"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_refunds_auth_send_verification_code_rate_limit_when_delivery_queue_fails() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(
+                    crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
+                        vec![
+                            ("enable_registration".to_string(), json!(true)),
+                            ("require_email_verification".to_string(), json!(true)),
+                            ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
+                            ("smtp_from_email".to_string(), json!("noreply@example.com")),
+                            (
+                                "auth_verification_code_ip_per_minute_limit".to_string(),
+                                json!(1),
+                            ),
+                            (
+                                "auth_verification_code_ip_per_hour_limit".to_string(),
+                                json!(1),
+                            ),
+                            (
+                                "auth_verification_code_global_per_minute_limit".to_string(),
+                                json!(100),
+                            ),
+                        ],
+                    ),
+                )
+                .without_auth_email_delivery_store_for_tests()
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    for email in ["alice@example.com", "bob@example.com"] {
+        let response = client
+            .post(format!("{gateway_url}/api/auth/send-verification-code"))
+            .header("cf-connecting-ip", "203.0.113.56")
+            .json(&json!({ "email": email }))
+            .send()
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_does_not_share_auth_send_verification_code_ip_bucket_when_ip_is_missing() {
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(
+                    crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
+                        vec![
+                            ("enable_registration".to_string(), json!(true)),
+                            ("require_email_verification".to_string(), json!(true)),
+                            ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
+                            ("smtp_from_email".to_string(), json!("noreply@example.com")),
+                            (
+                                "auth_verification_code_ip_per_minute_limit".to_string(),
+                                json!(1),
+                            ),
+                            (
+                                "auth_verification_code_ip_per_hour_limit".to_string(),
+                                json!(1),
+                            ),
+                            (
+                                "auth_verification_code_global_per_minute_limit".to_string(),
+                                json!(100),
+                            ),
+                        ],
+                    ),
+                )
+        })
+        .await;
+
+    let client = reqwest::Client::new();
+    for email in ["alice@example.com", "bob@example.com"] {
+        let response = client
+            .post(format!("{gateway_url}/api/auth/send-verification-code"))
+            .json(&json!({ "email": email }))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_requires_turnstile_token_before_auth_send_verification_code() {
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
         start_auth_gateway_with_builder(|| {
@@ -9610,7 +9822,11 @@ async fn gateway_requires_turnstile_token_before_auth_send_verification_code() {
                 .with_data_state_for_tests(
                     crate::data::GatewayDataState::disabled().with_system_config_values_for_tests(
                         vec![
+                            ("enable_registration".to_string(), json!(true)),
+                            ("require_email_verification".to_string(), json!(true)),
                             ("smtp_host".to_string(), json!("smtp.example.com")),
+                            ("smtp_user".to_string(), json!("smtp-user")),
+                            ("smtp_password".to_string(), json!("smtp-password")),
                             ("smtp_from_email".to_string(), json!("noreply@example.com")),
                             ("turnstile_enabled".to_string(), json!(true)),
                             ("turnstile_site_key".to_string(), json!("site-key-123")),
@@ -9659,7 +9875,11 @@ async fn gateway_verifies_turnstile_token_before_auth_send_verification_code() {
                     .with_data_state_for_tests(
                         crate::data::GatewayDataState::disabled()
                             .with_system_config_values_for_tests(vec![
+                                ("enable_registration".to_string(), json!(true)),
+                                ("require_email_verification".to_string(), json!(true)),
                                 ("smtp_host".to_string(), json!("smtp.example.com")),
+                                ("smtp_user".to_string(), json!("smtp-user")),
+                                ("smtp_password".to_string(), json!("smtp-password")),
                                 ("smtp_from_email".to_string(), json!("noreply@example.com")),
                                 ("smtp_from_name".to_string(), json!("Niffler Mail")),
                                 ("turnstile_enabled".to_string(), json!(true)),
@@ -9775,7 +9995,15 @@ async fn gateway_reports_failed_verification_delivery_and_allows_resend() {
         failed_delivery,
     ]));
     let data_state = crate::data::GatewayDataState::disabled()
-        .with_background_task_repository_for_tests(Arc::clone(&background_tasks));
+        .with_background_task_repository_for_tests(Arc::clone(&background_tasks))
+        .with_system_config_values_for_tests(vec![
+            ("enable_registration".to_string(), json!(true)),
+            ("require_email_verification".to_string(), json!(true)),
+            ("smtp_host".to_string(), json!("smtp.example.com")),
+            ("smtp_user".to_string(), json!("smtp-user")),
+            ("smtp_password".to_string(), json!("smtp-password")),
+            ("smtp_from_email".to_string(), json!("noreply@example.com")),
+        ]);
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
         start_auth_gateway_with_builder(move || {
             AppState::new()

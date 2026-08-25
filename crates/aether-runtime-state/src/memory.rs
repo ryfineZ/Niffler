@@ -270,6 +270,88 @@ impl MemoryRuntimeBackend {
         })
     }
 
+    pub(crate) async fn check_and_consume_rate_limit_windows(
+        &self,
+        windows: &[crate::RateLimitWindowInput<'_>],
+    ) -> Result<crate::RateLimitWindowsCheck, crate::DataLayerError> {
+        let mut counters = self.counters.lock().await;
+        let now = Instant::now();
+        counters.retain(|_, entry| entry.expires_at > now);
+
+        for (index, window) in windows.iter().enumerate() {
+            if window.limit == 0 {
+                continue;
+            }
+            let count = counters
+                .get(window.key)
+                .filter(|entry| entry.bucket == window.bucket)
+                .map(|entry| entry.value)
+                .unwrap_or_default();
+            if count >= window.limit {
+                return Ok(crate::RateLimitWindowsCheck::Rejected {
+                    index,
+                    limit: window.limit,
+                });
+            }
+        }
+
+        let mut remaining = None::<u32>;
+        for window in windows {
+            if window.limit == 0 {
+                continue;
+            }
+            let expires_at = now + Duration::from_secs(window.ttl_seconds.max(1));
+            let next = counters
+                .entry(window.key.to_string())
+                .and_modify(|entry| {
+                    if entry.bucket == window.bucket {
+                        entry.value = entry.value.saturating_add(1);
+                    } else {
+                        entry.bucket = window.bucket;
+                        entry.value = 1;
+                    }
+                    entry.expires_at = expires_at;
+                })
+                .or_insert(MemoryCounterEntry {
+                    value: 1,
+                    bucket: window.bucket,
+                    expires_at,
+                })
+                .value;
+            let window_remaining = window.limit.saturating_sub(next);
+            remaining = Some(remaining.map_or(window_remaining, |value| {
+                value.min(window_remaining)
+            }));
+        }
+
+        Ok(crate::RateLimitWindowsCheck::Allowed {
+            remaining: remaining.unwrap_or(0),
+        })
+    }
+
+    pub(crate) async fn refund_rate_limit_windows(&self, keys: &[String]) -> usize {
+        let mut counters = self.counters.lock().await;
+        let now = Instant::now();
+        let mut refunded = 0_usize;
+        for key in keys {
+            let remove_key = {
+                let Some(entry) = counters.get_mut(key) else {
+                    continue;
+                };
+                if entry.expires_at <= now || entry.value == 0 {
+                    continue;
+                }
+                entry.value = entry.value.saturating_sub(1);
+                refunded += 1;
+                entry.value == 0
+            };
+            if remove_key {
+                counters.remove(key);
+            }
+        }
+        refunded
+    }
+
     pub(crate) async fn set_add(&self, key: &str, member: &str) -> bool {
         self.sets
             .lock()

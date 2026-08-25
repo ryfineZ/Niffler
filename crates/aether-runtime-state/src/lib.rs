@@ -69,6 +69,51 @@ end
 return {1, 0, 0, remaining}
 "#;
 
+const RATE_LIMIT_CHECK_AND_CONSUME_WINDOWS_SCRIPT: &str = r#"
+local window_count = tonumber(ARGV[1])
+
+for i = 1, window_count do
+    local limit = tonumber(ARGV[1 + i])
+    if limit > 0 then
+        local current = tonumber(redis.call('GET', KEYS[i]) or '0')
+        if current >= limit then
+            return {0, i, limit, 0}
+        end
+    end
+end
+
+local remaining = -1
+for i = 1, window_count do
+    local limit = tonumber(ARGV[1 + i])
+    if limit > 0 then
+        local ttl = tonumber(ARGV[1 + window_count + i])
+        local count = redis.call('INCR', KEYS[i])
+        redis.call('EXPIRE', KEYS[i], ttl)
+        local window_remaining = limit - count
+        if remaining == -1 or window_remaining < remaining then
+            remaining = window_remaining
+        end
+    end
+end
+
+return {1, 0, 0, remaining}
+"#;
+
+const RATE_LIMIT_REFUND_WINDOWS_SCRIPT: &str = r#"
+local refunded = 0
+for i = 1, #KEYS do
+    local current = tonumber(redis.call('GET', KEYS[i]) or '0')
+    if current > 0 then
+        local next_value = redis.call('DECR', KEYS[i])
+        refunded = refunded + 1
+        if next_value <= 0 then
+            redis.call('DEL', KEYS[i])
+        end
+    end
+end
+return refunded
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStateBackendMode {
     Auto,
@@ -624,6 +669,118 @@ impl RuntimeState {
         }
     }
 
+    pub async fn check_and_consume_rate_limit_windows(
+        &self,
+        windows: &[RateLimitWindowInput<'_>],
+    ) -> Result<RateLimitWindowsCheck, DataLayerError> {
+        if windows.is_empty() {
+            return Ok(RateLimitWindowsCheck::Allowed { remaining: 0 });
+        }
+        match self.backend.as_ref() {
+            RuntimeStateBackend::Memory(memory) => {
+                memory.check_and_consume_rate_limit_windows(windows).await
+            }
+            RuntimeStateBackend::Redis(redis) => {
+                let keys = windows
+                    .iter()
+                    .map(|window| redis.keyspace.key(window.key))
+                    .collect::<Vec<_>>();
+                let limits = windows
+                    .iter()
+                    .map(|window| i64::from(window.limit))
+                    .collect::<Vec<_>>();
+                let ttl_seconds = windows
+                    .iter()
+                    .map(|window| i64::try_from(window.ttl_seconds.max(1)).unwrap_or(i64::MAX))
+                    .collect::<Vec<_>>();
+                let raw = run_redis_with_timeout(
+                    redis.command_timeout_ms,
+                    "runtime rate limit windows check",
+                    async {
+                        let mut connection = redis
+                            .client
+                            .get_multiplexed_async_connection()
+                            .await
+                            .map_redis_err()?;
+                        redis_cmd("EVAL")
+                            .arg(RATE_LIMIT_CHECK_AND_CONSUME_WINDOWS_SCRIPT)
+                            .arg(keys.len())
+                            .arg(&keys)
+                            .arg(i64::try_from(keys.len()).unwrap_or(i64::MAX))
+                            .arg(&limits)
+                            .arg(&ttl_seconds)
+                            .query_async::<Vec<i64>>(&mut connection)
+                            .await
+                            .map_redis_err()
+                    },
+                )
+                .await?;
+                if raw.first().copied().unwrap_or_default() == 1 {
+                    return Ok(RateLimitWindowsCheck::Allowed {
+                        remaining: raw
+                            .get(3)
+                            .copied()
+                            .and_then(|value| u32::try_from(value).ok())
+                            .unwrap_or_default(),
+                    });
+                }
+                let index = raw
+                    .get(1)
+                    .copied()
+                    .and_then(|value| usize::try_from(value.saturating_sub(1)).ok())
+                    .unwrap_or_default();
+                let limit = raw
+                    .get(2)
+                    .copied()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or_else(|| {
+                        windows.get(index).map(|window| window.limit).unwrap_or(0)
+                    });
+                Ok(RateLimitWindowsCheck::Rejected { index, limit })
+            }
+        }
+    }
+
+    pub async fn refund_rate_limit_windows(
+        &self,
+        keys: &[String],
+    ) -> Result<usize, DataLayerError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        match self.backend.as_ref() {
+            RuntimeStateBackend::Memory(memory) => {
+                Ok(memory.refund_rate_limit_windows(keys).await)
+            }
+            RuntimeStateBackend::Redis(redis) => {
+                let namespaced = keys
+                    .iter()
+                    .map(|key| redis.keyspace.key(key))
+                    .collect::<Vec<_>>();
+                let refunded = run_redis_with_timeout(
+                    redis.command_timeout_ms,
+                    "runtime rate limit windows refund",
+                    async {
+                        let mut connection = redis
+                            .client
+                            .get_multiplexed_async_connection()
+                            .await
+                            .map_redis_err()?;
+                        redis_cmd("EVAL")
+                            .arg(RATE_LIMIT_REFUND_WINDOWS_SCRIPT)
+                            .arg(namespaced.len())
+                            .arg(&namespaced)
+                            .query_async::<i64>(&mut connection)
+                            .await
+                            .map_redis_err()
+                    },
+                )
+                .await?;
+                Ok(usize::try_from(refunded).unwrap_or(0))
+            }
+        }
+    }
+
     pub async fn set_add(&self, key: &str, member: &str) -> Result<bool, DataLayerError> {
         match self.backend.as_ref() {
             RuntimeStateBackend::Memory(memory) => Ok(memory.set_add(key, member).await),
@@ -1027,6 +1184,20 @@ pub struct RateLimitInput<'a> {
     pub bucket: u64,
     pub user_limit: u32,
     pub key_limit: u32,
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitWindowsCheck {
+    Allowed { remaining: u32 },
+    Rejected { index: usize, limit: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitWindowInput<'a> {
+    pub key: &'a str,
+    pub bucket: u64,
+    pub limit: u32,
     pub ttl_seconds: u64,
 }
 
@@ -1859,6 +2030,89 @@ mod tests {
                 limit: 1
             }
         );
+    }
+
+    #[tokio::test]
+    async fn memory_rate_limit_windows_do_not_partially_consume_on_rejection() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        assert!(matches!(
+            runtime
+                .check_and_consume_rate_limit_windows(&[RateLimitWindowInput {
+                    key: "auth:global:1",
+                    bucket: 1,
+                    limit: 1,
+                    ttl_seconds: 60,
+                }])
+                .await
+                .expect("prime global"),
+            RateLimitWindowsCheck::Allowed { .. }
+        ));
+
+        assert_eq!(
+            runtime
+                .check_and_consume_rate_limit_windows(&[
+                    RateLimitWindowInput {
+                        key: "auth:ip:1",
+                        bucket: 1,
+                        limit: 1,
+                        ttl_seconds: 60,
+                    },
+                    RateLimitWindowInput {
+                        key: "auth:global:1",
+                        bucket: 1,
+                        limit: 1,
+                        ttl_seconds: 60,
+                    },
+                ])
+                .await
+                .expect("multi-window check"),
+            RateLimitWindowsCheck::Rejected { index: 1, limit: 1 }
+        );
+
+        assert!(matches!(
+            runtime
+                .check_and_consume_rate_limit_windows(&[RateLimitWindowInput {
+                    key: "auth:ip:1",
+                    bucket: 1,
+                    limit: 1,
+                    ttl_seconds: 60,
+                }])
+                .await
+                .expect("ip should not be consumed"),
+            RateLimitWindowsCheck::Allowed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_rate_limit_windows_refund_consumed_keys() {
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let window = RateLimitWindowInput {
+            key: "auth:ip:refund:1",
+            bucket: 1,
+            limit: 1,
+            ttl_seconds: 60,
+        };
+        assert!(matches!(
+            runtime
+                .check_and_consume_rate_limit_windows(&[window])
+                .await
+                .expect("consume"),
+            RateLimitWindowsCheck::Allowed { .. }
+        ));
+        assert_eq!(
+            runtime
+                .refund_rate_limit_windows(&[window.key.to_string()])
+                .await
+                .expect("refund"),
+            1
+        );
+        assert!(matches!(
+            runtime
+                .check_and_consume_rate_limit_windows(&[window])
+                .await
+                .expect("consume again"),
+            RateLimitWindowsCheck::Allowed { .. }
+        ));
     }
 
     #[tokio::test]

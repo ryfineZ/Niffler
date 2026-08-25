@@ -1,5 +1,5 @@
 use super::{
-    auth_email_is_verified, auth_now, auth_registration_email_configured,
+    auth_client_ip_with_cf, auth_email_is_verified, auth_now, auth_registration_email_configured,
     auth_verification_code_expire_minutes, auth_verification_send_cooldown_seconds,
     build_auth_error_response, build_auth_json_response, clear_auth_email_pending_code,
     clear_auth_email_verification, generate_auth_verification_code, http, json,
@@ -10,9 +10,23 @@ use super::{
     GatewayPublicRequestContext, Regex, Response,
 };
 use aether_data_contracts::repository::background_tasks::BackgroundTaskStatus;
+use aether_runtime_state::{RateLimitWindowInput, RateLimitWindowsCheck};
 use serde::Deserialize;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const AUTH_REGISTRATION_STORAGE_UNAVAILABLE_DETAIL: &str = "注册数据存储暂不可用";
+const AUTH_VERIFICATION_IP_PER_MINUTE_CONFIG_KEY: &str =
+    "auth_verification_code_ip_per_minute_limit";
+const AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY: &str =
+    "auth_verification_code_ip_per_hour_limit";
+const AUTH_VERIFICATION_EMAIL_PER_DAY_CONFIG_KEY: &str =
+    "auth_verification_code_email_per_day_limit";
+const AUTH_VERIFICATION_GLOBAL_PER_MINUTE_CONFIG_KEY: &str =
+    "auth_verification_code_global_per_minute_limit";
+const AUTH_VERIFICATION_IP_PER_MINUTE_DEFAULT: u32 = 3;
+const AUTH_VERIFICATION_IP_PER_HOUR_DEFAULT: u32 = 10;
+const AUTH_VERIFICATION_EMAIL_PER_DAY_DEFAULT: u32 = 3;
+const AUTH_VERIFICATION_GLOBAL_PER_MINUTE_DEFAULT: u32 = 60;
 
 #[derive(Debug, Deserialize)]
 struct AuthRegisterRequest {
@@ -41,6 +55,19 @@ struct AuthEmailDeliveryState {
     status: Option<String>,
     error: Option<String>,
     failed: bool,
+}
+
+struct AuthVerificationSendRateLimitRule {
+    scope: &'static str,
+    bucketed_key: String,
+    limit: u32,
+    bucket: u64,
+    ttl_seconds: u64,
+    retry_after: u64,
+}
+
+struct AuthVerificationSendRateLimitPermit {
+    keys: Vec<String>,
 }
 
 fn normalize_auth_email(value: &str) -> Option<String> {
@@ -208,6 +235,215 @@ async fn validate_auth_email_suffix(
     Ok(Ok(()))
 }
 
+async fn ensure_auth_verification_code_endpoint_enabled(
+    state: &AppState,
+) -> Result<Result<(), (http::StatusCode, &'static str)>, GatewayError> {
+    let enable_registration = state
+        .read_system_config_json_value("enable_registration")
+        .await?;
+    if !system_config_bool(enable_registration.as_ref(), false) {
+        return Ok(Err((http::StatusCode::FORBIDDEN, "系统暂不开放注册")));
+    }
+
+    let email_configured = auth_registration_email_configured(state).await?;
+    let require_email_verification = state
+        .read_system_config_json_value("require_email_verification")
+        .await?;
+    if !email_configured || !system_config_bool(require_email_verification.as_ref(), false) {
+        return Ok(Err((
+            http::StatusCode::FORBIDDEN,
+            "系统未启用邮箱验证码注册",
+        )));
+    }
+
+    Ok(Ok(()))
+}
+
+async fn consume_auth_verification_send_rate_limit(
+    state: &AppState,
+    headers: &http::HeaderMap,
+    cf_connecting_ip: Option<&str>,
+    email: &str,
+) -> Result<Result<AuthVerificationSendRateLimitPermit, Response<Body>>, GatewayError> {
+    let now_ts = current_unix_secs();
+    let mut rules = Vec::<AuthVerificationSendRateLimitRule>::new();
+
+    if let Some(client_ip) = auth_client_ip_with_cf(headers, cf_connecting_ip)
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| !value.eq_ignore_ascii_case("unknown"))
+    {
+        push_auth_verification_rate_limit_rule(
+            &mut rules,
+            "ip_per_minute",
+            format!("auth:verification:send:ip:{client_ip}"),
+            read_auth_u32_config(
+                state,
+                AUTH_VERIFICATION_IP_PER_MINUTE_CONFIG_KEY,
+                AUTH_VERIFICATION_IP_PER_MINUTE_DEFAULT,
+            )
+            .await?,
+            60,
+            now_ts,
+        );
+        push_auth_verification_rate_limit_rule(
+            &mut rules,
+            "ip_per_hour",
+            format!("auth:verification:send:ip_hour:{client_ip}"),
+            read_auth_u32_config(
+                state,
+                AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY,
+                AUTH_VERIFICATION_IP_PER_HOUR_DEFAULT,
+            )
+            .await?,
+            60 * 60,
+            now_ts,
+        );
+    } else {
+        tracing::warn!("auth verification email send request is missing client IP");
+    }
+
+    push_auth_verification_rate_limit_rule(
+        &mut rules,
+        "email_per_day",
+        format!("auth:verification:send:email:{email}"),
+        read_auth_u32_config(
+            state,
+            AUTH_VERIFICATION_EMAIL_PER_DAY_CONFIG_KEY,
+            AUTH_VERIFICATION_EMAIL_PER_DAY_DEFAULT,
+        )
+        .await?,
+        24 * 60 * 60,
+        now_ts,
+    );
+    push_auth_verification_rate_limit_rule(
+        &mut rules,
+        "global_per_minute",
+        "auth:verification:send:global".to_string(),
+        read_auth_u32_config(
+            state,
+            AUTH_VERIFICATION_GLOBAL_PER_MINUTE_CONFIG_KEY,
+            AUTH_VERIFICATION_GLOBAL_PER_MINUTE_DEFAULT,
+        )
+        .await?,
+        60,
+        now_ts,
+    );
+
+    let windows = rules
+        .iter()
+        .map(|rule| RateLimitWindowInput {
+            key: rule.bucketed_key.as_str(),
+            bucket: rule.bucket,
+            limit: rule.limit,
+            ttl_seconds: rule.ttl_seconds,
+        })
+        .collect::<Vec<_>>();
+    let outcome = state
+        .runtime_state()
+        .check_and_consume_rate_limit_windows(&windows)
+        .await
+        .map_err(|err| GatewayError::Internal(err.to_string()))?;
+
+    match outcome {
+        RateLimitWindowsCheck::Allowed { .. } => Ok(Ok(AuthVerificationSendRateLimitPermit {
+            keys: rules
+                .iter()
+                .map(|rule| rule.bucketed_key.clone())
+                .collect::<Vec<_>>(),
+        })),
+        RateLimitWindowsCheck::Rejected { index, limit } => {
+            let rule = rules.get(index);
+            let retry_after = rule.map(|rule| rule.retry_after).unwrap_or(60);
+            tracing::warn!(
+                scope = rule.map(|rule| rule.scope).unwrap_or("unknown"),
+                limit,
+                retry_after,
+                "auth verification email send rate limit rejected request"
+            );
+            let mut response = build_auth_json_response(
+                http::StatusCode::TOO_MANY_REQUESTS,
+                json!({
+                    "detail": "验证码发送过于频繁，请稍后重试",
+                    "retry_after": retry_after,
+                }),
+                None,
+            );
+            if let Ok(value) = http::HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(http::header::RETRY_AFTER, value);
+            }
+            Ok(Err(response))
+        }
+    }
+}
+
+fn push_auth_verification_rate_limit_rule(
+    rules: &mut Vec<AuthVerificationSendRateLimitRule>,
+    scope: &'static str,
+    key: String,
+    limit: u32,
+    bucket_seconds: u64,
+    now_ts: u64,
+) {
+    if limit == 0 {
+        return;
+    }
+    let bucket_seconds = bucket_seconds.max(1);
+    let bucket = now_ts / bucket_seconds;
+    rules.push(AuthVerificationSendRateLimitRule {
+        scope,
+        bucketed_key: format!("{key}:{bucket}"),
+        limit,
+        bucket,
+        ttl_seconds: bucket_seconds.saturating_mul(2).max(1),
+        retry_after: retry_after_seconds(now_ts, bucket_seconds),
+    });
+}
+
+async fn refund_auth_verification_send_rate_limit(
+    state: &AppState,
+    permit: &AuthVerificationSendRateLimitPermit,
+) {
+    if let Err(err) = state.runtime_state().refund_rate_limit_windows(&permit.keys).await {
+        tracing::warn!(
+            error = ?err,
+            "auth verification email send rate limit refund failed"
+        );
+    }
+}
+
+async fn read_auth_u32_config(
+    state: &AppState,
+    key: &str,
+    default: u32,
+) -> Result<u32, GatewayError> {
+    let value = state.read_system_config_json_value(key).await?;
+    Ok(system_config_u32(value.as_ref(), default))
+}
+
+fn system_config_u32(value: Option<&serde_json::Value>, default: u32) -> u32 {
+    match value {
+        Some(serde_json::Value::Number(value)) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(default),
+        Some(serde_json::Value::String(value)) => value.trim().parse::<u32>().unwrap_or(default),
+        Some(serde_json::Value::Bool(value)) => u32::from(*value),
+        _ => default,
+    }
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn retry_after_seconds(now_ts: u64, bucket_seconds: u64) -> u64 {
+    let bucket_seconds = bucket_seconds.max(1);
+    (bucket_seconds - (now_ts % bucket_seconds)).max(1)
+}
+
 async fn read_auth_email_delivery_state(
     state: &AppState,
     delivery_id: Option<&str>,
@@ -270,6 +506,20 @@ pub(super) async fn handle_auth_send_verification_code(
     let Some(email) = normalize_auth_email(&payload.email) else {
         return build_auth_error_response(http::StatusCode::BAD_REQUEST, "邮箱格式无效", false);
     };
+
+    match ensure_auth_verification_code_endpoint_enabled(state).await {
+        Ok(Ok(())) => {}
+        Ok(Err((status, detail))) => {
+            return build_auth_error_response(status, detail, false);
+        }
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("auth settings lookup failed: {err:?}"),
+                false,
+            );
+        }
+    }
 
     if let Err(response) = verify_auth_turnstile(
         state,
@@ -364,6 +614,39 @@ pub(super) async fn handle_auth_send_verification_code(
             }
         };
 
+    let rate_limit_permit =
+        match consume_auth_verification_send_rate_limit(state, headers, cf_connecting_ip, &email)
+            .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(response)) => return response,
+            Err(err) => {
+                return build_auth_error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("verification rate limit check failed: {err:?}"),
+                    false,
+                );
+            }
+        };
+
+    if let Err(err) = store_auth_email_verification_code_with_delivery(
+        state,
+        &email,
+        &code,
+        now,
+        u64::try_from(expire_minutes.saturating_mul(60)).unwrap_or(300),
+        None,
+    )
+    .await
+    {
+        refund_auth_verification_send_rate_limit(state, &rate_limit_permit).await;
+        return build_auth_error_response(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("auth verification code save failed: {err:?}"),
+            false,
+        );
+    }
+
     let delivery_id = match crate::email::queue_email_delivery(
         state,
         email_payload,
@@ -374,6 +657,7 @@ pub(super) async fn handle_auth_send_verification_code(
         Ok(value) => value,
         Err(_err) => {
             let _ = clear_auth_email_pending_code(state, &email).await;
+            refund_auth_verification_send_rate_limit(state, &rate_limit_permit).await;
             return build_auth_error_response(
                 http::StatusCode::INTERNAL_SERVER_ERROR,
                 "发送验证码失败，请稍后重试",
@@ -392,10 +676,10 @@ pub(super) async fn handle_auth_send_verification_code(
     )
     .await
     {
-        return build_auth_error_response(
-            http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("auth verification code save failed: {err:?}"),
-            false,
+        tracing::warn!(
+            error = ?err,
+            delivery_id = %delivery_id,
+            "auth verification email delivery id save failed"
         );
     }
 
