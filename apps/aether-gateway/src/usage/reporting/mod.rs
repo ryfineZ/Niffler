@@ -1411,6 +1411,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_sync_report_preserves_codex_feature_quota_and_reset_credits() {
+        crate::orchestration::clear_local_report_effect_caches_for_tests();
+
+        let mut key = sample_provider_catalog_key(
+            "key-codex-sync-feature-quota",
+            "provider-codex-sync-feature-quota",
+        );
+        key.upstream_metadata = Some(json!({
+            "codex": {
+                "updated_at": 1_777_000_000u64,
+                "plan_type": "pro",
+                "rate_limit_reset_credits": { "available_count": 1 },
+                "windows": [
+                    {
+                        "code": "weekly",
+                        "label": "7D",
+                        "scope": "account",
+                        "source_role": "secondary",
+                        "used_percent": 5.0,
+                        "reset_after_seconds": 500_000u64,
+                        "window_seconds": 604_800u64,
+                        "window_minutes": 10_080u64
+                    },
+                    {
+                        "code": "spark:5h",
+                        "label": "GPT-5.3-Codex-Spark 5H",
+                        "scope": "feature",
+                        "source_role": "primary",
+                        "used_percent": 0.0,
+                        "reset_after_seconds": 15_000u64,
+                        "window_seconds": 18_000u64,
+                        "window_minutes": 300u64
+                    },
+                    {
+                        "code": "spark:weekly",
+                        "label": "GPT-5.3-Codex-Spark 7D",
+                        "scope": "feature",
+                        "source_role": "secondary",
+                        "used_percent": 0.0,
+                        "reset_after_seconds": 500_000u64,
+                        "window_seconds": 604_800u64,
+                        "window_minutes": 10_080u64
+                    }
+                ]
+            }
+        }));
+        let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            vec![sample_provider_catalog_provider(
+                "provider-codex-sync-feature-quota",
+                "codex",
+            )],
+            Vec::new(),
+            vec![key],
+        ));
+        let state = build_provider_catalog_test_state(Arc::clone(&provider_catalog_repository));
+
+        submit_sync_report(
+            &state,
+            GatewaySyncReportRequest {
+                trace_id: "trace-codex-reporting-sync-feature-quota".to_string(),
+                report_kind: "openai_responses_sync_success".to_string(),
+                report_context: Some(json!({
+                    "request_id": "req-codex-reporting-sync-feature-quota",
+                    "key_id": "key-codex-sync-feature-quota"
+                })),
+                status_code: 200,
+                headers: sample_codex_paid_headers(),
+                body_json: None,
+                client_body_json: None,
+                body_base64: None,
+                telemetry: None,
+            },
+        )
+        .await
+        .expect("sync report should stay local");
+
+        let reloaded = provider_catalog_repository
+            .list_keys_by_ids(&["key-codex-sync-feature-quota".to_string()])
+            .await
+            .expect("keys should list");
+        let codex = reloaded[0]
+            .upstream_metadata
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|metadata| metadata.get("codex"))
+            .and_then(serde_json::Value::as_object)
+            .expect("codex metadata should exist");
+        let metadata_windows = codex
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("codex metadata windows should exist");
+        assert_eq!(
+            codex.get("rate_limit_reset_credits"),
+            Some(&json!({ "available_count": 1 }))
+        );
+        assert!(metadata_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:5h"))));
+        assert!(metadata_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:weekly"))));
+
+        let quota = reloaded[0]
+            .status_snapshot
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|snapshot| snapshot.get("quota"))
+            .and_then(serde_json::Value::as_object)
+            .expect("quota snapshot should exist");
+        let quota_windows = quota
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("quota windows should exist");
+        assert_eq!(quota.get("source"), Some(&json!("response_headers")));
+        assert_eq!(
+            quota.get("reset_credits"),
+            Some(&json!({ "available_count": 1 }))
+        );
+        assert!(quota_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:5h"))));
+        assert!(quota_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:weekly"))));
+    }
+
+    #[tokio::test]
     async fn submit_sync_report_updates_codex_quota_from_provider_response_headers() {
         crate::orchestration::clear_local_report_effect_caches_for_tests();
 

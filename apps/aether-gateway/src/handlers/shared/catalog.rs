@@ -445,6 +445,155 @@ pub(crate) fn merge_codex_metadata_bucket(current: Option<&Value>, incoming: &Va
     Value::Object(merged)
 }
 
+fn codex_quota_window_is_account_scoped(window: &Value) -> bool {
+    let Some(window) = window.as_object() else {
+        return false;
+    };
+    let scope = window
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !scope.is_empty() {
+        return scope.eq_ignore_ascii_case("account");
+    }
+
+    let code = window
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !code.starts_with("spark:")
+        && !code.starts_with("spark_")
+        && !code.starts_with("feature:")
+}
+
+fn codex_quota_window_code(window: &Value) -> Option<&str> {
+    window
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+}
+
+fn rebase_codex_preserved_window_countdown(
+    window: &mut Value,
+    current_observed_at: Option<u64>,
+    incoming_observed_at: Option<u64>,
+) {
+    let Some(window) = window.as_object_mut() else {
+        return;
+    };
+    let reset_at = window
+        .get("reset_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64)
+        .or_else(|| {
+            current_observed_at
+                .zip(
+                    window
+                        .get("reset_after_seconds")
+                        .and_then(admin_provider_quota_pure::coerce_json_u64),
+                )
+                .and_then(|(observed_at, reset_after)| observed_at.checked_add(reset_after))
+        });
+    let Some(reset_at) = reset_at else {
+        return;
+    };
+    window.insert("reset_at".to_string(), json!(reset_at));
+    if let Some(observed_at) = incoming_observed_at {
+        window.insert(
+            "reset_after_seconds".to_string(),
+            json!(reset_at.saturating_sub(observed_at)),
+        );
+    }
+}
+
+fn merge_codex_response_header_windows(
+    current: Option<&Map<String, Value>>,
+    incoming: &Map<String, Value>,
+) -> Value {
+    let current_windows = current
+        .and_then(|current| current.get("windows"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_windows = incoming
+        .get("windows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_has_account_windows = incoming_windows
+        .iter()
+        .any(codex_quota_window_is_account_scoped);
+    let current_observed_at = current
+        .and_then(|current| current.get("updated_at"))
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let incoming_observed_at = incoming
+        .get("updated_at")
+        .and_then(admin_provider_quota_pure::coerce_json_u64);
+    let mut merged = incoming_windows;
+
+    for mut current_window in current_windows {
+        if incoming_has_account_windows && codex_quota_window_is_account_scoped(&current_window) {
+            continue;
+        }
+        let duplicate = codex_quota_window_code(&current_window).is_some_and(|current_code| {
+            merged.iter().any(|incoming_window| {
+                codex_quota_window_code(incoming_window)
+                    .is_some_and(|incoming_code| incoming_code.eq_ignore_ascii_case(current_code))
+            })
+        });
+        if !duplicate {
+            rebase_codex_preserved_window_countdown(
+                &mut current_window,
+                current_observed_at,
+                incoming_observed_at,
+            );
+            merged.push(current_window);
+        }
+    }
+
+    Value::Array(merged)
+}
+
+pub(crate) fn merge_codex_response_header_metadata_bucket(
+    current: Option<&Value>,
+    incoming: &Value,
+) -> Value {
+    let current_object = current.and_then(Value::as_object);
+    let mut merged = current_object.cloned().unwrap_or_default();
+    let Some(incoming_object) = incoming.as_object() else {
+        return Value::Object(merged);
+    };
+
+    let incoming_has_account_quota = incoming_object.keys().any(|key| {
+        key.starts_with("primary_")
+            || key.starts_with("secondary_")
+            || key == "primary_over_secondary_limit_percent"
+    }) || incoming_object
+        .get("windows")
+        .and_then(Value::as_array)
+        .is_some_and(|windows| windows.iter().any(codex_quota_window_is_account_scoped));
+    if incoming_has_account_quota {
+        merged.retain(|key, _| {
+            !key.starts_with("primary_")
+                && !key.starts_with("secondary_")
+                && key != "primary_over_secondary_limit_percent"
+        });
+    }
+
+    for (key, value) in incoming_object {
+        if key == "windows" {
+            let next = merge_codex_response_header_windows(current_object, incoming_object);
+            merged.insert(key.clone(), next);
+            continue;
+        }
+        merged.insert(key.clone(), value.clone());
+    }
+    Value::Object(merged)
+}
+
 fn provider_quota_timestamp_unix_secs(value: Option<&Value>) -> Option<u64> {
     let mut parsed = match value {
         Some(Value::Number(number)) => number.as_f64(),
@@ -3276,6 +3425,8 @@ mod tests {
             "plan_type": "team",
             "secondary_used_percent": 7.0,
             "secondary_reset_after_seconds": 1200u64,
+            "spark_primary_used_percent": 4.0,
+            "rate_limit_reset_credits": { "available_count": 1 },
             "account_id": "account-1"
         });
         let incoming = json!({
@@ -3291,6 +3442,78 @@ mod tests {
         assert_eq!(merged["primary_used_percent"], json!(12.0));
         assert!(merged.get("secondary_used_percent").is_none());
         assert!(merged.get("secondary_reset_after_seconds").is_none());
+        assert!(merged.get("spark_primary_used_percent").is_none());
+        assert!(merged.get("rate_limit_reset_credits").is_none());
+    }
+
+    #[test]
+    fn merge_codex_response_headers_preserves_feature_windows_and_reset_credits() {
+        let current = json!({
+            "plan_type": "pro",
+            "account_id": "account-1",
+            "rate_limit_reset_credits": { "available_count": 1 },
+            "spark_primary_used_percent": 3.0,
+            "windows": [
+                {
+                    "code": "weekly",
+                    "scope": "account",
+                    "used_percent": 5.0,
+                    "window_minutes": 10_080u64
+                },
+                {
+                    "code": "5h",
+                    "scope": "account",
+                    "used_percent": 7.0,
+                    "window_minutes": 300u64
+                },
+                {
+                    "code": "spark:5h",
+                    "scope": "feature",
+                    "used_percent": 0.0,
+                    "window_minutes": 300u64
+                },
+                {
+                    "code": "spark:weekly",
+                    "scope": "feature",
+                    "used_percent": 0.0,
+                    "window_minutes": 10_080u64
+                }
+            ]
+        });
+        let incoming = json!({
+            "updated_at": 1_777_000_000u64,
+            "plan_type": "pro",
+            "primary_used_percent": 12.0,
+            "primary_window_minutes": 10_080u64,
+            "windows": [{
+                "code": "weekly",
+                "scope": "account",
+                "used_percent": 12.0,
+                "window_minutes": 10_080u64
+            }]
+        });
+
+        let merged = merge_codex_response_header_metadata_bucket(Some(&current), &incoming);
+        let windows = merged["windows"]
+            .as_array()
+            .expect("merged windows should exist");
+
+        assert_eq!(merged["account_id"], json!("account-1"));
+        assert_eq!(merged["rate_limit_reset_credits"]["available_count"], json!(1));
+        assert_eq!(merged["spark_primary_used_percent"], json!(3.0));
+        assert_eq!(windows.len(), 3);
+        assert!(windows.iter().any(|window| {
+            window["code"] == json!("weekly") && window["used_percent"] == json!(12.0)
+        }));
+        assert!(!windows
+            .iter()
+            .any(|window| window["code"] == json!("5h")));
+        assert!(windows
+            .iter()
+            .any(|window| window["code"] == json!("spark:5h")));
+        assert!(windows
+            .iter()
+            .any(|window| window["code"] == json!("spark:weekly")));
     }
 
     #[test]

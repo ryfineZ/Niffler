@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::clock::current_unix_secs;
 use crate::handlers::shared::{
-    merge_codex_metadata_bucket, sync_provider_key_quota_status_snapshot,
+    merge_codex_response_header_metadata_bucket, sync_provider_key_quota_status_snapshot,
 };
 use crate::log_ids::short_request_id;
 use crate::{AppState, GatewayError};
@@ -280,7 +280,8 @@ fn merge_metadata_object(
         .cloned()
         .unwrap_or_default();
     if section_key == "codex" {
-        let next = merge_codex_metadata_bucket(merged.get(section_key), &section_value);
+        let next =
+            merge_codex_response_header_metadata_bucket(merged.get(section_key), &section_value);
         merged.insert(section_key.to_string(), next);
         return Some(Value::Object(merged));
     }
@@ -815,11 +816,21 @@ async fn sync_codex_quota_from_response_headers(
         .cloned()
         .unwrap_or_else(serde_json::Map::new);
     let current_codex = Value::Object(current_codex);
+    let updated_upstream_metadata =
+        merge_metadata_object(key.upstream_metadata.as_ref(), "codex", parsed);
+    let updated_codex = updated_upstream_metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("codex"));
     let Some(current_fingerprint) = fingerprint_codex_payload(&current_codex) else {
         set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint, now);
         return Ok(false);
     };
-    if current_fingerprint == incoming_fingerprint {
+    let Some(updated_fingerprint) = updated_codex.and_then(fingerprint_codex_payload) else {
+        set_cached_codex_quota_fingerprint(&key_id, incoming_fingerprint, now);
+        return Ok(false);
+    };
+    if current_fingerprint == updated_fingerprint {
         if let Err(error) = ensure_codex_window_usage_stats_for_snapshot(
             state,
             &key_id,
@@ -839,8 +850,6 @@ async fn sync_codex_quota_from_response_headers(
         return Ok(false);
     }
 
-    let updated_upstream_metadata =
-        merge_metadata_object(key.upstream_metadata.as_ref(), "codex", parsed);
     let updated_status_snapshot = sync_provider_key_quota_status_snapshot(
         key.status_snapshot.as_ref(),
         provider.provider_type.as_str(),
@@ -897,6 +906,63 @@ pub(crate) fn clear_local_report_effect_caches_for_tests() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn codex_response_header_merge_is_stable_after_preserving_feature_quota() {
+        let current = json!({
+            "codex": {
+                "updated_at": 1_777_000_000u64,
+                "plan_type": "pro",
+                "rate_limit_reset_credits": { "available_count": 1 },
+                "windows": [{
+                    "code": "spark:5h",
+                    "scope": "feature",
+                    "used_percent": 0.0,
+                    "reset_after_seconds": 15_000u64,
+                    "window_minutes": 300u64
+                }]
+            }
+        });
+        let incoming = json!({
+            "updated_at": 1_777_001_000u64,
+            "plan_type": "pro",
+            "windows": [{
+                "code": "weekly",
+                "scope": "account",
+                "used_percent": 12.0,
+                "reset_after_seconds": 500_000u64,
+                "window_minutes": 10_080u64
+            }]
+        });
+
+        let first = merge_metadata_object(Some(&current), "codex", incoming.clone())
+            .expect("first merge should build metadata");
+        let second = merge_metadata_object(Some(&first), "codex", incoming)
+            .expect("second merge should build metadata");
+        let first_codex = first.get("codex").expect("first codex bucket should exist");
+        let second_codex = second
+            .get("codex")
+            .expect("second codex bucket should exist");
+
+        assert_eq!(
+            fingerprint_codex_payload(first_codex),
+            fingerprint_codex_payload(second_codex)
+        );
+        assert_eq!(
+            first_codex["rate_limit_reset_credits"],
+            json!({ "available_count": 1 })
+        );
+        let spark = first_codex["windows"]
+            .as_array()
+            .and_then(|windows| {
+                windows
+                    .iter()
+                    .find(|window| window["code"] == json!("spark:5h"))
+            })
+            .expect("Spark window should be preserved");
+        assert_eq!(spark["reset_at"], json!(1_777_015_000u64));
+        assert_eq!(spark["reset_after_seconds"], json!(14_000u64));
+    }
 
     #[test]
     fn codex_window_usage_identity_uses_account_window_bounds_only() {
