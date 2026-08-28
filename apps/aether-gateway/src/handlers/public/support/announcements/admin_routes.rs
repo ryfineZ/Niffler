@@ -98,7 +98,7 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                     }
                 };
             let record = build_create_record(payload, operator_id)?;
-            let Some(created) = state.create_announcement(&portal.id, record).await? else {
+            let Some(created) = state.create_announcement(portal.id, record).await? else {
                 return Ok(Some(build_admin_announcement_writer_unavailable_response()));
             };
             let mut response = build_public_announcement_payload(&created);
@@ -128,7 +128,7 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                 };
             let record = build_update_record(announcement_id, payload)?;
             return Ok(Some(
-                match state.update_announcement(&portal.id, record).await? {
+                match state.update_announcement(portal.id, record).await? {
                     Some(_) => Json(json!({ "message": "公告更新成功" })).into_response(),
                     None => announcements_not_found_response(),
                 },
@@ -144,14 +144,14 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                 return Ok(Some(build_admin_announcement_writer_unavailable_response()));
             }
             if state
-                .find_announcement_by_id(&portal.id, announcement_id)
+                .find_announcement_by_id(portal.id, announcement_id)
                 .await?
                 .is_none()
             {
                 return Ok(Some(announcements_not_found_response()));
             }
             let deleted = state
-                .delete_announcement(&portal.id, announcement_id)
+                .delete_announcement(portal.id, announcement_id)
                 .await?;
             return Ok(Some(if deleted {
                 Json(json!({ "message": "公告已删除" })).into_response()

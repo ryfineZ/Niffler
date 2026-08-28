@@ -53,7 +53,7 @@ pub(crate) async fn maybe_build_local_public_announcements_response(
                 Ok(value) => value,
                 Err(detail) => return Some(announcements_bad_request_response(detail)),
             };
-            let page = match state.list_announcements(&portal.id, &query).await {
+            let page = match state.list_announcements(portal.id, &query).await {
                 Ok(value) => value,
                 Err(err) => {
                     return Some(announcements_internal_error_response(
@@ -76,7 +76,7 @@ pub(crate) async fn maybe_build_local_public_announcements_response(
                 limit: 10,
                 now_unix_secs: Some(chrono::Utc::now().timestamp().max(0) as u64),
             };
-            let page = match state.list_announcements(&portal.id, &query).await {
+            let page = match state.list_announcements(portal.id, &query).await {
                 Ok(value) => value,
                 Err(err) => {
                     return Some(announcements_internal_error_response(
@@ -93,7 +93,7 @@ pub(crate) async fn maybe_build_local_public_announcements_response(
                 return Some(build_unhandled_public_support_response(request_context));
             };
             let announcement = match state
-                .find_announcement_by_id(&portal.id, announcement_id)
+                .find_announcement_by_id(portal.id, announcement_id)
                 .await
             {
                 Ok(Some(value)) => value,
