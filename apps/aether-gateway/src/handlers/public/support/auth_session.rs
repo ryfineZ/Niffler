@@ -1,6 +1,6 @@
 use super::{
-    auth_access_token_expiry_hours, auth_client_ip, auth_jwt_secret, auth_now,
-    auth_refresh_cookie_name, auth_user_agent, build_auth_error_response, build_auth_json_response,
+    auth_access_token_expiry_hours, auth_jwt_secret, auth_now, auth_refresh_cookie_name,
+    auth_trusted_client_ip, auth_user_agent, build_auth_error_response, build_auth_json_response,
     build_auth_refresh_cookie_clear_header, build_auth_refresh_cookie_header,
     build_portal_mismatch_response, extract_bearer_token, extract_client_device_id,
     extract_cookie_value, http, json, resolve_request_portal, resolve_user_portal, AppState, Body,
@@ -589,6 +589,7 @@ pub(super) async fn handle_auth_refresh(
 pub(crate) async fn build_auth_login_success_response(
     state: &AppState,
     headers: &http::HeaderMap,
+    client_ip: Option<&str>,
     client_device_id: String,
     user: aether_data::repository::users::StoredUserAuthRecord,
 ) -> Response<Body> {
@@ -660,7 +661,7 @@ pub(crate) async fn build_auth_login_success_response(
         Some(refresh_expires_at),
         None,
         None,
-        auth_client_ip(headers),
+        auth_trusted_client_ip(client_ip),
         auth_user_agent(headers),
         Some(now),
         Some(now),

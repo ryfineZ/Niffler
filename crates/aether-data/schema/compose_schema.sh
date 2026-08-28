@@ -27,12 +27,7 @@ generate_logical_schema() {
 
 check_logical_generated() {
   local args=()
-  local path
   args+=(--require-tables-from "${root}/migrations/postgres/20260403000000_baseline.sql")
-  for path in "${root}/migrations/mysql/"*.sql "${root}/migrations/sqlite/"*.sql; do
-    [[ -f "${path}" ]] || continue
-    args+=(--require-tables-from "${path}")
-  done
   (cd "${root}/../.." && cargo run -q -p aether-data-schema --bin aether-schema -- check "${args[@]}")
   printf 'ok generated logical schema\n'
 }
@@ -52,12 +47,6 @@ output_path() {
   case "${target}" in
     postgres/baseline)
       printf '%s/migrations/postgres/20260403000000_baseline.sql' "${root}"
-      ;;
-    mysql/baseline)
-      printf '%s/migrations/mysql/20260403000000_baseline.sql' "${root}"
-      ;;
-    sqlite/baseline)
-      printf '%s/migrations/sqlite/20260403000000_baseline.sql' "${root}"
       ;;
     *)
       printf 'unknown schema target: %s\n' "${target}" >&2
@@ -180,47 +169,14 @@ check_bootstrap_sources() {
   printf 'ok bootstrap/postgres source\n'
 }
 
-split_linear_baseline() {
-  local driver="$1"
-  local source="${root}/migrations/${driver}/20260403000000_baseline.sql"
-  local target="${driver}/baseline"
-  write_manifest "${target}" \
-    "001_identity.sql" \
-    "002_provider_catalog.sql" \
-    "003_auth_config.sql" \
-    "004_proxy_nodes.sql" \
-    "005_wallet_billing.sql" \
-    "006_usage.sql"
-
-  if [[ "${driver}" == "mysql" ]]; then
-    split_fragment "${source}" "${target}" 001_identity.sql 1 121
-    split_fragment "${source}" "${target}" 002_provider_catalog.sql 122 417
-    split_fragment "${source}" "${target}" 003_auth_config.sql 418 487
-    split_fragment "${source}" "${target}" 004_proxy_nodes.sql 488 527
-    split_fragment "${source}" "${target}" 005_wallet_billing.sql 528 711
-    split_fragment "${source}" "${target}" 006_usage.sql 712 EOF
-  else
-    split_fragment "${source}" "${target}" 001_identity.sql 1 117
-    split_fragment "${source}" "${target}" 002_provider_catalog.sql 118 417
-    split_fragment "${source}" "${target}" 003_auth_config.sql 418 485
-    split_fragment "${source}" "${target}" 004_proxy_nodes.sql 486 525
-    split_fragment "${source}" "${target}" 005_wallet_billing.sql 526 728
-    split_fragment "${source}" "${target}" 006_usage.sql 729 EOF
-  fi
-}
-
 targets=(
   "postgres/baseline"
-  "mysql/baseline"
-  "sqlite/baseline"
 )
 
 cmd="${1:-}"
 case "${cmd}" in
   split)
     split_postgres_baseline
-    split_linear_baseline mysql
-    split_linear_baseline sqlite
     ;;
   generate)
     generate_logical_schema

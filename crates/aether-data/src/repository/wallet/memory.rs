@@ -40,6 +40,7 @@ pub struct InMemoryWalletRepository {
     redeem_code_hash_to_id: RwLock<BTreeMap<String, String>>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct WalletReadSeed {
     pub(crate) wallets: Vec<StoredWalletSnapshot>,
@@ -72,6 +73,7 @@ impl InMemoryWalletRepository {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn seed_read_model(seed: WalletReadSeed) -> Self {
         let mut wallets_by_id = BTreeMap::new();
         for item in seed.wallets {

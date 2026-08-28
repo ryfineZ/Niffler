@@ -37,30 +37,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  mysql:
-    image: mysql:8.0
-    container_name: aether-mysql
-    profiles:
-      - mysql
-    environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-aether}
-      MYSQL_USER: ${MYSQL_USER:-aether}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aether}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-aether_root}
-      TZ: Asia/Shanghai
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   app:
     image: ${APP_IMAGE:-ghcr.io/ryfinez/niffler:latest}
     container_name: aether-app
@@ -97,5 +73,4 @@ services:
 
 volumes:
   postgres_data:
-  mysql_data:
   redis_data:

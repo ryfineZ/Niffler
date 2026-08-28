@@ -53,11 +53,7 @@ fn aether_data_bootstrap_snapshot_is_built_from_schema_sources() {
 
 #[test]
 fn aether_data_backend_pool_modules_do_not_own_maintenance_sql() {
-    for path in [
-        "crates/aether-data/src/backend/postgres.rs",
-        "crates/aether-data/src/backend/mysql.rs",
-        "crates/aether-data/src/backend/sqlite.rs",
-    ] {
+    for path in ["crates/aether-data/src/backend/postgres.rs"] {
         let source = read_workspace_file(path);
         let production = production_source(&source);
         for forbidden in [
@@ -82,18 +78,10 @@ fn aether_data_backend_pool_modules_do_not_own_maintenance_sql() {
 
     let maintenance = read_workspace_file("crates/aether-data/src/backend/maintenance.rs");
     for pattern in [
-        "Self::Postgres(postgres) => postgres.run_table_maintenance(table_names).await",
-        "Self::Mysql(mysql) => mysql.run_table_maintenance(table_names).await",
-        "Self::Sqlite(sqlite) => sqlite.run_table_maintenance(table_names).await",
-        "Self::Postgres(postgres) => postgres.aggregate_wallet_daily_usage(input).await",
-        "Self::Mysql(mysql) => mysql.aggregate_wallet_daily_usage(input).await",
-        "Self::Sqlite(sqlite) => sqlite.aggregate_wallet_daily_usage(input).await",
-        "Self::Postgres(postgres) => postgres.aggregate_stats_hourly(input).await",
-        "Self::Mysql(mysql) => mysql.aggregate_stats_hourly(input).await",
-        "Self::Sqlite(sqlite) => sqlite.aggregate_stats_hourly(input).await",
-        "Self::Postgres(postgres) => postgres.aggregate_stats_daily(input).await",
-        "Self::Mysql(mysql) => mysql.aggregate_stats_daily(input).await",
-        "Self::Sqlite(sqlite) => sqlite.aggregate_stats_daily(input).await",
+        "self.postgres().run_table_maintenance(table_names).await",
+        "self.postgres().aggregate_wallet_daily_usage(input).await",
+        "self.postgres().aggregate_stats_hourly(input).await",
+        "self.postgres().aggregate_stats_daily(input).await",
     ] {
         assert!(
             maintenance.contains(pattern),
@@ -202,12 +190,7 @@ fn testkit_does_not_copy_aether_business_schema_sql() {
 #[test]
 fn gateway_main_keeps_database_export_import_driver_selection_in_data_layer() {
     let main_rs = read_workspace_file("apps/aether-gateway/src/main.rs");
-    for forbidden in [
-        "PostgresPoolFactory",
-        "MysqlPoolFactory",
-        "SqlitePoolFactory",
-        "to_postgres_config()",
-    ] {
+    for forbidden in ["PostgresPoolFactory", "to_postgres_config()"] {
         assert!(
             !main_rs.contains(forbidden),
             "main.rs should delegate database export/import driver selection to aether-data instead of {forbidden}"
@@ -279,16 +262,11 @@ fn gateway_system_config_types_are_owned_by_aether_data() {
         );
     }
     let data_backends = read_workspace_file("crates/aether-data/src/backend/maintenance.rs");
-    for pattern in [
-        "postgres.list_system_config_entries().await",
-        "mysql.list_system_config_entries().await",
-        "sqlite.list_system_config_entries().await",
-    ] {
-        assert!(
-            data_backends.contains(pattern),
-            "aether-data backends should own driver-specific system config dispatch {pattern}"
-        );
-    }
+    let pattern = "self.postgres().list_system_config_entries().await";
+    assert!(
+        data_backends.contains(pattern),
+        "aether-data backends should own driver-specific system config dispatch {pattern}"
+    );
     for pattern in [
         "|(key, value, description, updated_at_unix_secs)|",
         "Ok((0, 0, 0, 0))",

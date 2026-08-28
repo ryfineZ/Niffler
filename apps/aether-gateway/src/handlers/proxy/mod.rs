@@ -109,11 +109,8 @@ fn client_ip_for_security_logs(
 ) -> String {
     parts
         .extensions
-        .get::<crate::middleware::CfConnectingIp>()
+        .get::<crate::middleware::TrustedClientIp>()
         .map(|value| value.0.clone())
-        .or_else(|| {
-            request_origin_from_headers_and_remote_addr(&parts.headers, remote_addr).client_ip
-        })
         .unwrap_or_else(|| remote_addr.ip().to_string())
 }
 
@@ -1227,12 +1224,16 @@ async fn proxy_request_inner(
     parts.extensions.insert(RequestAttemptRegistry::default());
     let redaction_slot = crate::privacy::RedactionSessionSlot::default();
     parts.extensions.insert(redaction_slot.clone());
-    parts
-        .extensions
-        .insert(request_origin_from_headers_and_remote_addr(
-            &parts.headers,
-            &remote_addr,
-        ));
+    let mut request_origin =
+        request_origin_from_headers_and_remote_addr(&parts.headers, &remote_addr);
+    request_origin.client_ip = Some(
+        parts
+            .extensions
+            .get::<crate::middleware::TrustedClientIp>()
+            .map(|value| value.0.clone())
+            .unwrap_or_else(|| remote_addr.ip().to_string()),
+    );
+    parts.extensions.insert(request_origin);
     state.clear_local_execution_runtime_miss_diagnostic(&request_id);
     if request_hits_execution_loop_guard(&parts) {
         warn!(
@@ -1510,14 +1511,16 @@ async fn proxy_request_inner(
             request_permit.take(),
         ));
     }
+    let trusted_client_ip = parts
+        .extensions
+        .get::<crate::middleware::TrustedClientIp>()
+        .map(|value| value.0.clone())
+        .unwrap_or_else(|| remote_addr.ip().to_string());
     if let Some(response) = super::public::maybe_build_local_public_support_response(
         &state,
         &request_context,
         &parts.headers,
-        parts
-            .extensions
-            .get::<crate::middleware::CfConnectingIp>()
-            .map(|value| value.0.as_str()),
+        Some(trusted_client_ip.as_str()),
         local_proxy_body.as_ref(),
     )
     .await

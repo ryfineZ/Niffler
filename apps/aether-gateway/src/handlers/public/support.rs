@@ -126,7 +126,7 @@ pub(crate) async fn maybe_build_local_public_support_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     request_body: Option<&Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
@@ -139,7 +139,7 @@ pub(crate) async fn maybe_build_local_public_support_response(
             state,
             request_context,
             headers,
-            cf_connecting_ip,
+            client_ip,
             request_body,
         )
         .await;

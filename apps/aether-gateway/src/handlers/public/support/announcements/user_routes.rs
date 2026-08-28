@@ -9,7 +9,9 @@ use serde_json::json;
 use crate::control::GatewayPublicRequestContext;
 use crate::AppState;
 
-use super::super::{build_unhandled_public_support_response, resolve_authenticated_local_user};
+use super::super::{
+    build_unhandled_public_support_response, resolve_authenticated_local_user, resolve_user_portal,
+};
 use super::announcements_shared::{
     announcements_bad_request_response, announcements_internal_detail,
     announcements_internal_error_response, announcements_not_found_response,
@@ -51,6 +53,14 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
         Ok(value) => value,
         Err(response) => return Some(response),
     };
+    let portal = match resolve_user_portal(state, &auth.user.id).await {
+        Ok(value) => value,
+        Err(err) => {
+            return Some(announcements_internal_error_response(
+                announcements_internal_detail(err),
+            ))
+        }
+    };
     let now_unix_secs = chrono::Utc::now().timestamp().max(0) as u64;
 
     match decision.route_kind.as_deref() {
@@ -63,7 +73,7 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
                 ) =>
         {
             let unread_count = match state
-                .count_unread_active_announcements(&auth.user.id, now_unix_secs)
+                .count_unread_active_announcements(&portal.id, &auth.user.id, now_unix_secs)
                 .await
             {
                 Ok(value) => value,
@@ -84,7 +94,12 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
                 ) =>
         {
             let items = match state
-                .list_required_unread_active_announcements(&auth.user.id, now_unix_secs, 20)
+                .list_required_unread_active_announcements(
+                    &portal.id,
+                    &auth.user.id,
+                    now_unix_secs,
+                    20,
+                )
                 .await
             {
                 Ok(value) => value,
@@ -114,7 +129,7 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
                 ) =>
         {
             if let Err(response) =
-                mark_all_announcements_read(state, &auth.user.id, now_unix_secs).await
+                mark_all_announcements_read(state, &portal.id, &auth.user.id, now_unix_secs).await
             {
                 return Some(response);
             }
@@ -135,7 +150,10 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
                     Some(value) => value,
                     None => return Some(build_unhandled_public_support_response(request_context)),
                 };
-            match state.find_announcement_by_id(announcement_id).await {
+            match state
+                .find_announcement_by_id(&portal.id, announcement_id)
+                .await
+            {
                 Ok(Some(_)) => {}
                 Ok(None) => return Some(announcements_not_found_response()),
                 Err(err) => {
@@ -145,7 +163,12 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
                 }
             }
             if let Err(err) = state
-                .mark_announcement_as_read(&auth.user.id, announcement_id, now_unix_secs)
+                .mark_announcement_as_read(
+                    &portal.id,
+                    &auth.user.id,
+                    announcement_id,
+                    now_unix_secs,
+                )
                 .await
             {
                 return Some(announcements_internal_error_response(
@@ -160,6 +183,7 @@ pub(crate) async fn maybe_build_local_announcement_user_response(
 
 async fn mark_all_announcements_read(
     state: &AppState,
+    portal_id: &str,
     user_id: &str,
     now_unix_secs: u64,
 ) -> Result<(), Response<Body>> {
@@ -169,6 +193,7 @@ async fn mark_all_announcements_read(
     loop {
         let page = state
             .list_announcements(
+                portal_id,
                 &aether_data::repository::announcements::AnnouncementListQuery {
                     active_only: true,
                     offset,
@@ -187,7 +212,7 @@ async fn mark_all_announcements_read(
 
         for announcement in &page.items {
             state
-                .mark_announcement_as_read(user_id, &announcement.id, now_unix_secs)
+                .mark_announcement_as_read(portal_id, user_id, &announcement.id, now_unix_secs)
                 .await
                 .map_err(|err| {
                     announcements_internal_error_response(announcements_internal_detail(err))

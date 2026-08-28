@@ -557,6 +557,12 @@ type = "text_id"
 length = 64
 
 [[table.announcements.columns]]
+name = "portal_id"
+type = "text"
+length = 32
+default = "default"
+
+[[table.announcements.columns]]
 name = "title"
 type = "text"
 length = 200
@@ -626,6 +632,10 @@ columns = ["created_at"]
 [[table.announcements.indexes]]
 name = "announcements_is_active_idx"
 columns = ["is_active"]
+
+[[table.announcements.indexes]]
+name = "announcements_portal_active_created_idx"
+columns = ["portal_id", "is_active", "created_at"]
 
 [table.announcement_reads]
 domain = "identity"

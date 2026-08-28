@@ -13,12 +13,6 @@ on:
       - ".github/workflows/rust-ci.yml"
   pull_request:
   workflow_dispatch:
-    inputs:
-      full:
-        description: Run optional SQLite/MySQL database smoke tests
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: rust-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -294,41 +288,6 @@ jobs:
             exit 1
           fi
 
-  data_db_smoke_sqlite:
-    name: Data DB Smoke (SQLite)
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full == true }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Show Rust toolchain
-        run: rustup show active-toolchain
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-ci-${{ runner.os }}
-          workspaces: . -> target
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Run SQLite data smoke tests
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-        run: cargo test -p aether-data sqlite --lib
-
-      - name: Show sccache stats
-        if: always()
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-        run: sccache --show-stats
-
   data_db_smoke_postgres:
     name: Data DB Smoke (Postgres)
     runs-on: ubuntu-latest
@@ -407,112 +366,12 @@ jobs:
           AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
         run: cargo test -p aether-data postgres_core_export_reads_migrated_database_rows_when_url_is_set --lib -- --nocapture
 
-      - name: Run SQLite-to-Postgres import smoke test
+      - name: Run Postgres gateway behavior tests
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_GHA_ENABLED: "true"
           AETHER_TEST_POSTGRES_URL: postgres://aether:aether@127.0.0.1:5432/aether_test
-        run: cargo test -p aether-data sqlite_core_export_reads_migrated_database_rows --lib -- --nocapture
-
-      - name: Show sccache stats
-        if: always()
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-        run: sccache --show-stats
-
-  data_db_smoke_mysql:
-    name: Data DB Smoke (MySQL)
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full == true }}
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_DATABASE: aether_test
-          MYSQL_USER: aether
-          MYSQL_PASSWORD: aether
-          MYSQL_ROOT_PASSWORD: aether_root
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uaether -paether --silent"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=20
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Show Rust toolchain
-        run: rustup show active-toolchain
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-ci-${{ runner.os }}
-          workspaces: . -> target
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Run MySQL migration smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_migrations_create_core_config_tables_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL usage write smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_usage_write_repository_upserts_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL usage read smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_usage_read_repository_reads_usage_contract_views_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL provider catalog smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_provider_catalog_repository_round_trips_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL core export smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_core_export_reads_migrated_database_rows_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL wallet read smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_wallet_read_repository_reads_wallet_contract_views --lib -- --nocapture
-
-      - name: Run MySQL wallet daily usage aggregation smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_wallet_daily_usage_aggregation_uses_settlement_wallets_when_url_is_set --lib -- --nocapture
-
-      - name: Run MySQL stats aggregation smoke test
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_GHA_ENABLED: "true"
-          AETHER_TEST_MYSQL_URL: mysql://aether:aether@127.0.0.1:3306/aether_test
-        run: cargo test -p aether-data mysql_stats_aggregation_runs_after_mysql_migrations_when_url_is_set --lib -- --nocapture
+        run: cargo test -p aether-gateway when_url_is_set --lib -- --nocapture
 
       - name: Show sccache stats
         if: always()
@@ -525,28 +384,15 @@ jobs:
     name: Data DB Smoke
     runs-on: ubuntu-latest
     needs:
-      - data_db_smoke_sqlite
       - data_db_smoke_postgres
-      - data_db_smoke_mysql
     if: ${{ always() }}
     steps:
-      - name: Verify database smoke jobs
+      - name: Verify database smoke job
         run: |
           if [ "${{ needs.data_db_smoke_postgres.result }}" != "success" ]; then
             echo "Postgres data DB smoke failed"
             exit 1
           fi
-          if [ "${{ needs.data_db_smoke_sqlite.result }}" != "success" ] && \
-             [ "${{ needs.data_db_smoke_sqlite.result }}" != "skipped" ]; then
-            echo "SQLite data DB smoke failed"
-            exit 1
-          fi
-          if [ "${{ needs.data_db_smoke_mysql.result }}" != "success" ] && \
-             [ "${{ needs.data_db_smoke_mysql.result }}" != "skipped" ]; then
-            echo "MySQL data DB smoke failed"
-            exit 1
-          fi
-
   check:
     name: check
     runs-on: ubuntu-latest

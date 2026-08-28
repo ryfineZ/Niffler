@@ -22,7 +22,7 @@ pub use backend::{
     DataWriteRepositories, PostgresBackend,
 };
 pub use config::DataLayerConfig;
-pub use database::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig, DEFAULT_SQLITE_DATABASE_URL};
+pub use database::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
 pub use error::DataLayerError;
 pub use maintenance::{
     DatabaseMaintenanceSummary, DatabasePoolSummary, StatsDailyAggregationInput,

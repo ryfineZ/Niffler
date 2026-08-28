@@ -6,7 +6,7 @@ pub(crate) mod decision_trace;
 pub(crate) mod state;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use config::GatewayDataConfig;
 pub(crate) use state::GatewayDataState;

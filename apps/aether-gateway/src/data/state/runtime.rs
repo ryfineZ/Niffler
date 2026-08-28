@@ -145,20 +145,30 @@ impl GatewayDataState {
 
     pub(crate) async fn list_announcements(
         &self,
+        portal_id: &str,
         query: &AnnouncementListQuery,
     ) -> Result<StoredAnnouncementPage, DataLayerError> {
         match &self.announcement_reader {
-            Some(repository) => repository.list_announcements(query).await,
+            Some(repository) => {
+                repository
+                    .list_announcements_for_portal(portal_id, query)
+                    .await
+            }
             None => Ok(StoredAnnouncementPage::default()),
         }
     }
 
     pub(crate) async fn find_announcement_by_id(
         &self,
+        portal_id: &str,
         announcement_id: &str,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         match &self.announcement_reader {
-            Some(repository) => repository.find_by_id(announcement_id).await,
+            Some(repository) => {
+                repository
+                    .find_by_id_for_portal(portal_id, announcement_id)
+                    .await
+            }
             None => Ok(None),
         }
     }
@@ -313,13 +323,14 @@ impl GatewayDataState {
 
     pub(crate) async fn count_unread_active_announcements(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
     ) -> Result<u64, DataLayerError> {
         match &self.announcement_reader {
             Some(repository) => {
                 repository
-                    .count_unread_active_announcements(user_id, now_unix_secs)
+                    .count_unread_active_announcements_for_portal(portal_id, user_id, now_unix_secs)
                     .await
             }
             None => Ok(0),
@@ -328,6 +339,7 @@ impl GatewayDataState {
 
     pub(crate) async fn list_required_unread_active_announcements(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
         limit: usize,
@@ -335,7 +347,12 @@ impl GatewayDataState {
         match &self.announcement_reader {
             Some(repository) => {
                 repository
-                    .list_required_unread_active_announcements(user_id, now_unix_secs, limit)
+                    .list_required_unread_active_announcements_for_portal(
+                        portal_id,
+                        user_id,
+                        now_unix_secs,
+                        limit,
+                    )
                     .await
             }
             None => Ok(Vec::new()),
@@ -344,36 +361,51 @@ impl GatewayDataState {
 
     pub(crate) async fn create_announcement(
         &self,
+        portal_id: &str,
         record: CreateAnnouncementRecord,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         match &self.announcement_writer {
-            Some(repository) => repository.create_announcement(record).await.map(Some),
+            Some(repository) => repository
+                .create_announcement_for_portal(portal_id, record)
+                .await
+                .map(Some),
             None => Ok(None),
         }
     }
 
     pub(crate) async fn update_announcement(
         &self,
+        portal_id: &str,
         record: UpdateAnnouncementRecord,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         match &self.announcement_writer {
-            Some(repository) => repository.update_announcement(record).await,
+            Some(repository) => {
+                repository
+                    .update_announcement_for_portal(portal_id, record)
+                    .await
+            }
             None => Ok(None),
         }
     }
 
     pub(crate) async fn delete_announcement(
         &self,
+        portal_id: &str,
         announcement_id: &str,
     ) -> Result<bool, DataLayerError> {
         match &self.announcement_writer {
-            Some(repository) => repository.delete_announcement(announcement_id).await,
+            Some(repository) => {
+                repository
+                    .delete_announcement_for_portal(portal_id, announcement_id)
+                    .await
+            }
             None => Ok(false),
         }
     }
 
     pub(crate) async fn mark_announcement_as_read(
         &self,
+        portal_id: &str,
         user_id: &str,
         announcement_id: &str,
         read_at_unix_secs: u64,
@@ -381,7 +413,12 @@ impl GatewayDataState {
         match &self.announcement_writer {
             Some(repository) => {
                 repository
-                    .mark_announcement_as_read(user_id, announcement_id, read_at_unix_secs)
+                    .mark_announcement_as_read_for_portal(
+                        portal_id,
+                        user_id,
+                        announcement_id,
+                        read_at_unix_secs,
+                    )
                     .await
             }
             None => Ok(false),

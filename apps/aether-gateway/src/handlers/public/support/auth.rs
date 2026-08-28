@@ -101,6 +101,7 @@ async fn handle_auth_login(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     let Some(request_body) = request_body else {
@@ -297,14 +298,14 @@ async fn handle_auth_login(
         return build_auth_login_invalid_credentials_response();
     }
 
-    build_auth_login_success_response(state, headers, client_device_id, user).await
+    build_auth_login_success_response(state, headers, client_ip, client_device_id, user).await
 }
 
 pub(super) async fn maybe_build_local_auth_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
@@ -316,23 +317,13 @@ pub(super) async fn maybe_build_local_auth_response(
         Some("send_verification_code")
             if request_context.request_path == "/api/auth/send-verification-code" =>
         {
-            Some(
-                handle_auth_send_verification_code(state, headers, cf_connecting_ip, request_body)
-                    .await,
-            )
+            Some(handle_auth_send_verification_code(state, headers, client_ip, request_body).await)
         }
         Some("login") if request_context.request_path == "/api/auth/login" => {
-            Some(handle_auth_login(state, request_context, headers, request_body).await)
+            Some(handle_auth_login(state, request_context, headers, client_ip, request_body).await)
         }
         Some("register") if request_context.request_path == "/api/auth/register" => Some(
-            handle_auth_register(
-                state,
-                request_context,
-                headers,
-                cf_connecting_ip,
-                request_body,
-            )
-            .await,
+            handle_auth_register(state, request_context, headers, client_ip, request_body).await,
         ),
         Some("verify_email") if request_context.request_path == "/api/auth/verify-email" => {
             Some(handle_auth_verify_email(state, request_body).await)

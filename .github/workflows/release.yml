@@ -17,6 +17,7 @@ env:
   REGISTRY: ghcr.io
   GHCR_IMAGE: ryfinez/niffler
   DOCKERHUB_IMAGE: ryfineZ/niffler
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 7
 
 jobs:
   preflight:
@@ -113,18 +114,6 @@ jobs:
             arch: arm64
             os: ubuntu-latest
             use_cross: true
-          - name: macos-amd64
-            target: x86_64-apple-darwin
-            platform: macos
-            arch: amd64
-            os: macos-15-intel
-            use_cross: false
-          - name: macos-arm64
-            target: aarch64-apple-darwin
-            platform: macos
-            arch: arm64
-            os: macos-15
-            use_cross: false
     steps:
       - uses: actions/checkout@v5
 
@@ -166,7 +155,7 @@ jobs:
   docker:
     name: Docker multi-arch
     needs: [preflight, frontend, build]
-    if: needs.preflight.outputs.publish == 'true'
+    if: needs.preflight.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -231,57 +220,40 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
   package:
-    name: Release tarballs
-    needs: [preflight, frontend, build]
+    name: Compose release bundle
+    needs: [preflight, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Build release packages
+      - name: Build Compose release bundle
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME}"
             SOURCE_REF="${GITHUB_REF_NAME}"
           else
-            VERSION="snapshot-${GITHUB_SHA::7}"
+            VERSION="${GITHUB_SHA::7}"
             SOURCE_REF="${GITHUB_SHA}"
           fi
 
           mkdir -p package release-assets
-          for platform in linux macos; do
-            for arch in amd64 arm64; do
-              bundle="aether-${VERSION}-${platform}-${arch}"
-              root="package/${bundle}"
-              mkdir -p \
-                "${root}/bin" \
-                "${root}/frontend" \
-                "${root}/scripts"
+          bundle="aether-${VERSION}-compose"
+          root="package/${bundle}"
+          mkdir -p "${root}"
 
-              install -m 0755 "artifacts/aether-gateway-${platform}-${arch}/aether-gateway" "${root}/bin/aether-gateway"
-              cp -R artifacts/frontend-dist/. "${root}/frontend/"
-              sed \
-                -e "s/^SOURCE_REF=\"\${AETHER_SOURCE_REF:-main}\"/SOURCE_REF=\"\${AETHER_SOURCE_REF:-${SOURCE_REF}}\"/" \
-                -e "s/^VERSION=\"\${AETHER_VERSION:-}\"/VERSION=\"\${AETHER_VERSION:-${VERSION}}\"/" \
-                install.sh > "${root}/install.sh"
-              chmod 0755 "${root}/install.sh"
-              install -m 0644 docker-compose.yml "${root}/docker-compose.yml"
-              install -m 0644 docker-compose.single-node.yml "${root}/docker-compose.single-node.yml"
-              install -m 0755 scripts/migrate-pg-compose-to-single-node.sh "${root}/scripts/migrate-pg-compose-to-single-node.sh"
-              install -m 0755 scripts/migrate-pg-to-single-node.sh "${root}/scripts/migrate-pg-to-single-node.sh"
-              install -m 0644 .env.example "${root}/.env.example"
-              install -m 0755 generate_keys.sh "${root}/generate_keys.sh"
-              install -m 0644 README.md "${root}/README.md"
-              install -m 0644 LICENSE "${root}/LICENSE"
+          sed \
+            -e "s/^SOURCE_REF=\"\${AETHER_SOURCE_REF:-main}\"/SOURCE_REF=\"\${AETHER_SOURCE_REF:-${SOURCE_REF}}\"/" \
+            -e "s/^VERSION=\"\${AETHER_VERSION:-}\"/VERSION=\"\${AETHER_VERSION:-${VERSION}}\"/" \
+            install.sh > "${root}/install.sh"
+          chmod 0755 "${root}/install.sh"
+          install -m 0644 docker-compose.yml "${root}/docker-compose.yml"
+          install -m 0644 .env.example "${root}/.env.example"
+          install -m 0755 generate_keys.sh "${root}/generate_keys.sh"
+          install -m 0644 README.md "${root}/README.md"
+          install -m 0644 LICENSE "${root}/LICENSE"
 
-              tar -C package -czf "release-assets/${bundle}.tar.gz" "${bundle}"
-            done
-          done
+          tar -C package -czf "release-assets/${bundle}.tar.gz" "${bundle}"
 
           sed \
             -e "s/^SOURCE_REF=\"\${AETHER_SOURCE_REF:-main}\"/SOURCE_REF=\"\${AETHER_SOURCE_REF:-${SOURCE_REF}}\"/" \

@@ -1,13 +1,9 @@
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 mod types;
 
 pub use memory::InMemoryContentModerationEvidenceRepository;
-pub use mysql::MysqlContentModerationEvidenceRepository;
 pub use postgres::SqlxContentModerationEvidenceRepository;
-pub use sqlite::SqliteContentModerationEvidenceRepository;
 pub use types::{
     ContentModerationEvidenceReadRepository, ContentModerationEvidenceRepository,
     ContentModerationEvidenceWriteRepository, InsertContentModerationEvidenceRecord,

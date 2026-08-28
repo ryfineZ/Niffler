@@ -154,6 +154,133 @@ async fn gateway_handles_public_announcements_list_without_proxying_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_isolates_public_announcements_by_portal_host() {
+    let announcement_repository = Arc::new(InMemoryAnnouncementReadRepository::seed(vec![
+        StoredAnnouncement::new(
+            "main-announcement".to_string(),
+            "主站公告".to_string(),
+            "仅主站可见".to_string(),
+            "info".to_string(),
+            0,
+            true,
+            false,
+            false,
+            Some("main-admin".to_string()),
+            Some("main-admin".to_string()),
+            None,
+            None,
+            1_711_000_000,
+            1_711_000_000,
+        )
+        .expect("main announcement should build"),
+        StoredAnnouncement::new_for_portal(
+            "international-announcement".to_string(),
+            "official_usd".to_string(),
+            "国际站公告".to_string(),
+            "仅国际站可见".to_string(),
+            "important".to_string(),
+            10,
+            true,
+            true,
+            false,
+            Some("international-admin".to_string()),
+            Some("international-admin".to_string()),
+            None,
+            None,
+            1_711_000_100,
+            1_711_000_100,
+        )
+        .expect("international announcement should build"),
+    ]));
+    let user_repository: Arc<dyn UserReadRepository> =
+        Arc::new(InMemoryUserReadRepository::seed_auth_users(Vec::new()));
+    let international_group = user_repository
+        .create_user_group(UpsertUserGroupRecord {
+            name: "International Portal".to_string(),
+            description: None,
+            visibility: "internal".to_string(),
+            priority: 0,
+            sales_multiplier: 1.0,
+            model_sales_multipliers: None,
+            managed_instructions: None,
+            allowed_providers: None,
+            allowed_providers_mode: "unrestricted".to_string(),
+            allowed_api_formats: None,
+            allowed_api_formats_mode: "unrestricted".to_string(),
+            allowed_models: None,
+            allowed_models_mode: "unrestricted".to_string(),
+            rate_limit: None,
+            rate_limit_mode: "system".to_string(),
+            concurrent_limit: None,
+            concurrent_limit_mode: "inherit".to_string(),
+        })
+        .await
+        .expect("international group should create")
+        .expect("international group should exist");
+    let data_state =
+        crate::data::GatewayDataState::with_announcement_reader_for_tests(announcement_repository)
+            .with_user_reader(user_repository)
+            .with_system_config_values_for_tests([
+                (
+                    "official_usd_portal_hosts".to_string(),
+                    json!(["no3realms.com"]),
+                ),
+                (
+                    "official_usd_portal_group_id".to_string(),
+                    json!(international_group.id),
+                ),
+            ]);
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(data_state),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+
+    let international_response = client
+        .get(format!("{gateway_url}/api/announcements?active_only=true"))
+        .header(reqwest::header::HOST, "no3realms.com")
+        .send()
+        .await
+        .expect("international announcements request should succeed");
+    assert_eq!(international_response.status(), StatusCode::OK);
+    let international_payload: serde_json::Value = international_response
+        .json()
+        .await
+        .expect("international announcements should be json");
+    assert_eq!(international_payload["total"], 1);
+    assert_eq!(
+        international_payload["items"][0]["id"],
+        "international-announcement"
+    );
+
+    let main_response = client
+        .get(format!("{gateway_url}/api/announcements?active_only=true"))
+        .header(reqwest::header::HOST, "niffler.org")
+        .send()
+        .await
+        .expect("main announcements request should succeed");
+    assert_eq!(main_response.status(), StatusCode::OK);
+    let main_payload: serde_json::Value = main_response
+        .json()
+        .await
+        .expect("main announcements should be json");
+    assert_eq!(main_payload["total"], 1);
+    assert_eq!(main_payload["items"][0]["id"], "main-announcement");
+
+    let cross_portal_detail = client
+        .get(format!("{gateway_url}/api/announcements/main-announcement"))
+        .header(reqwest::header::HOST, "no3realms.com")
+        .send()
+        .await
+        .expect("cross-portal detail request should succeed");
+    assert_eq!(cross_portal_detail.status(), StatusCode::NOT_FOUND);
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_public_active_announcements_without_proxying_upstream() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -375,6 +502,141 @@ async fn gateway_creates_announcement_locally_with_trusted_admin_principal() {
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn international_admin_only_manages_international_announcements() {
+    let announcement_repository = Arc::new(InMemoryAnnouncementReadRepository::seed(vec![
+        StoredAnnouncement::new(
+            "main-announcement".to_string(),
+            "主站公告".to_string(),
+            "国际站管理员不能修改".to_string(),
+            "important".to_string(),
+            10,
+            true,
+            true,
+            false,
+            Some("main-admin".to_string()),
+            Some("main-admin".to_string()),
+            None,
+            None,
+            1_711_000_000,
+            1_711_000_000,
+        )
+        .expect("main announcement should build"),
+    ]));
+    let mut international_admin = sample_auth_user(Utc::now());
+    international_admin.id = "international-admin".to_string();
+    international_admin.email = Some("admin@no3realms.com".to_string());
+    international_admin.username = "international-admin".to_string();
+    international_admin.role = "admin".to_string();
+    let user_repository: Arc<dyn UserReadRepository> =
+        Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![
+            international_admin,
+        ]));
+    let international_group = user_repository
+        .create_user_group(UpsertUserGroupRecord {
+            name: "International Portal".to_string(),
+            description: None,
+            visibility: "internal".to_string(),
+            priority: 0,
+            sales_multiplier: 1.0,
+            model_sales_multipliers: None,
+            managed_instructions: None,
+            allowed_providers: None,
+            allowed_providers_mode: "unrestricted".to_string(),
+            allowed_api_formats: None,
+            allowed_api_formats_mode: "unrestricted".to_string(),
+            allowed_models: None,
+            allowed_models_mode: "unrestricted".to_string(),
+            rate_limit: None,
+            rate_limit_mode: "system".to_string(),
+            concurrent_limit: None,
+            concurrent_limit_mode: "inherit".to_string(),
+        })
+        .await
+        .expect("international group should create")
+        .expect("international group should exist");
+    user_repository
+        .add_user_to_group(&international_group.id, "international-admin")
+        .await
+        .expect("international admin membership should create");
+    let data_state = crate::data::GatewayDataState::with_announcement_repository_for_tests(
+        Arc::clone(&announcement_repository),
+    )
+    .with_user_reader(user_repository)
+    .with_system_config_values_for_tests([
+        (
+            "official_usd_portal_hosts".to_string(),
+            json!(["no3realms.com"]),
+        ),
+        (
+            "official_usd_portal_group_id".to_string(),
+            json!(international_group.id),
+        ),
+    ]);
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(data_state),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{gateway_url}/api/announcements"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "international-admin")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "international-session")
+        .header(reqwest::header::HOST, "no3realms.com")
+        .json(&json!({
+            "title": "国际站维护",
+            "content": "仅国际站用户可见",
+            "type": "maintenance"
+        }))
+        .send()
+        .await
+        .expect("international announcement create should succeed");
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let created_payload: serde_json::Value = create_response
+        .json()
+        .await
+        .expect("created announcement should be json");
+    let created_id = created_payload["id"]
+        .as_str()
+        .expect("created announcement id should exist");
+    assert!(announcement_repository
+        .find_by_id(created_id)
+        .await
+        .expect("main lookup should succeed")
+        .is_none());
+    assert!(announcement_repository
+        .find_by_id_for_portal("official_usd", created_id)
+        .await
+        .expect("international lookup should succeed")
+        .is_some());
+
+    let update_main_response = client
+        .put(format!("{gateway_url}/api/announcements/main-announcement"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "international-admin")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "international-session")
+        .header(reqwest::header::HOST, "no3realms.com")
+        .json(&json!({ "title": "越权修改" }))
+        .send()
+        .await
+        .expect("cross-portal update request should succeed");
+    assert_eq!(update_main_response.status(), StatusCode::NOT_FOUND);
+    let main_announcement = announcement_repository
+        .find_by_id("main-announcement")
+        .await
+        .expect("main announcement lookup should succeed")
+        .expect("main announcement should remain");
+    assert_eq!(main_announcement.title, "主站公告");
+
+    gateway_handle.abort();
 }
 
 #[tokio::test]
@@ -9767,7 +10029,7 @@ async fn gateway_refunds_auth_send_verification_code_rate_limit_when_delivery_qu
 }
 
 #[tokio::test]
-async fn gateway_does_not_share_auth_send_verification_code_ip_bucket_when_ip_is_missing() {
+async fn gateway_uses_peer_ip_for_auth_send_verification_code_when_forwarded_ip_is_missing() {
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
         start_auth_gateway_with_builder(|| {
             AppState::new()
@@ -9800,15 +10062,21 @@ async fn gateway_does_not_share_auth_send_verification_code_ip_bucket_when_ip_is
         .await;
 
     let client = reqwest::Client::new();
-    for email in ["alice@example.com", "bob@example.com"] {
-        let response = client
-            .post(format!("{gateway_url}/api/auth/send-verification-code"))
-            .json(&json!({ "email": email }))
-            .send()
-            .await
-            .expect("request should succeed");
-        assert_eq!(response.status(), StatusCode::OK);
-    }
+    let first_response = client
+        .post(format!("{gateway_url}/api/auth/send-verification-code"))
+        .json(&json!({ "email": "alice@example.com" }))
+        .send()
+        .await
+        .expect("first request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let second_response = client
+        .post(format!("{gateway_url}/api/auth/send-verification-code"))
+        .json(&json!({ "email": "bob@example.com" }))
+        .send()
+        .await
+        .expect("second request should succeed");
+    assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

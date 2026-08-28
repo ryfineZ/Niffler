@@ -14,7 +14,7 @@
 ## 行为变化
 
 - 日常 Rust CI 保留格式检查、Clippy、测试和 Postgres 数据库冒烟测试。
-- SQLite 和 MySQL 数据库冒烟测试改为手动全量 CI 时运行，避免日常提交反复启动不在线上使用的数据库服务。
+- PostgreSQL 数据库冒烟测试作为数据层的唯一 SQL 冒烟任务运行。
 - 应用镜像构建不再跟随 `main` 分支每次 push 自动运行，改为手动触发。
 - 应用镜像构建只生成当前线上需要的 `linux/amd64` 版本，不再生成 `linux/arm64`。
 - Docker 镜像只构建一次 `linux/amd64` 本地镜像，并导出为 `niffler-app-linux-amd64.tar`；不再重复构建并推送 GHCR。
@@ -33,5 +33,5 @@
 
 - 使用 GitHub Actions 语法检查或实际触发一次手动应用镜像构建。
 - 日常 push 后确认不会自动触发应用镜像构建。
-- 手动触发 Rust CI 且开启全量选项时，确认 SQLite/MySQL 冒烟测试会运行。
+- 确认 PostgreSQL 冒烟任务及其汇总门禁通过。
 - 手动应用镜像构建日志不再出现官方 action 运行在 Node 20 的弃用警告。

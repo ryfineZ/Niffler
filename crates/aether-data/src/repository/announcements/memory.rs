@@ -46,8 +46,9 @@ impl InMemoryAnnouncementReadRepository {
 
 #[async_trait]
 impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
-    async fn find_by_id(
+    async fn find_by_id_for_portal(
         &self,
+        portal_id: &str,
         announcement_id: &str,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         Ok(self
@@ -55,12 +56,15 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
             .read()
             .expect("announcement repository lock")
             .iter()
-            .find(|announcement| announcement.id == announcement_id)
+            .find(|announcement| {
+                announcement.portal_id == portal_id && announcement.id == announcement_id
+            })
             .cloned())
     }
 
-    async fn list_announcements(
+    async fn list_announcements_for_portal(
         &self,
+        portal_id: &str,
         query: &AnnouncementListQuery,
     ) -> Result<StoredAnnouncementPage, DataLayerError> {
         let now_unix_secs = query.now_unix_secs.unwrap_or_else(Self::now_unix_secs);
@@ -72,6 +76,9 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
         let mut items: Vec<_> = announcements
             .iter()
             .filter(|announcement| {
+                if announcement.portal_id != portal_id {
+                    return false;
+                }
                 if !query.active_only {
                     return true;
                 }
@@ -105,8 +112,9 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
         Ok(StoredAnnouncementPage { items, total })
     }
 
-    async fn count_unread_active_announcements(
+    async fn count_unread_active_announcements_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
     ) -> Result<u64, DataLayerError> {
@@ -122,7 +130,8 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
         let total = announcements
             .iter()
             .filter(|announcement| {
-                announcement.is_active
+                announcement.portal_id == portal_id
+                    && announcement.is_active
                     && announcement
                         .start_time_unix_secs
                         .is_none_or(|value| value <= now_unix_secs)
@@ -136,8 +145,9 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
         Ok(total)
     }
 
-    async fn list_required_unread_active_announcements(
+    async fn list_required_unread_active_announcements_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
         limit: usize,
@@ -154,7 +164,8 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
         let mut items = announcements
             .iter()
             .filter(|announcement| {
-                announcement.requires_ack
+                announcement.portal_id == portal_id
+                    && announcement.requires_ack
                     && announcement.is_active
                     && announcement
                         .start_time_unix_secs
@@ -181,14 +192,16 @@ impl AnnouncementReadRepository for InMemoryAnnouncementReadRepository {
 
 #[async_trait]
 impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
-    async fn create_announcement(
+    async fn create_announcement_for_portal(
         &self,
+        portal_id: &str,
         record: CreateAnnouncementRecord,
     ) -> Result<StoredAnnouncement, DataLayerError> {
         record.validate()?;
         let now_unix_secs = Self::now_unix_secs();
-        let announcement = StoredAnnouncement::new(
+        let announcement = StoredAnnouncement::new_for_portal(
             Uuid::new_v4().to_string(),
+            portal_id.to_string(),
             record.title,
             record.content,
             record.kind,
@@ -210,8 +223,9 @@ impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
         Ok(announcement)
     }
 
-    async fn update_announcement(
+    async fn update_announcement_for_portal(
         &self,
+        portal_id: &str,
         record: UpdateAnnouncementRecord,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         record.validate()?;
@@ -219,10 +233,9 @@ impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
             .announcements
             .write()
             .expect("announcement repository lock");
-        let Some(announcement) = announcements
-            .iter_mut()
-            .find(|announcement| announcement.id == record.announcement_id)
-        else {
+        let Some(announcement) = announcements.iter_mut().find(|announcement| {
+            announcement.portal_id == portal_id && announcement.id == record.announcement_id
+        }) else {
             return Ok(None);
         };
 
@@ -257,13 +270,19 @@ impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
         Ok(Some(announcement.clone()))
     }
 
-    async fn delete_announcement(&self, announcement_id: &str) -> Result<bool, DataLayerError> {
+    async fn delete_announcement_for_portal(
+        &self,
+        portal_id: &str,
+        announcement_id: &str,
+    ) -> Result<bool, DataLayerError> {
         let mut announcements = self
             .announcements
             .write()
             .expect("announcement repository lock");
         let original_len = announcements.len();
-        announcements.retain(|announcement| announcement.id != announcement_id);
+        announcements.retain(|announcement| {
+            announcement.portal_id != portal_id || announcement.id != announcement_id
+        });
         let deleted = announcements.len() != original_len;
         if deleted {
             self.announcement_reads
@@ -274,12 +293,24 @@ impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
         Ok(deleted)
     }
 
-    async fn mark_announcement_as_read(
+    async fn mark_announcement_as_read_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         announcement_id: &str,
         _read_at_unix_secs: u64,
     ) -> Result<bool, DataLayerError> {
+        let announcement_exists = self
+            .announcements
+            .read()
+            .expect("announcement repository lock")
+            .iter()
+            .any(|announcement| {
+                announcement.portal_id == portal_id && announcement.id == announcement_id
+            });
+        if !announcement_exists {
+            return Ok(false);
+        }
         let inserted = self
             .announcement_reads
             .write()
@@ -293,8 +324,8 @@ impl AnnouncementWriteRepository for InMemoryAnnouncementReadRepository {
 mod tests {
     use super::InMemoryAnnouncementReadRepository;
     use crate::repository::announcements::{
-        AnnouncementReadRepository, AnnouncementWriteRepository, CreateAnnouncementRecord,
-        StoredAnnouncement, UpdateAnnouncementRecord,
+        AnnouncementListQuery, AnnouncementReadRepository, AnnouncementWriteRepository,
+        CreateAnnouncementRecord, StoredAnnouncement, UpdateAnnouncementRecord,
     };
 
     #[tokio::test]
@@ -433,5 +464,104 @@ mod tests {
             .await
             .expect("count should succeed");
         assert_eq!(unread, 0);
+    }
+
+    #[tokio::test]
+    async fn isolates_announcements_by_portal() {
+        let repository = InMemoryAnnouncementReadRepository::seed(vec![
+            StoredAnnouncement::new(
+                "main-announcement".to_string(),
+                "主站公告".to_string(),
+                "仅主站可见".to_string(),
+                "info".to_string(),
+                0,
+                true,
+                false,
+                false,
+                Some("main-admin".to_string()),
+                Some("main-admin".to_string()),
+                None,
+                None,
+                1_711_000_000,
+                1_711_000_000,
+            )
+            .expect("main announcement should build"),
+            StoredAnnouncement::new_for_portal(
+                "international-announcement".to_string(),
+                "official_usd".to_string(),
+                "国际站公告".to_string(),
+                "仅国际站可见".to_string(),
+                "important".to_string(),
+                10,
+                true,
+                true,
+                true,
+                Some("international-admin".to_string()),
+                Some("international-admin".to_string()),
+                None,
+                None,
+                1_711_000_100,
+                1_711_000_100,
+            )
+            .expect("international announcement should build"),
+        ]);
+        let query = AnnouncementListQuery {
+            active_only: true,
+            offset: 0,
+            limit: 10,
+            now_unix_secs: Some(1_711_000_200),
+        };
+
+        let main_page = repository
+            .list_announcements(&query)
+            .await
+            .expect("main announcements should list");
+        assert_eq!(main_page.total, 1);
+        assert_eq!(main_page.items[0].id, "main-announcement");
+
+        let international_page = repository
+            .list_announcements_for_portal("official_usd", &query)
+            .await
+            .expect("international announcements should list");
+        assert_eq!(international_page.total, 1);
+        assert_eq!(international_page.items[0].id, "international-announcement");
+
+        assert!(repository
+            .find_by_id("international-announcement")
+            .await
+            .expect("cross-portal lookup should succeed")
+            .is_none());
+        assert!(!repository
+            .mark_announcement_as_read_for_portal(
+                "default",
+                "main-user",
+                "international-announcement",
+                1_711_000_300,
+            )
+            .await
+            .expect("cross-portal read should be rejected"));
+        assert!(repository
+            .update_announcement_for_portal(
+                "default",
+                UpdateAnnouncementRecord {
+                    announcement_id: "international-announcement".to_string(),
+                    title: Some("不应修改".to_string()),
+                    content: None,
+                    kind: None,
+                    priority: None,
+                    is_active: None,
+                    is_pinned: None,
+                    requires_ack: None,
+                    start_time_unix_secs: None,
+                    end_time_unix_secs: None,
+                },
+            )
+            .await
+            .expect("cross-portal update should be rejected")
+            .is_none());
+        assert!(!repository
+            .delete_announcement_for_portal("default", "international-announcement")
+            .await
+            .expect("cross-portal delete should be rejected"));
     }
 }

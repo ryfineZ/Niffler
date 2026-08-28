@@ -1158,7 +1158,7 @@ nullable = true
 name = "schema_version"
 type = "int32"
 default = 1
-driver = { postgres = { type = "smallint" }, mysql = { type = "SMALLINT" } }
+driver = { postgres = { type = "smallint" } }
 
 [[table.billing_request_admissions.columns]]
 name = "created_at"

@@ -1,5 +1,5 @@
 use super::{
-    auth_client_ip_with_cf, auth_email_is_verified, auth_now, auth_registration_email_configured,
+    auth_email_is_verified, auth_now, auth_registration_email_configured, auth_trusted_client_ip,
     auth_verification_code_expire_minutes, auth_verification_send_cooldown_seconds,
     build_auth_error_response, build_auth_json_response, clear_auth_email_pending_code,
     clear_auth_email_verification, generate_auth_verification_code, http, json,
@@ -260,46 +260,39 @@ async fn ensure_auth_verification_code_endpoint_enabled(
 
 async fn consume_auth_verification_send_rate_limit(
     state: &AppState,
-    headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     email: &str,
 ) -> Result<Result<AuthVerificationSendRateLimitPermit, Response<Body>>, GatewayError> {
     let now_ts = current_unix_secs();
     let mut rules = Vec::<AuthVerificationSendRateLimitRule>::new();
 
-    if let Some(client_ip) = auth_client_ip_with_cf(headers, cf_connecting_ip)
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| !value.eq_ignore_ascii_case("unknown"))
-    {
-        push_auth_verification_rate_limit_rule(
-            &mut rules,
-            "ip_per_minute",
-            format!("auth:verification:send:ip:{client_ip}"),
-            read_auth_u32_config(
-                state,
-                AUTH_VERIFICATION_IP_PER_MINUTE_CONFIG_KEY,
-                AUTH_VERIFICATION_IP_PER_MINUTE_DEFAULT,
-            )
-            .await?,
-            60,
-            now_ts,
-        );
-        push_auth_verification_rate_limit_rule(
-            &mut rules,
-            "ip_per_hour",
-            format!("auth:verification:send:ip_hour:{client_ip}"),
-            read_auth_u32_config(
-                state,
-                AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY,
-                AUTH_VERIFICATION_IP_PER_HOUR_DEFAULT,
-            )
-            .await?,
-            60 * 60,
-            now_ts,
-        );
-    } else {
-        tracing::warn!("auth verification email send request is missing client IP");
-    }
+    let client_ip = auth_trusted_client_ip(client_ip).unwrap_or_else(|| "unresolved".to_string());
+    push_auth_verification_rate_limit_rule(
+        &mut rules,
+        "ip_per_minute",
+        format!("auth:verification:send:ip:{client_ip}"),
+        read_auth_u32_config(
+            state,
+            AUTH_VERIFICATION_IP_PER_MINUTE_CONFIG_KEY,
+            AUTH_VERIFICATION_IP_PER_MINUTE_DEFAULT,
+        )
+        .await?,
+        60,
+        now_ts,
+    );
+    push_auth_verification_rate_limit_rule(
+        &mut rules,
+        "ip_per_hour",
+        format!("auth:verification:send:ip_hour:{client_ip}"),
+        read_auth_u32_config(
+            state,
+            AUTH_VERIFICATION_IP_PER_HOUR_CONFIG_KEY,
+            AUTH_VERIFICATION_IP_PER_HOUR_DEFAULT,
+        )
+        .await?,
+        60 * 60,
+        now_ts,
+    );
 
     push_auth_verification_rate_limit_rule(
         &mut rules,
@@ -492,7 +485,7 @@ async fn pending_verification_delivery_failed(
 pub(super) async fn handle_auth_send_verification_code(
     state: &AppState,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     let Some(request_body) = request_body else {
@@ -528,8 +521,7 @@ pub(super) async fn handle_auth_send_verification_code(
 
     if let Err(response) = verify_auth_turnstile(
         state,
-        headers,
-        cf_connecting_ip,
+        client_ip,
         payload.turnstile_token.as_deref(),
         AuthTurnstileAction::SendVerificationCode,
     )
@@ -620,9 +612,7 @@ pub(super) async fn handle_auth_send_verification_code(
         };
 
     let rate_limit_permit =
-        match consume_auth_verification_send_rate_limit(state, headers, cf_connecting_ip, &email)
-            .await
-        {
+        match consume_auth_verification_send_rate_limit(state, client_ip, &email).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(response)) => return response,
             Err(err) => {
@@ -704,7 +694,7 @@ pub(super) async fn handle_auth_register(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     let Some(request_body) = request_body else {
@@ -810,8 +800,7 @@ pub(super) async fn handle_auth_register(
 
     if let Err(response) = verify_auth_turnstile(
         state,
-        headers,
-        cf_connecting_ip,
+        client_ip,
         payload.turnstile_token.as_deref(),
         AuthTurnstileAction::Register,
     )
@@ -1018,7 +1007,7 @@ pub(super) async fn handle_auth_register(
     if invite_code.is_some() {
         let source = json!({
             "channel": "registration",
-            "ip": cf_connecting_ip,
+            "ip": auth_trusted_client_ip(client_ip),
             "user_agent": headers
                 .get(http::header::USER_AGENT)
                 .and_then(|value| value.to_str().ok()),

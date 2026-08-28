@@ -219,10 +219,6 @@ macro_rules! reward_from_row {
     }};
 }
 
-fn now_unix_secs() -> u64 {
-    chrono::Utc::now().timestamp().max(0) as u64
-}
-
 fn now_unix_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
@@ -375,42 +371,6 @@ WHERE id = $1
             .execute(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.mysql() {
-            let affected = sqlx::query(
-                r#"
-UPDATE users
-SET privacy_policy_accepted_version = ?,
-    privacy_policy_accepted_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(version)
-            .bind(now_unix_secs() as i64)
-            .bind(user_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.sqlite() {
-            let affected = sqlx::query(
-                r#"
-UPDATE users
-SET privacy_policy_accepted_version = ?,
-    privacy_policy_accepted_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(version)
-            .bind(now_unix_secs() as i64)
-            .bind(user_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
             .rows_affected();
             return Ok(affected > 0);
         }
@@ -878,36 +838,6 @@ ON CONFLICT DO NOTHING
                 .await
                 .map_err(DataLayerError::postgres)?
                 .rows_affected()
-            } else if let Some(backend) = backends.mysql() {
-                sqlx::query(
-                    r#"
-INSERT IGNORE INTO user_invite_codes (user_id, invite_code, active, created_at, updated_at)
-VALUES (?, ?, TRUE, ?, ?)
-"#,
-                )
-                .bind(user_id)
-                .bind(&code)
-                .bind(now_unix_secs() as i64)
-                .bind(now_unix_secs() as i64)
-                .execute(&backend.pool_clone())
-                .await
-                .map_err(DataLayerError::sql)?
-                .rows_affected()
-            } else if let Some(backend) = backends.sqlite() {
-                sqlx::query(
-                    r#"
-INSERT OR IGNORE INTO user_invite_codes (user_id, invite_code, active, created_at, updated_at)
-VALUES (?, ?, 1, ?, ?)
-"#,
-                )
-                .bind(user_id)
-                .bind(&code)
-                .bind(now_unix_secs() as i64)
-                .bind(now_unix_secs() as i64)
-                .execute(&backend.pool_clone())
-                .await
-                .map_err(DataLayerError::sql)?
-                .rows_affected()
             } else {
                 0
             };
@@ -943,36 +873,6 @@ VALUES (?, ?, 1, ?, ?)
                 })
                 .transpose();
         }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                "SELECT invite_code FROM user_invite_codes WHERE user_id = ? AND active = TRUE",
-            )
-            .bind(user_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row
-                .map(|row| {
-                    row.try_get::<String, _>("invite_code")
-                        .map_err(DataLayerError::sql)
-                })
-                .transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                "SELECT invite_code FROM user_invite_codes WHERE user_id = ? AND active = 1",
-            )
-            .bind(user_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row
-                .map(|row| {
-                    row.try_get::<String, _>("invite_code")
-                        .map_err(DataLayerError::sql)
-                })
-                .transpose();
-        }
         Ok(None)
     }
 
@@ -991,36 +891,6 @@ VALUES (?, ?, 1, ?, ?)
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row
-                .map(|row| {
-                    row.try_get::<String, _>("user_id")
-                        .map_err(DataLayerError::sql)
-                })
-                .transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                "SELECT user_id FROM user_invite_codes WHERE invite_code = ? AND active = TRUE",
-            )
-            .bind(invite_code)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row
-                .map(|row| {
-                    row.try_get::<String, _>("user_id")
-                        .map_err(DataLayerError::sql)
-                })
-                .transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                "SELECT user_id FROM user_invite_codes WHERE invite_code = ? AND active = 1",
-            )
-            .bind(invite_code)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row
                 .map(|row| {
                     row.try_get::<String, _>("user_id")
@@ -1063,50 +933,6 @@ ON CONFLICT (invitee_user_id) DO NOTHING
             .rows_affected();
             return Ok(affected > 0);
         }
-        if let Some(backend) = backends.mysql() {
-            let affected = sqlx::query(
-                r#"
-INSERT IGNORE INTO user_referrals (
-  id, inviter_user_id, invitee_user_id, invite_code_snapshot, source_json, created_at, updated_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-"#,
-            )
-            .bind(referral_id)
-            .bind(inviter_user_id)
-            .bind(invitee_user_id)
-            .bind(invite_code)
-            .bind(source_json)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.sqlite() {
-            let affected = sqlx::query(
-                r#"
-INSERT OR IGNORE INTO user_referrals (
-  id, inviter_user_id, invitee_user_id, invite_code_snapshot, source_json, created_at, updated_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-"#,
-            )
-            .bind(referral_id)
-            .bind(inviter_user_id)
-            .bind(invitee_user_id)
-            .bind(invite_code)
-            .bind(source_json)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
         Ok(false)
     }
 
@@ -1145,64 +971,6 @@ LIMIT $3
             .map_err(DataLayerError::postgres)?;
             return rows.iter().map(|row| relationship_from_row!(row)).collect();
         }
-        if let Some(backend) = backends.mysql() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE (? IS NULL OR r.inviter_user_id = ?)
-  AND (? IS NULL OR r.invitee_user_id = ?)
-ORDER BY r.created_at DESC
-LIMIT ?
-"#,
-            )
-            .bind(inviter_user_id)
-            .bind(inviter_user_id)
-            .bind(invitee_user_id)
-            .bind(invitee_user_id)
-            .bind(REFERRAL_FETCH_LIMIT as i64)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| relationship_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE (? IS NULL OR r.inviter_user_id = ?)
-  AND (? IS NULL OR r.invitee_user_id = ?)
-ORDER BY r.created_at DESC
-LIMIT ?
-"#,
-            )
-            .bind(inviter_user_id)
-            .bind(inviter_user_id)
-            .bind(invitee_user_id)
-            .bind(invitee_user_id)
-            .bind(REFERRAL_FETCH_LIMIT as i64)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| relationship_from_row!(row)).collect();
-        }
         Ok(Vec::new())
     }
 
@@ -1236,52 +1004,6 @@ LIMIT 1
             .map_err(DataLayerError::postgres)?;
             return row.map(|row| relationship_from_row!(&row)).transpose();
         }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE r.id = ?
-LIMIT 1
-"#,
-            )
-            .bind(referral_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| relationship_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE r.id = ?
-LIMIT 1
-"#,
-            )
-            .bind(referral_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| relationship_from_row!(&row)).transpose();
-        }
         Ok(None)
     }
 
@@ -1313,52 +1035,6 @@ LIMIT 1
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row.map(|row| relationship_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE r.invitee_user_id = ?
-LIMIT 1
-"#,
-            )
-            .bind(invitee_user_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| relationship_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  r.id, r.inviter_user_id, inviter.username AS inviter_username,
-  r.invitee_user_id, invitee.username AS invitee_username,
-  r.invite_code_snapshot, r.first_paid_order_id,
-  r.first_paid_at AS first_paid_at_unix_secs,
-  r.source_json AS source_json,
-  r.created_at AS created_at_unix_secs
-FROM user_referrals r
-LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
-LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE r.invitee_user_id = ?
-LIMIT 1
-"#,
-            )
-            .bind(invitee_user_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row.map(|row| relationship_from_row!(&row)).transpose();
         }
         Ok(None)
@@ -1396,50 +1072,6 @@ LIMIT $2
             .map_err(DataLayerError::postgres)?;
             return rows.iter().map(|row| reward_from_row!(row)).collect();
         }
-        if let Some(backend) = backends.mysql() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE (? IS NULL OR inviter_user_id = ?)
-ORDER BY created_at DESC
-LIMIT ?
-"#,
-            )
-            .bind(inviter_user_id)
-            .bind(inviter_user_id)
-            .bind(REFERRAL_FETCH_LIMIT as i64)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE (? IS NULL OR inviter_user_id = ?)
-ORDER BY created_at DESC
-LIMIT ?
-"#,
-            )
-            .bind(inviter_user_id)
-            .bind(inviter_user_id)
-            .bind(REFERRAL_FETCH_LIMIT as i64)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
         Ok(Vec::new())
     }
 
@@ -1471,44 +1103,6 @@ LIMIT 1
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row.map(|row| reward_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE id = ?
-LIMIT 1
-"#,
-            )
-            .bind(reward_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| reward_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE id = ?
-LIMIT 1
-"#,
-            )
-            .bind(reward_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row.map(|row| reward_from_row!(&row)).transpose();
         }
         Ok(None)
@@ -1544,44 +1138,6 @@ LIMIT 1
             .map_err(DataLayerError::postgres)?;
             return row.map(|row| reward_from_row!(&row)).transpose();
         }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE idempotency_key = ?
-LIMIT 1
-"#,
-            )
-            .bind(idempotency_key)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| reward_from_row!(&row)).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE idempotency_key = ?
-LIMIT 1
-"#,
-            )
-            .bind(idempotency_key)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(|row| reward_from_row!(&row)).transpose();
-        }
         Ok(None)
     }
 
@@ -1613,44 +1169,6 @@ ORDER BY created_at ASC
             .fetch_all(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.mysql() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE source_order_id = ? AND status = 'applied'
-ORDER BY created_at ASC
-"#,
-            )
-            .bind(order_id)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE source_order_id = ? AND status = 'applied'
-ORDER BY created_at ASC
-"#,
-            )
-            .bind(order_id)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return rows.iter().map(|row| reward_from_row!(row)).collect();
         }
         Ok(Vec::new())
@@ -1697,62 +1215,6 @@ ON CONFLICT (idempotency_key) DO NOTHING
             .rows_affected();
             return Ok(affected > 0);
         }
-        if let Some(backend) = backends.mysql() {
-            let affected = sqlx::query(
-                r#"
-INSERT IGNORE INTO referral_rewards (
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, idempotency_key, created_at, updated_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"#,
-            )
-            .bind(&reward_id)
-            .bind(&relationship.id)
-            .bind(&relationship.inviter_user_id)
-            .bind(&relationship.invitee_user_id)
-            .bind(reward_type)
-            .bind(source_order_id)
-            .bind(trigger_point)
-            .bind(amount_usd)
-            .bind(initial_status)
-            .bind(idempotency_key)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.sqlite() {
-            let affected = sqlx::query(
-                r#"
-INSERT OR IGNORE INTO referral_rewards (
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, idempotency_key, created_at, updated_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"#,
-            )
-            .bind(&reward_id)
-            .bind(&relationship.id)
-            .bind(&relationship.inviter_user_id)
-            .bind(&relationship.invitee_user_id)
-            .bind(reward_type)
-            .bind(source_order_id)
-            .bind(trigger_point)
-            .bind(amount_usd)
-            .bind(initial_status)
-            .bind(idempotency_key)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
         Ok(false)
     }
 
@@ -1775,34 +1237,6 @@ WHERE id = $1
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row.map(payment_order_context_from_row).transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT id, user_id, amount_usd, payment_method, status, order_kind
-FROM payment_orders
-WHERE id = ?
-"#,
-            )
-            .bind(order_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(payment_order_context_from_row).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT id, user_id, amount_usd, payment_method, status, order_kind
-FROM payment_orders
-WHERE id = ?
-"#,
-            )
-            .bind(order_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row.map(payment_order_context_from_row).transpose();
         }
         Ok(None)
@@ -1831,34 +1265,6 @@ WHERE id = $1
             .map_err(DataLayerError::postgres)?;
             return row.map(payment_order_refund_context_from_row).transpose();
         }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT amount_usd, refunded_amount_usd
-FROM payment_orders
-WHERE id = ?
-"#,
-            )
-            .bind(order_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(payment_order_refund_context_from_row).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT amount_usd, refunded_amount_usd
-FROM payment_orders
-WHERE id = ?
-"#,
-            )
-            .bind(order_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(payment_order_refund_context_from_row).transpose();
-        }
         Ok(None)
     }
 
@@ -1885,46 +1291,6 @@ WHERE id = $1 AND first_paid_order_id IS NULL
             .execute(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.mysql() {
-            let affected = sqlx::query(
-                r#"
-UPDATE user_referrals
-SET first_paid_order_id = ?,
-    first_paid_at = ?,
-    updated_at = ?
-WHERE id = ? AND first_paid_order_id IS NULL
-"#,
-            )
-            .bind(order_id)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .bind(referral_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.sqlite() {
-            let affected = sqlx::query(
-                r#"
-UPDATE user_referrals
-SET first_paid_order_id = ?,
-    first_paid_at = ?,
-    updated_at = ?
-WHERE id = ? AND first_paid_order_id IS NULL
-"#,
-            )
-            .bind(order_id)
-            .bind(now_unix_secs() as i64)
-            .bind(now_unix_secs() as i64)
-            .bind(referral_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
             .rows_affected();
             return Ok(affected > 0);
         }
@@ -1959,50 +1325,6 @@ WHERE id = $1 AND status IN ('pending', 'failed')
             .execute(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.mysql() {
-            let affected = sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET status = ?,
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-            )
-            .bind(status)
-            .bind(operator_id)
-            .bind(note)
-            .bind(now_unix_secs() as i64)
-            .bind(reward_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            return Ok(affected > 0);
-        }
-        if let Some(backend) = backends.sqlite() {
-            let affected = sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET status = ?,
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-            )
-            .bind(status)
-            .bind(operator_id)
-            .bind(note)
-            .bind(now_unix_secs() as i64)
-            .bind(reward_id)
-            .execute(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?
             .rows_affected();
             return Ok(affected > 0);
         }
@@ -2053,42 +1375,6 @@ WHERE rw.idempotency_key = $1
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row.map(credit_target_from_row).transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  rw.id, rw.inviter_user_id, rw.invitee_user_id, rw.amount_usd, rw.reward_type,
-  rw.trigger_point, wallets.id AS wallet_id
-FROM referral_rewards rw
-JOIN wallets ON wallets.user_id = rw.inviter_user_id
-WHERE rw.idempotency_key = ?
-  AND rw.status IN ('pending', 'failed')
-"#,
-            )
-            .bind(idempotency_key)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row.map(credit_target_from_row).transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT
-  rw.id, rw.inviter_user_id, rw.invitee_user_id, rw.amount_usd, rw.reward_type,
-  rw.trigger_point, wallets.id AS wallet_id
-FROM referral_rewards rw
-JOIN wallets ON wallets.user_id = rw.inviter_user_id
-WHERE rw.idempotency_key = ?
-  AND rw.status IN ('pending', 'failed')
-"#,
-            )
-            .bind(idempotency_key)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row.map(credit_target_from_row).transpose();
         }
         Ok(None)
@@ -2234,26 +1520,6 @@ WHERE id = $1
             tx.commit().await.map_err(DataLayerError::postgres)?;
             return Ok(());
         }
-        if let Some(backend) = backends.mysql() {
-            self.credit_referral_reward_mysql_numeric_time(
-                &backend.pool_clone(),
-                target,
-                operator_id,
-                note,
-            )
-            .await?;
-            return Ok(());
-        }
-        if let Some(backend) = backends.sqlite() {
-            self.credit_referral_reward_sqlite_numeric_time(
-                &backend.pool_clone(),
-                target,
-                operator_id,
-                note,
-            )
-            .await?;
-            return Ok(());
-        }
         Ok(())
     }
 
@@ -2279,38 +1545,6 @@ WHERE id = $1
             .fetch_optional(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return row
-                .map(niffler_referral_ledger_payment_target_from_row)
-                .transpose();
-        }
-        if let Some(backend) = backends.mysql() {
-            let row = sqlx::query(
-                r#"
-SELECT id, order_id, inviter_user_id, invitee_user_id, reward_amount_usd, status
-FROM niffler_referral_reward_ledger
-WHERE id = ?
-"#,
-            )
-            .bind(ledger_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return row
-                .map(niffler_referral_ledger_payment_target_from_row)
-                .transpose();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let row = sqlx::query(
-                r#"
-SELECT id, order_id, inviter_user_id, invitee_user_id, reward_amount_usd, status
-FROM niffler_referral_reward_ledger
-WHERE id = ?
-"#,
-            )
-            .bind(ledger_id)
-            .fetch_optional(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return row
                 .map(niffler_referral_ledger_payment_target_from_row)
                 .transpose();
@@ -2346,44 +1580,6 @@ ORDER BY created_at ASC
             .fetch_all(&backend.pool_clone())
             .await
             .map_err(DataLayerError::postgres)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.mysql() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE source_order_id = ? AND status IN ('ledger_pending', 'ledger_failed')
-ORDER BY created_at ASC
-"#,
-            )
-            .bind(order_id)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
-            return rows.iter().map(|row| reward_from_row!(row)).collect();
-        }
-        if let Some(backend) = backends.sqlite() {
-            let rows = sqlx::query(
-                r#"
-SELECT
-  id, referral_id, inviter_user_id, invitee_user_id, reward_type, source_order_id,
-  trigger_point, amount_usd, status, wallet_transaction_id, idempotency_key,
-  reversed_amount_usd, pending_reversal_amount_usd, admin_operator_id, admin_note,
-  created_at AS created_at_unix_secs, updated_at AS updated_at_unix_secs
-FROM referral_rewards
-WHERE source_order_id = ? AND status IN ('ledger_pending', 'ledger_failed')
-ORDER BY created_at ASC
-"#,
-            )
-            .bind(order_id)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::sql)?;
             return rows.iter().map(|row| reward_from_row!(row)).collect();
         }
         Ok(Vec::new())
@@ -2464,26 +1660,6 @@ VALUES ($1, $2, 'cancelled', $3, $4, $5, $6)
             .map_err(DataLayerError::postgres)?;
             tx.commit().await.map_err(DataLayerError::postgres)?;
             return Ok(ReferralMutationStatus::Applied);
-        }
-        if let Some(backend) = backends.mysql() {
-            return self
-                .cancel_niffler_referral_reward_ledger_mysql_numeric_time(
-                    &backend.pool_clone(),
-                    target,
-                    operator_id,
-                    reason,
-                )
-                .await;
-        }
-        if let Some(backend) = backends.sqlite() {
-            return self
-                .cancel_niffler_referral_reward_ledger_sqlite_numeric_time(
-                    &backend.pool_clone(),
-                    target,
-                    operator_id,
-                    reason,
-                )
-                .await;
         }
         Ok(ReferralMutationStatus::Unavailable)
     }
@@ -2664,28 +1840,6 @@ VALUES ($1, $2, 'paid', $3, $4, $5, $6)
             tx.commit().await.map_err(DataLayerError::postgres)?;
             return Ok(Some(tx_id));
         }
-        if let Some(backend) = backends.mysql() {
-            return self
-                .pay_niffler_referral_reward_ledger_mysql_numeric_time(
-                    &backend.pool_clone(),
-                    ledger,
-                    rewards,
-                    operator_id,
-                    note,
-                )
-                .await;
-        }
-        if let Some(backend) = backends.sqlite() {
-            return self
-                .pay_niffler_referral_reward_ledger_sqlite_numeric_time(
-                    &backend.pool_clone(),
-                    ledger,
-                    rewards,
-                    operator_id,
-                    note,
-                )
-                .await;
-        }
         Ok(None)
     }
 
@@ -2819,9 +1973,7 @@ WHERE id = $1
             tx.commit().await.map_err(DataLayerError::postgres)?;
             return Ok(());
         }
-        // MySQL/SQLite refunds use the wallet repository tables with integer timestamps.
-        self.apply_referral_reward_reversal_numeric_time(reward, target_reversal_amount_usd)
-            .await
+        Ok(())
     }
 }
 
@@ -2914,490 +2066,6 @@ fn niffler_referral_failed_event_snapshot(
     })
 }
 
-fn niffler_referral_event_snapshot_text(
-    snapshot: serde_json::Value,
-) -> Result<String, DataLayerError> {
-    serde_json::to_string(&snapshot).map_err(|err| {
-        DataLayerError::InvalidInput(format!("invalid referral event snapshot: {err}"))
-    })
-}
-
-macro_rules! niffler_referral_ledger_numeric_method {
-    ($name:ident, $pool_ty:ty, $ledger_sql:expr, $wallet_sql:expr) => {
-        async fn $name(
-            &self,
-            pool: &$pool_ty,
-            ledger: &StoredNifflerReferralRewardLedger,
-            rewards: &[ReferralRewardRecord],
-            operator_id: Option<&str>,
-            note: Option<&str>,
-        ) -> Result<Option<String>, DataLayerError> {
-            let mut tx = pool.begin().await.map_err(DataLayerError::sql)?;
-            let row = sqlx::query($ledger_sql)
-                .bind(&ledger.id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            if !row
-                .as_ref()
-                .and_then(|row| row.try_get::<String, _>("status").ok())
-                .is_some_and(|status| matches!(status.as_str(), "pending" | "failed"))
-            {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(None);
-            }
-            let wallet = sqlx::query($wallet_sql)
-                .bind(&ledger.inviter_user_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            let Some(wallet) = wallet else {
-                let reason = "邀请人钱包不存在";
-                let now_ms = now_unix_ms() as i64;
-                sqlx::query(
-                    r#"
-UPDATE niffler_referral_reward_ledger
-SET status = 'failed',
-    failure_reason = ?,
-    retry_count = retry_count + 1,
-    updated_at_unix_ms = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-                )
-                .bind(reason)
-                .bind(now_ms)
-                .bind(&ledger.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-                for reward in rewards {
-                    sqlx::query(
-                        r#"
-UPDATE referral_rewards
-SET status = 'ledger_failed',
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ? AND status IN ('ledger_pending', 'ledger_failed')
-"#,
-                    )
-                    .bind(operator_id)
-                    .bind(reason)
-                    .bind(now_unix_secs() as i64)
-                    .bind(&reward.id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(DataLayerError::sql)?;
-                }
-                sqlx::query(
-                    r#"
-INSERT INTO niffler_referral_reward_events (
-  id, reward_ledger_id, event_kind, reason, actor_id, event_snapshot, created_at_unix_ms
-)
-VALUES (?, ?, 'failed', ?, ?, ?, ?)
-"#,
-                )
-                .bind(uuid::Uuid::new_v4().to_string())
-                .bind(&ledger.id)
-                .bind(reason)
-                .bind(operator_id)
-                .bind(niffler_referral_event_snapshot_text(
-                    niffler_referral_failed_event_snapshot(rewards, ledger.reward_amount_usd),
-                )?)
-                .bind(now_ms)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(None);
-            };
-            let wallet_id = row_string!(wallet, "id");
-            let balance = row_f64!(wallet, "balance");
-            let gift_before = row_f64!(wallet, "gift_balance");
-            let gift_after = gift_before + ledger.reward_amount_usd;
-            let tx_id = uuid::Uuid::new_v4().to_string();
-            let description = note
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| "邀请返利".to_string());
-            sqlx::query(
-                r#"
-UPDATE wallets
-SET gift_balance = ?,
-    total_adjusted = total_adjusted + ?,
-    updated_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(gift_after)
-            .bind(ledger.reward_amount_usd)
-            .bind(now_unix_secs() as i64)
-            .bind(&wallet_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            sqlx::query(
-                r#"
-INSERT INTO wallet_transactions (
-  id, wallet_id, category, reason_code, amount,
-  balance_before, balance_after,
-  recharge_balance_before, recharge_balance_after,
-  gift_balance_before, gift_balance_after,
-  link_type, link_id, operator_id, description, created_at
-)
-VALUES (?, ?, 'adjust', 'referral_reward', ?, ?, ?, ?, ?, ?, ?,
-        'niffler_referral_reward_ledger', ?, ?, ?, ?)
-"#,
-            )
-            .bind(&tx_id)
-            .bind(&wallet_id)
-            .bind(ledger.reward_amount_usd)
-            .bind(balance + gift_before)
-            .bind(balance + gift_after)
-            .bind(balance)
-            .bind(balance)
-            .bind(gift_before)
-            .bind(gift_after)
-            .bind(&ledger.id)
-            .bind(operator_id)
-            .bind(&description)
-            .bind(now_unix_ms() as i64)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            let now_ms = now_unix_ms() as i64;
-            sqlx::query(
-                r#"
-UPDATE niffler_referral_reward_ledger
-SET status = 'paid',
-    failure_reason = NULL,
-    paid_at_unix_ms = ?,
-    updated_at_unix_ms = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-            )
-            .bind(now_ms)
-            .bind(now_ms)
-            .bind(&ledger.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            for reward in rewards {
-                sqlx::query(
-                    r#"
-UPDATE referral_rewards
-SET status = 'applied',
-    wallet_transaction_id = ?,
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ? AND status IN ('ledger_pending', 'ledger_failed')
-"#,
-                )
-                .bind(&tx_id)
-                .bind(operator_id)
-                .bind(note)
-                .bind(now_unix_secs() as i64)
-                .bind(&reward.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            }
-            sqlx::query(
-                r#"
-INSERT INTO niffler_referral_reward_events (
-  id, reward_ledger_id, event_kind, reason, actor_id, event_snapshot, created_at_unix_ms
-)
-VALUES (?, ?, 'paid', ?, ?, ?, ?)
-"#,
-            )
-            .bind(uuid::Uuid::new_v4().to_string())
-            .bind(&ledger.id)
-            .bind(note)
-            .bind(operator_id)
-            .bind(niffler_referral_event_snapshot_text(
-                niffler_referral_paid_event_snapshot(&tx_id, rewards, ledger.reward_amount_usd),
-            )?)
-            .bind(now_ms)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            tx.commit().await.map_err(DataLayerError::sql)?;
-            Ok(Some(tx_id))
-        }
-    };
-}
-
-macro_rules! niffler_referral_ledger_cancel_numeric_method {
-    ($name:ident, $pool_ty:ty) => {
-        async fn $name(
-            &self,
-            pool: &$pool_ty,
-            target: &NifflerReferralLedgerPaymentTarget,
-            operator_id: Option<&str>,
-            reason: &str,
-        ) -> Result<ReferralMutationStatus, DataLayerError> {
-            let mut tx = pool.begin().await.map_err(DataLayerError::sql)?;
-            let now_ms = now_unix_ms() as i64;
-            let affected = sqlx::query(
-                r#"
-UPDATE niffler_referral_reward_ledger
-SET status = 'cancelled',
-    failure_reason = NULL,
-    cancelled_at_unix_ms = ?,
-    updated_at_unix_ms = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-            )
-            .bind(now_ms)
-            .bind(now_ms)
-            .bind(&target.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            if affected == 0 {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(ReferralMutationStatus::Invalid);
-            }
-            sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET status = 'ledger_cancelled',
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE source_order_id = ? AND status IN ('ledger_pending', 'ledger_failed')
-"#,
-            )
-            .bind(operator_id)
-            .bind(reason)
-            .bind(now_unix_secs() as i64)
-            .bind(&target.order_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            sqlx::query(
-                r#"
-INSERT INTO niffler_referral_reward_events (
-  id, reward_ledger_id, event_kind, reason, actor_id, event_snapshot, created_at_unix_ms
-)
-VALUES (?, ?, 'cancelled', ?, ?, ?, ?)
-"#,
-            )
-            .bind(uuid::Uuid::new_v4().to_string())
-            .bind(&target.id)
-            .bind(reason)
-            .bind(operator_id)
-            .bind(niffler_referral_event_snapshot_text(serde_json::json!({
-                "order_id": target.order_id,
-                "reward_amount_usd": target.reward_amount_usd,
-            }))?)
-            .bind(now_ms)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            tx.commit().await.map_err(DataLayerError::sql)?;
-            Ok(ReferralMutationStatus::Applied)
-        }
-    };
-}
-
-macro_rules! referral_credit_numeric_method {
-    ($name:ident, $pool_ty:ty, $wallet_sql:expr) => {
-        async fn $name(
-            &self,
-            pool: &$pool_ty,
-            target: ReferralCreditTarget,
-            operator_id: Option<&str>,
-            note: Option<&str>,
-        ) -> Result<(), DataLayerError> {
-            let mut tx = pool.begin().await.map_err(DataLayerError::sql)?;
-            let claimed = sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET status = 'applying',
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ? AND status IN ('pending', 'failed')
-"#,
-            )
-            .bind(operator_id)
-            .bind(note)
-            .bind(now_unix_secs() as i64)
-            .bind(&target.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?
-            .rows_affected();
-            if claimed == 0 {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(());
-            }
-            let wallet = sqlx::query($wallet_sql)
-                .bind(&target.wallet_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            let Some(wallet) = wallet else {
-                sqlx::query(
-                    r#"
-UPDATE referral_rewards
-SET status = 'failed',
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ?
-"#,
-                )
-                .bind(operator_id)
-                .bind(note.or(Some("邀请人钱包不存在")))
-                .bind(now_unix_secs() as i64)
-                .bind(&target.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(());
-            };
-            let balance = row_f64!(wallet, "balance");
-            let gift_before = row_f64!(wallet, "gift_balance");
-            let gift_after = gift_before + target.amount_usd;
-            let tx_id = uuid::Uuid::new_v4().to_string();
-            let description = note
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| reward_description(&target));
-            sqlx::query(
-                r#"
-UPDATE wallets
-SET gift_balance = ?,
-    total_adjusted = total_adjusted + ?,
-    updated_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(gift_after)
-            .bind(target.amount_usd)
-            .bind(now_unix_secs() as i64)
-            .bind(&target.wallet_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            sqlx::query(
-                r#"
-INSERT INTO wallet_transactions (
-  id, wallet_id, category, reason_code, amount,
-  balance_before, balance_after,
-  recharge_balance_before, recharge_balance_after,
-  gift_balance_before, gift_balance_after,
-  link_type, link_id, operator_id, description, created_at
-)
-VALUES (?, ?, 'adjust', 'referral_reward', ?, ?, ?, ?, ?, ?, ?,
-        'referral_reward', ?, ?, ?, ?)
-"#,
-            )
-            .bind(&tx_id)
-            .bind(&target.wallet_id)
-            .bind(target.amount_usd)
-            .bind(balance + gift_before)
-            .bind(balance + gift_after)
-            .bind(balance)
-            .bind(balance)
-            .bind(gift_before)
-            .bind(gift_after)
-            .bind(&target.id)
-            .bind(operator_id)
-            .bind(&description)
-            .bind(now_unix_ms() as i64)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET status = 'applied',
-    wallet_transaction_id = ?,
-    admin_operator_id = COALESCE(?, admin_operator_id),
-    admin_note = COALESCE(?, admin_note),
-    updated_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(&tx_id)
-            .bind(operator_id)
-            .bind(note)
-            .bind(now_unix_secs() as i64)
-            .bind(&target.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            tx.commit().await.map_err(DataLayerError::sql)?;
-            Ok(())
-        }
-    };
-}
-
-impl GatewayDataState {
-    niffler_referral_ledger_numeric_method!(
-        pay_niffler_referral_reward_ledger_mysql_numeric_time,
-        sqlx::MySqlPool,
-        "SELECT status FROM niffler_referral_reward_ledger WHERE id = ? FOR UPDATE",
-        "SELECT id, balance, gift_balance FROM wallets WHERE user_id = ? FOR UPDATE"
-    );
-    niffler_referral_ledger_numeric_method!(
-        pay_niffler_referral_reward_ledger_sqlite_numeric_time,
-        sqlx::SqlitePool,
-        "SELECT status FROM niffler_referral_reward_ledger WHERE id = ?",
-        "SELECT id, balance, gift_balance FROM wallets WHERE user_id = ?"
-    );
-    niffler_referral_ledger_cancel_numeric_method!(
-        cancel_niffler_referral_reward_ledger_mysql_numeric_time,
-        sqlx::MySqlPool
-    );
-    niffler_referral_ledger_cancel_numeric_method!(
-        cancel_niffler_referral_reward_ledger_sqlite_numeric_time,
-        sqlx::SqlitePool
-    );
-
-    referral_credit_numeric_method!(
-        credit_referral_reward_mysql_numeric_time,
-        sqlx::MySqlPool,
-        "SELECT balance, gift_balance FROM wallets WHERE id = ? FOR UPDATE"
-    );
-    referral_credit_numeric_method!(
-        credit_referral_reward_sqlite_numeric_time,
-        sqlx::SqlitePool,
-        "SELECT balance, gift_balance FROM wallets WHERE id = ?"
-    );
-
-    async fn apply_referral_reward_reversal_numeric_time(
-        &self,
-        reward: &ReferralRewardRecord,
-        target_reversal_amount_usd: f64,
-    ) -> Result<(), DataLayerError> {
-        let Some(backends) = self.backends.as_ref() else {
-            return Ok(());
-        };
-        if let Some(backend) = backends.mysql() {
-            return apply_referral_reward_reversal_for_mysql_pool(
-                &backend.pool_clone(),
-                reward,
-                target_reversal_amount_usd,
-            )
-            .await;
-        }
-        if let Some(backend) = backends.sqlite() {
-            return apply_referral_reward_reversal_for_sqlite_pool(
-                &backend.pool_clone(),
-                reward,
-                target_reversal_amount_usd,
-            )
-            .await;
-        }
-        Ok(())
-    }
-}
-
 fn payment_order_context_from_row<R>(row: R) -> Result<ReferralPaymentOrderContext, DataLayerError>
 where
     R: Row,
@@ -3471,140 +2139,6 @@ where
         status: row_string!(row, "status"),
     })
 }
-
-macro_rules! referral_reversal_numeric_fn {
-    ($name:ident, $pool_ty:ty, $wallet_sql:expr) => {
-        async fn $name(
-            pool: &$pool_ty,
-            reward: &ReferralRewardRecord,
-            target_reversal_amount_usd: f64,
-        ) -> Result<(), DataLayerError> {
-            let mut tx = pool.begin().await.map_err(DataLayerError::sql)?;
-            sqlx::query("UPDATE referral_rewards SET updated_at = updated_at WHERE id = ?")
-                .bind(&reward.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            let reward_row = sqlx::query(
-                r#"
-SELECT reversed_amount_usd, pending_reversal_amount_usd
-FROM referral_rewards
-WHERE id = ?
-"#,
-            )
-            .bind(&reward.id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            let Some(reward_row) = reward_row else {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(());
-            };
-            let current_reversed = row_f64!(reward_row, "reversed_amount_usd");
-            let current_pending = row_f64!(reward_row, "pending_reversal_amount_usd");
-            let amount_usd =
-                (target_reversal_amount_usd - current_reversed - current_pending).max(0.0);
-            if amount_usd <= 0.0 {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(());
-            }
-            let wallet = sqlx::query($wallet_sql)
-                .bind(&reward.inviter_user_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            let Some(wallet) = wallet else {
-                tx.commit().await.map_err(DataLayerError::sql)?;
-                return Ok(());
-            };
-            let wallet_id = row_string!(wallet, "id");
-            let balance = row_f64!(wallet, "balance");
-            let gift_before = row_f64!(wallet, "gift_balance");
-            let actual_reverse = gift_before.min(amount_usd);
-            let pending_reverse = (amount_usd - actual_reverse).max(0.0);
-            let gift_after = gift_before - actual_reverse;
-            if actual_reverse > 0.0 {
-                sqlx::query(
-                    r#"
-UPDATE wallets
-SET gift_balance = ?,
-    total_adjusted = total_adjusted - ?,
-    updated_at = ?
-WHERE id = ?
-"#,
-                )
-                .bind(gift_after)
-                .bind(actual_reverse)
-                .bind(now_unix_secs() as i64)
-                .bind(&wallet_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-                sqlx::query(
-                    r#"
-INSERT INTO wallet_transactions (
-  id, wallet_id, category, reason_code, amount,
-  balance_before, balance_after,
-  recharge_balance_before, recharge_balance_after,
-  gift_balance_before, gift_balance_after,
-  link_type, link_id, description, created_at
-)
-VALUES (?, ?, 'adjust', 'referral_reward_reversal', ?, ?, ?, ?, ?, ?, ?,
-        'referral_reward', ?, '邀请返利退款冲回', ?)
-"#,
-                )
-                .bind(uuid::Uuid::new_v4().to_string())
-                .bind(&wallet_id)
-                .bind(-actual_reverse)
-                .bind(balance + gift_before)
-                .bind(balance + gift_after)
-                .bind(balance)
-                .bind(balance)
-                .bind(gift_before)
-                .bind(gift_after)
-                .bind(&reward.id)
-                .bind(now_unix_ms() as i64)
-                .execute(&mut *tx)
-                .await
-                .map_err(DataLayerError::sql)?;
-            }
-            sqlx::query(
-                r#"
-UPDATE referral_rewards
-SET reversed_amount_usd = reversed_amount_usd + ?,
-    pending_reversal_amount_usd = pending_reversal_amount_usd + ?,
-    status = CASE
-      WHEN reversed_amount_usd + ? >= amount_usd THEN 'reversed'
-      ELSE status
-    END,
-    updated_at = ?
-WHERE id = ?
-"#,
-            )
-            .bind(actual_reverse)
-            .bind(pending_reverse)
-            .bind(actual_reverse)
-            .bind(now_unix_secs() as i64)
-            .bind(&reward.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(DataLayerError::sql)?;
-            tx.commit().await.map_err(DataLayerError::sql)?;
-            Ok(())
-        }
-    };
-}
-
-referral_reversal_numeric_fn!(
-    apply_referral_reward_reversal_for_mysql_pool,
-    sqlx::MySqlPool,
-    "SELECT id, balance, gift_balance FROM wallets WHERE user_id = ? FOR UPDATE"
-);
-referral_reversal_numeric_fn!(
-    apply_referral_reward_reversal_for_sqlite_pool,
-    sqlx::SqlitePool,
-    "SELECT id, balance, gift_balance FROM wallets WHERE user_id = ?"
-);
 
 #[cfg(test)]
 mod tests {

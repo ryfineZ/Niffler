@@ -1,7 +1,5 @@
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 
 #[allow(unused_imports)]
 pub(crate) use aether_data_contracts::repository::provider_catalog::{
@@ -10,6 +8,4 @@ pub(crate) use aether_data_contracts::repository::provider_catalog::{
     StoredProviderCatalogKeyPage, StoredProviderCatalogKeyStats, StoredProviderCatalogProvider,
 };
 pub use memory::InMemoryProviderCatalogReadRepository;
-pub use mysql::MysqlProviderCatalogReadRepository;
 pub use postgres::SqlxProviderCatalogReadRepository;
-pub use sqlite::SqliteProviderCatalogReadRepository;

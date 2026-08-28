@@ -842,7 +842,6 @@ mod tests {
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data::repository::usage::InMemoryUsageReadRepository;
     use aether_data::repository::video_tasks::InMemoryVideoTaskRepository;
-    use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use aether_data_contracts::repository::candidates::{
         RequestCandidateReadRepository, RequestCandidateStatus, StoredRequestCandidate,
     };
@@ -857,6 +856,7 @@ mod tests {
         UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
     };
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::{
         build_niffler_billing_reservation_dry_run_shadow_record,
@@ -865,7 +865,7 @@ mod tests {
         submit_stream_report, submit_sync_report, GatewayStreamReportRequest,
         GatewaySyncReportRequest,
     };
-    use crate::data::{GatewayDataConfig, GatewayDataState};
+    use crate::data::GatewayDataState;
     use crate::niffler_runtime::{
         NifflerRuntimeRolloutDecision, NifflerRuntimeRolloutDecisionSource,
     };
@@ -1068,26 +1068,9 @@ mod tests {
         }
     }
 
-    async fn sqlite_niffler_state() -> AppState {
-        let mut pool = SqlPoolConfig::default();
-        pool.min_connections = 0;
-        pool.max_connections = 1;
-        let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)
-            .expect("sqlite database config should build");
-        let state = AppState::new()
-            .expect("app state should build")
-            .with_data_config(GatewayDataConfig::from_database_config(database))
-            .expect("sqlite data config should wire");
-        assert!(state
-            .run_database_migrations()
-            .await
-            .expect("sqlite migrations should run"));
-        state
-    }
-
     fn billing_reservation_record(request_id: &str) -> CreateNifflerBillingReservationRecord {
         CreateNifflerBillingReservationRecord {
-            id: format!("reservation-{request_id}"),
+            id: Uuid::new_v4().to_string(),
             request_id: request_id.to_string(),
             user_id: Some("user-finalize-tests-123".to_string()),
             api_key_id: Some("api-key-finalize-tests-123".to_string()),
@@ -1098,7 +1081,7 @@ mod tests {
             reserved_at_unix_ms: 1_700_000_000_000,
             expires_at_unix_ms: 1_700_000_060_000,
             idempotency_key: format!("reservation-idempotency-{request_id}"),
-            event_id: format!("reserved-event-{request_id}"),
+            event_id: Uuid::new_v4().to_string(),
             event_idempotency_key: format!("reserved-event-idempotency-{request_id}"),
             actor_id: Some("user-finalize-tests-123".to_string()),
         }
@@ -2546,12 +2529,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalizes_niffler_billing_reservations_by_request_outcome() {
-        let state = sqlite_niffler_state().await;
+    async fn finalizes_niffler_billing_reservations_by_request_outcome_when_url_is_set() {
+        let Some(state) = crate::data::tests::postgres_app_state_when_url_is_set(
+            "finalizes_niffler_billing_reservations_by_request_outcome",
+        )
+        .await
+        else {
+            return;
+        };
+        let suffix = Uuid::new_v4();
+        let success_request_id = format!("finalize-success-{suffix}");
+        let failed_request_id = format!("finalize-failed-{suffix}");
+        let manual_review_request_id = format!("finalize-manual-review-{suffix}");
         for request_id in [
-            "req-reservation-finalize-success-123",
-            "req-reservation-finalize-failed-123",
-            "req-reservation-finalize-manual-review-123",
+            &success_request_id,
+            &failed_request_id,
+            &manual_review_request_id,
         ] {
             state
                 .create_niffler_billing_reservation(billing_reservation_record(request_id))
@@ -2564,7 +2557,7 @@ mod tests {
         decision.enable_billing_reservation = true;
 
         let success_context = json!({
-            "request_id": "req-reservation-finalize-success-123",
+            "request_id": &success_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123",
             "provider_id": "provider-finalize-tests-123",
@@ -2598,7 +2591,7 @@ mod tests {
         .await;
 
         let failed_context = json!({
-            "request_id": "req-reservation-finalize-failed-123",
+            "request_id": &failed_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123"
         });
@@ -2613,7 +2606,7 @@ mod tests {
         .await;
 
         let missing_snapshot_context = json!({
-            "request_id": "req-reservation-finalize-manual-review-123",
+            "request_id": &manual_review_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123"
         });
@@ -2632,7 +2625,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-success-123".to_string()),
+                request_id: Some(success_request_id.clone()),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -2651,7 +2644,7 @@ mod tests {
 
         let snapshots = state
             .list_niffler_settlement_snapshots(&NifflerSettlementSnapshotListQuery {
-                request_id: Some("req-reservation-finalize-success-123".to_string()),
+                request_id: Some(success_request_id),
                 user_id: None,
                 api_key_id: None,
                 product_plan_id: None,
@@ -2667,7 +2660,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-failed-123".to_string()),
+                request_id: Some(failed_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -2692,7 +2685,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-manual-review-123".to_string()),
+                request_id: Some(manual_review_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,

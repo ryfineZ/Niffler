@@ -29,6 +29,8 @@ services:
       AETHER_GATEWAY_DATA_POSTGRES_MAX_CONNECTIONS: "10"
       AETHER_GATEWAY_DATA_POSTGRES_ACQUIRE_TIMEOUT_MS: "30000"
       AETHER_GATEWAY_DATA_POSTGRES_REQUIRE_SSL: "true"
+      # Host-network Caddy enters the container through Docker's private gateway.
+      AETHER_TRUSTED_PROXY_CIDRS: ${AETHER_TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     ports:
       - "127.0.0.1:${APP_PORT:-18084}:${APP_PORT:-18084}"
     volumes:

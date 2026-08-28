@@ -88,32 +88,6 @@ pub async fn pending_backfills(pool: &PgPool) -> Result<Vec<PendingBackfillInfo>
     pending_backfills_locked(&mut conn).await
 }
 
-pub async fn run_mysql_backfills(
-    _pool: &crate::driver::mysql::MysqlPool,
-) -> Result<(), MigrateError> {
-    info!("mysql database backfills are up to date");
-    Ok(())
-}
-
-pub async fn pending_mysql_backfills(
-    _pool: &crate::driver::mysql::MysqlPool,
-) -> Result<Vec<PendingBackfillInfo>, MigrateError> {
-    Ok(Vec::new())
-}
-
-pub async fn run_sqlite_backfills(
-    _pool: &crate::driver::sqlite::SqlitePool,
-) -> Result<(), MigrateError> {
-    info!("sqlite database backfills are up to date");
-    Ok(())
-}
-
-pub async fn pending_sqlite_backfills(
-    _pool: &crate::driver::sqlite::SqlitePool,
-) -> Result<Vec<PendingBackfillInfo>, MigrateError> {
-    Ok(Vec::new())
-}
-
 async fn run_backfills_locked(conn: &mut PgConnection) -> Result<(), MigrateError> {
     ensure_schema_backfills_table(conn).await?;
 
@@ -293,12 +267,9 @@ mod tests {
     use sqlx::{query, query_scalar, Connection, PgConnection, PgPool};
 
     use super::{
-        pending_backfills, pending_backfills_from_applied, pending_mysql_backfills,
-        pending_sqlite_backfills, run_backfills, run_mysql_backfills, run_sqlite_backfills,
-        AppliedBackfill,
+        pending_backfills, pending_backfills_from_applied, run_backfills, AppliedBackfill,
     };
     use crate::lifecycle::migrate::prepare_database_for_startup;
-    use crate::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
 
     #[test]
     fn pending_backfills_from_applied_returns_all_versions_when_none_applied() {
@@ -330,47 +301,6 @@ mod tests {
             versions,
             vec![20260422120000, 20260504120000, 20260505120000]
         );
-    }
-
-    #[tokio::test]
-    async fn mysql_backfills_are_empty_until_driver_specific_backfills_exist() {
-        let pool = sqlx::mysql::MySqlPoolOptions::new().connect_lazy_with(
-            "mysql://user:pass@localhost:3306/aether"
-                .parse()
-                .expect("mysql options should parse"),
-        );
-        assert_eq!(
-            pending_mysql_backfills(&pool)
-                .await
-                .expect("mysql pending backfills should load"),
-            Vec::new()
-        );
-        run_mysql_backfills(&pool)
-            .await
-            .expect("mysql backfills should no-op");
-    }
-
-    #[tokio::test]
-    async fn sqlite_backfills_are_empty_until_driver_specific_backfills_exist() {
-        let config = SqlDatabaseConfig::new(
-            DatabaseDriver::Sqlite,
-            "sqlite::memory:",
-            SqlPoolConfig::default(),
-        )
-        .expect("sqlite config should build");
-        let pool = crate::driver::sqlite::SqlitePoolFactory::new(config)
-            .expect("sqlite factory should build")
-            .connect_lazy()
-            .expect("sqlite pool should build");
-        assert_eq!(
-            pending_sqlite_backfills(&pool)
-                .await
-                .expect("sqlite pending backfills should load"),
-            Vec::new()
-        );
-        run_sqlite_backfills(&pool)
-            .await
-            .expect("sqlite backfills should no-op");
     }
 
     #[derive(Debug)]

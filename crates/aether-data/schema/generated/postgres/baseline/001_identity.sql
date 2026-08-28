@@ -131,6 +131,7 @@ CREATE INDEX IF NOT EXISTS audit_logs_user_id_idx ON public.audit_logs USING btr
 
 CREATE TABLE IF NOT EXISTS public.announcements (
     id character varying(64) NOT NULL,
+    portal_id character varying(32) DEFAULT 'default' NOT NULL,
     title character varying(200) NOT NULL,
     content text NOT NULL,
     type character varying(32) DEFAULT 'info' NOT NULL,
@@ -149,6 +150,7 @@ ALTER TABLE ONLY public.announcements ADD CONSTRAINT announcements_pkey PRIMARY 
 CREATE INDEX IF NOT EXISTS announcements_author_id_idx ON public.announcements USING btree (author_id);
 CREATE INDEX IF NOT EXISTS announcements_created_at_idx ON public.announcements USING btree (created_at);
 CREATE INDEX IF NOT EXISTS announcements_is_active_idx ON public.announcements USING btree (is_active);
+CREATE INDEX IF NOT EXISTS announcements_portal_active_created_idx ON public.announcements USING btree (portal_id, is_active, created_at);
 
 CREATE TABLE IF NOT EXISTS public.announcement_reads (
     id character varying(64) NOT NULL,

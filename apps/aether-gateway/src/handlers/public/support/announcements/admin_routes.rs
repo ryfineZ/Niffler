@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::control::GatewayPublicRequestContext;
 use crate::{AppState, GatewayError};
 
+use super::super::resolve_user_portal;
 use super::announcements_shared::{
     announcements_bad_request_response, announcements_not_found_response,
     build_public_announcement_payload, parse_optional_rfc3339_unix_secs,
@@ -62,6 +63,16 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
     if decision.route_family.as_deref() != Some("announcements_manage") {
         return Ok(None);
     }
+    let operator_id = decision
+        .admin_principal
+        .as_ref()
+        .map(|principal| principal.user_id.clone())
+        .ok_or_else(|| {
+            GatewayError::Internal(
+                "admin principal missing for announcement management".to_string(),
+            )
+        })?;
+    let portal = resolve_user_portal(state, &operator_id).await?;
 
     match decision.route_kind.as_deref() {
         Some("create_announcement")
@@ -86,18 +97,8 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                         )))
                     }
                 };
-            let operator_id = request_context
-                .control_decision
-                .as_ref()
-                .and_then(|decision| decision.admin_principal.as_ref())
-                .map(|principal| principal.user_id.clone())
-                .ok_or_else(|| {
-                    GatewayError::Internal(
-                        "admin principal missing for announcement create".to_string(),
-                    )
-                })?;
             let record = build_create_record(payload, operator_id)?;
-            let Some(created) = state.create_announcement(record).await? else {
+            let Some(created) = state.create_announcement(&portal.id, record).await? else {
                 return Ok(Some(build_admin_announcement_writer_unavailable_response()));
             };
             let mut response = build_public_announcement_payload(&created);
@@ -126,10 +127,12 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                     }
                 };
             let record = build_update_record(announcement_id, payload)?;
-            return Ok(Some(match state.update_announcement(record).await? {
-                Some(_) => Json(json!({ "message": "公告更新成功" })).into_response(),
-                None => build_admin_announcement_writer_unavailable_response(),
-            }));
+            return Ok(Some(
+                match state.update_announcement(&portal.id, record).await? {
+                    Some(_) => Json(json!({ "message": "公告更新成功" })).into_response(),
+                    None => announcements_not_found_response(),
+                },
+            ));
         }
         Some("delete_announcement") if request_context.request_method == http::Method::DELETE => {
             let Some(announcement_id) =
@@ -141,13 +144,15 @@ pub(crate) async fn maybe_build_local_admin_announcements_response(
                 return Ok(Some(build_admin_announcement_writer_unavailable_response()));
             }
             if state
-                .find_announcement_by_id(announcement_id)
+                .find_announcement_by_id(&portal.id, announcement_id)
                 .await?
                 .is_none()
             {
                 return Ok(Some(announcements_not_found_response()));
             }
-            let deleted = state.delete_announcement(announcement_id).await?;
+            let deleted = state
+                .delete_announcement(&portal.id, announcement_id)
+                .await?;
             return Ok(Some(if deleted {
                 Json(json!({ "message": "公告已删除" })).into_response()
             } else {

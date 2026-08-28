@@ -1,7 +1,5 @@
-use super::{
-    summarize_pool, DataBackends, MysqlBackend, PostgresBackend, SqlBackendRef, SqliteBackend,
-};
-use crate::error::{SqlResultExt, SqlxResultExt};
+use super::{summarize_pool, DataBackends, PostgresBackend, SqlBackendRef};
+use crate::error::SqlxResultExt;
 use crate::maintenance::{
     DatabaseMaintenanceSummary, DatabasePoolSummary, StatsDailyAggregationInput,
     StatsDailyAggregationSummary, StatsHourlyAggregationInput, StatsHourlyAggregationSummary,
@@ -26,7 +24,6 @@ fn maintenance_identifier(value: &str) -> Result<&str, DataLayerError> {
         )))
     }
 }
-
 impl DataBackends {
     pub fn has_database_maintenance_backend(&self) -> bool {
         self.sql_backend().is_some()
@@ -229,228 +226,95 @@ impl PostgresBackend {
     }
 }
 
-impl MysqlBackend {
-    pub async fn run_table_maintenance(
-        &self,
-        table_names: &[&str],
-    ) -> Result<DatabaseMaintenanceSummary, DataLayerError> {
-        let mut summary = DatabaseMaintenanceSummary::default();
-        for table_name in table_names {
-            let table_name = maintenance_identifier(table_name)?;
-            summary.attempted += 1;
-            let statement = format!("ANALYZE TABLE `{table_name}`");
-            if sqlx::raw_sql(&statement)
-                .execute(self.pool())
-                .await
-                .map_sql_err()
-                .is_ok()
-            {
-                summary.succeeded += 1;
-            }
-        }
-        Ok(summary)
-    }
-}
-
-impl SqliteBackend {
-    pub async fn run_table_maintenance(
-        &self,
-        table_names: &[&str],
-    ) -> Result<DatabaseMaintenanceSummary, DataLayerError> {
-        let mut summary = DatabaseMaintenanceSummary::default();
-        for table_name in table_names {
-            let table_name = maintenance_identifier(table_name)?;
-            summary.attempted += 1;
-            let statement = format!("ANALYZE \"{table_name}\"");
-            if sqlx::raw_sql(&statement)
-                .execute(self.pool())
-                .await
-                .map_sql_err()
-                .is_ok()
-            {
-                summary.succeeded += 1;
-            }
-        }
-        if summary.succeeded > 0 {
-            sqlx::raw_sql("PRAGMA optimize")
-                .execute(self.pool())
-                .await
-                .map_sql_err()?;
-        }
-        Ok(summary)
-    }
-}
-
 impl<'a> SqlBackendRef<'a> {
+    fn postgres(self) -> &'a PostgresBackend {
+        let Self::Postgres(postgres) = self;
+        postgres
+    }
+
     async fn run_database_maintenance(
         self,
         table_names: &[&str],
     ) -> Result<DatabaseMaintenanceSummary, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.run_table_maintenance(table_names).await,
-            Self::Mysql(mysql) => mysql.run_table_maintenance(table_names).await,
-            Self::Sqlite(sqlite) => sqlite.run_table_maintenance(table_names).await,
-        }
+        self.postgres().run_table_maintenance(table_names).await
     }
 
     async fn run_database_migrations(self) -> Result<bool, MigrateError> {
-        match self {
-            Self::Postgres(postgres) => {
-                crate::lifecycle::migrate::run_migrations(postgres.pool()).await?;
-                Ok(true)
-            }
-            Self::Mysql(mysql) => {
-                crate::lifecycle::migrate::run_mysql_migrations(mysql.pool()).await?;
-                Ok(true)
-            }
-            Self::Sqlite(sqlite) => {
-                crate::lifecycle::migrate::run_sqlite_migrations(sqlite.pool()).await?;
-                Ok(true)
-            }
-        }
+        crate::lifecycle::migrate::run_migrations(self.postgres().pool()).await?;
+        Ok(true)
     }
 
     async fn run_database_backfills(self) -> Result<bool, MigrateError> {
-        match self {
-            Self::Postgres(postgres) => {
-                crate::lifecycle::backfill::run_backfills(postgres.pool()).await?;
-                Ok(true)
-            }
-            Self::Mysql(mysql) => {
-                crate::lifecycle::backfill::run_mysql_backfills(mysql.pool()).await?;
-                Ok(true)
-            }
-            Self::Sqlite(sqlite) => {
-                crate::lifecycle::backfill::run_sqlite_backfills(sqlite.pool()).await?;
-                Ok(true)
-            }
-        }
+        crate::lifecycle::backfill::run_backfills(self.postgres().pool()).await?;
+        Ok(true)
     }
 
     async fn pending_database_migrations(
         self,
     ) -> Result<Option<Vec<crate::lifecycle::migrate::PendingMigrationInfo>>, MigrateError> {
-        match self {
-            Self::Postgres(postgres) => Ok(Some(
-                crate::lifecycle::migrate::pending_migrations(postgres.pool()).await?,
-            )),
-            Self::Mysql(mysql) => Ok(Some(
-                crate::lifecycle::migrate::pending_mysql_migrations(mysql.pool()).await?,
-            )),
-            Self::Sqlite(sqlite) => Ok(Some(
-                crate::lifecycle::migrate::pending_sqlite_migrations(sqlite.pool()).await?,
-            )),
-        }
+        Ok(Some(
+            crate::lifecycle::migrate::pending_migrations(self.postgres().pool()).await?,
+        ))
     }
 
     async fn prepare_database_for_startup(
         self,
     ) -> Result<Option<Vec<crate::lifecycle::migrate::PendingMigrationInfo>>, MigrateError> {
-        match self {
-            Self::Postgres(postgres) => Ok(Some(
-                crate::lifecycle::migrate::prepare_database_for_startup(postgres.pool()).await?,
-            )),
-            Self::Mysql(mysql) => Ok(Some(
-                crate::lifecycle::migrate::prepare_mysql_database_for_startup(mysql.pool()).await?,
-            )),
-            Self::Sqlite(sqlite) => Ok(Some(
-                crate::lifecycle::migrate::prepare_sqlite_database_for_startup(sqlite.pool())
-                    .await?,
-            )),
-        }
+        Ok(Some(
+            crate::lifecycle::migrate::prepare_database_for_startup(self.postgres().pool()).await?,
+        ))
     }
 
     async fn pending_database_backfills(
         self,
     ) -> Result<Option<Vec<crate::lifecycle::backfill::PendingBackfillInfo>>, MigrateError> {
-        match self {
-            Self::Postgres(postgres) => Ok(Some(
-                crate::lifecycle::backfill::pending_backfills(postgres.pool()).await?,
-            )),
-            Self::Mysql(mysql) => Ok(Some(
-                crate::lifecycle::backfill::pending_mysql_backfills(mysql.pool()).await?,
-            )),
-            Self::Sqlite(sqlite) => Ok(Some(
-                crate::lifecycle::backfill::pending_sqlite_backfills(sqlite.pool()).await?,
-            )),
-        }
+        Ok(Some(
+            crate::lifecycle::backfill::pending_backfills(self.postgres().pool()).await?,
+        ))
     }
 
     fn database_pool_summary(self) -> DatabasePoolSummary {
-        match self {
-            Self::Postgres(postgres) => summarize_pool(
-                crate::database::DatabaseDriver::Postgres,
-                usize::try_from(postgres.pool().size()).unwrap_or(usize::MAX),
-                postgres.pool().num_idle(),
-                postgres.config().max_connections,
-            ),
-            Self::Mysql(mysql) => summarize_pool(
-                crate::database::DatabaseDriver::Mysql,
-                usize::try_from(mysql.pool().size()).unwrap_or(usize::MAX),
-                mysql.pool().num_idle(),
-                mysql.config().pool.max_connections,
-            ),
-            Self::Sqlite(sqlite) => summarize_pool(
-                crate::database::DatabaseDriver::Sqlite,
-                usize::try_from(sqlite.pool().size()).unwrap_or(usize::MAX),
-                sqlite.pool().num_idle(),
-                sqlite.config().pool.max_connections,
-            ),
-        }
+        let postgres = self.postgres();
+        summarize_pool(
+            crate::database::DatabaseDriver::Postgres,
+            usize::try_from(postgres.pool().size()).unwrap_or(usize::MAX),
+            postgres.pool().num_idle(),
+            postgres.config().max_connections,
+        )
     }
 
     async fn aggregate_wallet_daily_usage(
         self,
         input: &WalletDailyUsageAggregationInput,
     ) -> Result<WalletDailyUsageAggregationResult, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.aggregate_wallet_daily_usage(input).await,
-            Self::Mysql(mysql) => mysql.aggregate_wallet_daily_usage(input).await,
-            Self::Sqlite(sqlite) => sqlite.aggregate_wallet_daily_usage(input).await,
-        }
+        self.postgres().aggregate_wallet_daily_usage(input).await
     }
 
     async fn aggregate_stats_hourly(
         self,
         input: &StatsHourlyAggregationInput,
     ) -> Result<Option<StatsHourlyAggregationSummary>, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.aggregate_stats_hourly(input).await,
-            Self::Mysql(mysql) => mysql.aggregate_stats_hourly(input).await,
-            Self::Sqlite(sqlite) => sqlite.aggregate_stats_hourly(input).await,
-        }
+        self.postgres().aggregate_stats_hourly(input).await
     }
 
     async fn aggregate_stats_daily(
         self,
         input: &StatsDailyAggregationInput,
     ) -> Result<Option<StatsDailyAggregationSummary>, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.aggregate_stats_daily(input).await,
-            Self::Mysql(mysql) => mysql.aggregate_stats_daily(input).await,
-            Self::Sqlite(sqlite) => sqlite.aggregate_stats_daily(input).await,
-        }
+        self.postgres().aggregate_stats_daily(input).await
     }
 
     async fn find_system_config_value(
         self,
         key: &str,
     ) -> Result<Option<serde_json::Value>, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.find_system_config_value(key).await,
-            Self::Mysql(mysql) => mysql.find_system_config_value(key).await,
-            Self::Sqlite(sqlite) => sqlite.find_system_config_value(key).await,
-        }
+        self.postgres().find_system_config_value(key).await
     }
 
     async fn list_system_config_entries(
         self,
     ) -> Result<Vec<StoredSystemConfigEntry>, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.list_system_config_entries().await,
-            Self::Mysql(mysql) => mysql.list_system_config_entries().await,
-            Self::Sqlite(sqlite) => sqlite.list_system_config_entries().await,
-        }
+        self.postgres().list_system_config_entries().await
     }
 
     async fn upsert_system_config_entry(
@@ -459,60 +323,32 @@ impl<'a> SqlBackendRef<'a> {
         value: &serde_json::Value,
         description: Option<&str>,
     ) -> Result<StoredSystemConfigEntry, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => {
-                postgres
-                    .upsert_system_config_entry(key, value, description)
-                    .await
-            }
-            Self::Mysql(mysql) => {
-                mysql
-                    .upsert_system_config_entry(key, value, description)
-                    .await
-            }
-            Self::Sqlite(sqlite) => {
-                sqlite
-                    .upsert_system_config_entry(key, value, description)
-                    .await
-            }
-        }
+        self.postgres()
+            .upsert_system_config_entry(key, value, description)
+            .await
     }
 
     async fn delete_system_config_value(self, key: &str) -> Result<bool, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.delete_system_config_value(key).await,
-            Self::Mysql(mysql) => mysql.delete_system_config_value(key).await,
-            Self::Sqlite(sqlite) => sqlite.delete_system_config_value(key).await,
-        }
+        self.postgres().delete_system_config_value(key).await
     }
 
     async fn read_admin_system_stats(self) -> Result<AdminSystemStats, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.read_admin_system_stats().await,
-            Self::Mysql(mysql) => mysql.read_admin_system_stats().await,
-            Self::Sqlite(sqlite) => sqlite.read_admin_system_stats().await,
-        }
+        self.postgres().read_admin_system_stats().await
     }
 
     async fn purge_admin_system_data(
         self,
         target: AdminSystemPurgeTarget,
     ) -> Result<AdminSystemPurgeSummary, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.purge_admin_system_data(target).await,
-            Self::Mysql(mysql) => mysql.purge_admin_system_data(target).await,
-            Self::Sqlite(sqlite) => sqlite.purge_admin_system_data(target).await,
-        }
+        self.postgres().purge_admin_system_data(target).await
     }
 
     async fn purge_admin_request_bodies_batch(
         self,
         batch_size: usize,
     ) -> Result<AdminSystemPurgeSummary, DataLayerError> {
-        match self {
-            Self::Postgres(postgres) => postgres.purge_admin_request_bodies_batch(batch_size).await,
-            Self::Mysql(mysql) => mysql.purge_admin_request_bodies_batch(batch_size).await,
-            Self::Sqlite(sqlite) => sqlite.purge_admin_request_bodies_batch(batch_size).await,
-        }
+        self.postgres()
+            .purge_admin_request_bodies_batch(batch_size)
+            .await
     }
 }

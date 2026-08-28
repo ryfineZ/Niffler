@@ -477,7 +477,7 @@ async fn complete_oauth_login(
         Err(err) => return redirect_oauth_error(Some(frontend_callback_url), err.code()),
     };
     let login_response =
-        build_auth_login_success_response(state, headers, client_device_id, user).await;
+        build_auth_login_success_response(state, headers, None, client_device_id, user).await;
     if login_response.status() != http::StatusCode::OK {
         return redirect_oauth_error(Some(frontend_callback_url), "provider_unavailable");
     }

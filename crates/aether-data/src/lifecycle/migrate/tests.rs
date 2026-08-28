@@ -2066,140 +2066,10 @@ fn split_baseline_sources_match_executable_migrations() {
         EMPTY_DATABASE_SNAPSHOT_SQL,
         compose_manifest("bootstrap/postgres/manifest.txt")
     );
-    assert_eq!(
-        include_str!("../../../migrations/mysql/20260403000000_baseline.sql"),
-        compose_manifest("drivers/mysql/baseline/manifest.txt")
-    );
-    assert_eq!(
-        include_str!("../../../migrations/sqlite/20260403000000_baseline.sql"),
-        compose_manifest("drivers/sqlite/baseline/manifest.txt")
-    );
 }
-
 #[test]
-fn mysql_and_sqlite_migrations_do_not_use_postgres_jsonb() {
-    let mysql_sources = super::mysql::MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.sql.as_ref());
-    let sqlite_sources = super::sqlite::MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.sql.as_ref());
-
-    for source in mysql_sources.chain(sqlite_sources) {
-        assert!(
-            !source.to_ascii_lowercase().contains("jsonb"),
-            "Postgres jsonb must stay out of MySQL/SQLite migrations"
-        );
-    }
-}
-
-#[test]
-fn mysql_and_sqlite_migrations_include_enabled_incrementals() {
-    let mysql_versions = super::mysql::MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.version)
-        .collect::<Vec<_>>();
-    let sqlite_versions = super::sqlite::MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.version)
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        mysql_versions,
-        vec![
-            20260403000000,
-            20260507120000,
-            20260508000000,
-            20260509000000,
-            20260509120000,
-            20260510120000,
-            20260511120000,
-            20260511130000,
-            20260512000000,
-            20260512090000,
-            20260512110000,
-            20260516000000,
-            20260518000000,
-            20260519000000,
-            20260519120000,
-            20260519130000,
-            20260527120000,
-            20260528120000,
-            20260530120000,
-            20260531120000,
-            20260601120000,
-            20260606120000,
-            20260607120000,
-            20260608120000,
-            20260608130000,
-            20260608140000,
-            20260608150000,
-            20260608160000,
-            20260609120000,
-            20260620090000,
-            20260622100000,
-            20260723120000,
-            20260801190000,
-            20260804120000,
-            20260809130000,
-            20260810180000,
-        ]
-    );
-    assert_eq!(
-        sqlite_versions,
-        vec![
-            20260403000000,
-            20260507120000,
-            20260508000000,
-            20260509000000,
-            20260509120000,
-            20260510120000,
-            20260511120000,
-            20260511130000,
-            20260512000000,
-            20260512090000,
-            20260512110000,
-            20260516000000,
-            20260518000000,
-            20260519000000,
-            20260519120000,
-            20260519130000,
-            20260527120000,
-            20260528120000,
-            20260530120000,
-            20260531120000,
-            20260601120000,
-            20260606120000,
-            20260607120000,
-            20260608120000,
-            20260608130000,
-            20260608140000,
-            20260608150000,
-            20260608160000,
-            20260609120000,
-            20260620090000,
-            20260622100000,
-            20260723120000,
-            20260801190000,
-            20260804120000,
-            20260809130000,
-            20260810180000,
-        ]
-    );
-}
-
-#[test]
-fn fresh_usage_schema_projects_upstream_stream_mode_for_all_drivers() {
-    let mysql_baseline = include_str!("../../../migrations/mysql/20260403000000_baseline.sql");
-    let sqlite_baseline = include_str!("../../../migrations/sqlite/20260403000000_baseline.sql");
-
+fn fresh_usage_schema_projects_upstream_stream_mode() {
     assert!(EMPTY_DATABASE_SNAPSHOT_SQL.contains("upstream_is_stream boolean"));
-    assert!(mysql_baseline.contains("upstream_is_stream TINYINT(1)"));
-    assert!(sqlite_baseline.contains("upstream_is_stream INTEGER"));
 }
 
 #[tokio::test]
@@ -2663,6 +2533,7 @@ fn embedded_postgres_manifest_contains_latest_production_migrations() {
     assert!(versions.contains(&20260723121000));
     assert!(versions.contains(&20260723122000));
     assert!(versions.contains(&20260810180000));
+    assert!(versions.contains(&20260824120000));
     assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
@@ -2747,6 +2618,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260804120000,
             20260809130000,
             20260810180000,
+            20260824120000,
         ]
     );
 }
@@ -2793,96 +2665,9 @@ fn pending_migrations_from_applied_after_empty_database_snapshot_stamp_returns_p
             20260804120000,
             20260809130000,
             20260810180000,
+            20260824120000,
         ],
         "empty database snapshot-stamped databases should run only post-snapshot incrementals on first startup"
-    );
-}
-
-#[tokio::test]
-async fn sqlite_migrations_create_core_config_tables() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("sqlite in-memory pool should connect");
-
-    let pending = super::prepare_sqlite_database_for_startup(&pool)
-        .await
-        .expect("sqlite startup preparation should inspect pending migrations");
-    assert!(
-        !pending.is_empty(),
-        "fresh sqlite databases should report pending migrations before migration"
-    );
-
-    super::run_sqlite_migrations(&pool)
-        .await
-        .expect("sqlite migrations should run");
-
-    let pending = super::prepare_sqlite_database_for_startup(&pool)
-        .await
-        .expect("sqlite startup preparation should inspect applied migrations");
-    assert!(
-        pending.is_empty(),
-        "sqlite startup preparation should report no pending migrations after migration"
-    );
-
-    for table_name in [
-        "users",
-        "user_preferences",
-        "user_sessions",
-        "api_keys",
-        "management_tokens",
-        "billing_rules",
-        "dimension_collectors",
-        "providers",
-        "provider_api_keys",
-        "provider_endpoints",
-        "models",
-        "global_models",
-        "system_configs",
-        "auth_modules",
-        "oauth_providers",
-        "proxy_nodes",
-        "wallets",
-        "wallet_transactions",
-        "wallet_daily_usage_ledgers",
-        "payment_orders",
-        "payment_callbacks",
-        "refund_requests",
-        "redeem_code_batches",
-        "redeem_codes",
-        "provider_api_key_window_usage_resets",
-    ] {
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
-        )
-        .bind(table_name)
-        .fetch_one(&pool)
-        .await
-        .expect("sqlite_master query should succeed");
-        assert_eq!(exists, 1, "missing sqlite table {table_name}");
-    }
-
-    let total_adjusted_exists: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('wallets') WHERE name = ?")
-            .bind("total_adjusted")
-            .fetch_one(&pool)
-            .await
-            .expect("sqlite wallet column query should succeed");
-    assert_eq!(
-        total_adjusted_exists, 1,
-        "missing sqlite wallets.total_adjusted"
-    );
-
-    let upstream_is_stream_exists: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('usage') WHERE name = ?")
-            .bind("upstream_is_stream")
-            .fetch_one(&pool)
-            .await
-            .expect("sqlite usage column query should succeed");
-    assert_eq!(
-        upstream_is_stream_exists, 1,
-        "missing sqlite usage.upstream_is_stream"
     );
 }
 
@@ -2967,113 +2752,6 @@ WHERE table_schema = 'public'
     assert_eq!(
         total_adjusted_exists, 1,
         "missing postgres wallets.total_adjusted"
-    );
-}
-
-#[tokio::test]
-async fn mysql_migrations_create_core_config_tables_when_url_is_set() {
-    let Some(database_url) = std::env::var("AETHER_TEST_MYSQL_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        eprintln!("skipping mysql migration smoke test because AETHER_TEST_MYSQL_URL is unset");
-        return;
-    };
-
-    let pool = sqlx::mysql::MySqlPoolOptions::new()
-        .max_connections(1)
-        .connect(&database_url)
-        .await
-        .expect("mysql test pool should connect");
-
-    super::run_mysql_migrations(&pool)
-        .await
-        .expect("mysql migrations should run");
-
-    let pending = super::prepare_mysql_database_for_startup(&pool)
-        .await
-        .expect("mysql startup preparation should inspect applied migrations");
-    assert!(
-        pending.is_empty(),
-        "mysql startup preparation should report no pending migrations after migration"
-    );
-
-    for table_name in [
-        "users",
-        "user_preferences",
-        "user_sessions",
-        "api_keys",
-        "management_tokens",
-        "billing_rules",
-        "dimension_collectors",
-        "providers",
-        "provider_api_keys",
-        "provider_endpoints",
-        "models",
-        "global_models",
-        "system_configs",
-        "auth_modules",
-        "oauth_providers",
-        "proxy_nodes",
-        "usage",
-        "usage_settlement_snapshots",
-        "provider_api_key_window_usage_resets",
-        "wallets",
-        "wallet_transactions",
-        "wallet_daily_usage_ledgers",
-        "payment_orders",
-        "payment_callbacks",
-        "refund_requests",
-        "redeem_code_batches",
-        "redeem_codes",
-    ] {
-        let exists: i64 = sqlx::query_scalar(
-            r#"
-SELECT COUNT(*)
-FROM information_schema.tables
-WHERE table_schema = DATABASE()
-  AND table_name = ?
-"#,
-        )
-        .bind(table_name)
-        .fetch_one(&pool)
-        .await
-        .expect("mysql information_schema query should succeed");
-        assert_eq!(exists, 1, "missing mysql table {table_name}");
-    }
-
-    let total_adjusted_exists: i64 = sqlx::query_scalar(
-        r#"
-SELECT COUNT(*)
-FROM information_schema.columns
-WHERE table_schema = DATABASE()
-  AND table_name = 'wallets'
-  AND column_name = 'total_adjusted'
-"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("mysql information_schema column query should succeed");
-    assert_eq!(
-        total_adjusted_exists, 1,
-        "missing mysql wallets.total_adjusted"
-    );
-
-    let upstream_is_stream_exists: i64 = sqlx::query_scalar(
-        r#"
-SELECT COUNT(*)
-FROM information_schema.columns
-WHERE table_schema = DATABASE()
-  AND table_name = 'usage'
-  AND column_name = 'upstream_is_stream'
-"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("mysql usage column query should succeed");
-    assert_eq!(
-        upstream_is_stream_exists, 1,
-        "missing mysql usage.upstream_is_stream"
     );
 }
 
@@ -3200,43 +2878,42 @@ async fn prepare_database_for_startup_bootstraps_when_only_unrelated_public_tabl
 
 #[test]
 fn billing_overdraft_root_fix_migrations_define_provider_scopes_and_admissions() {
-    let postgres = include_str!(
+    let migration = include_str!(
         "../../../migrations/postgres/20260809130000_add_billing_admissions_and_plan_providers.sql"
     );
-    let mysql = include_str!(
-        "../../../migrations/mysql/20260809130000_add_billing_admissions_and_plan_providers.sql"
-    );
-    let sqlite = include_str!(
-        "../../../migrations/sqlite/20260809130000_add_billing_admissions_and_plan_providers.sql"
-    );
 
-    for migration in [postgres, mysql, sqlite] {
-        assert!(migration.contains("billing_plan_providers"));
-        assert!(migration.contains("user_entitlement_providers"));
-        assert!(migration.contains("billing_request_admissions"));
-        assert!(migration.contains("wallet_payment_allowed"));
-        assert!(migration.contains("wallet_overage_allowed"));
-        assert!(migration.contains("entitlement_provider_scopes"));
-        assert!(!migration.contains("selected_provider_id"));
-    }
+    assert!(migration.contains("billing_plan_providers"));
+    assert!(migration.contains("user_entitlement_providers"));
+    assert!(migration.contains("billing_request_admissions"));
+    assert!(migration.contains("wallet_payment_allowed"));
+    assert!(migration.contains("wallet_overage_allowed"));
+    assert!(migration.contains("entitlement_provider_scopes"));
+    assert!(!migration.contains("selected_provider_id"));
 }
 
 #[test]
 fn plan_purchase_debt_repayment_migrations_add_a_non_null_zero_default() {
-    let postgres = include_str!(
+    let migration = include_str!(
         "../../../migrations/postgres/20260810180000_add_plan_purchase_debt_repayment.sql"
     );
-    let mysql = include_str!(
-        "../../../migrations/mysql/20260810180000_add_plan_purchase_debt_repayment.sql"
-    );
-    let sqlite = include_str!(
-        "../../../migrations/sqlite/20260810180000_add_plan_purchase_debt_repayment.sql"
+
+    assert!(migration.contains("debt_repayment_usd"));
+    assert!(migration
+        .to_ascii_uppercase()
+        .contains("NOT NULL DEFAULT 0"));
+}
+
+#[test]
+fn announcement_portal_migration_preserves_existing_rows_as_main_portal() {
+    let migration = include_str!(
+        "../../../migrations/postgres/20260824120000_scope_announcements_by_portal.sql"
     );
 
-    for migration in [postgres, mysql, sqlite] {
-        assert!(migration.contains("debt_repayment_usd"));
-        assert!(migration
-            .to_ascii_uppercase()
-            .contains("NOT NULL DEFAULT 0"));
-    }
+    assert!(migration.contains("ADD COLUMN IF NOT EXISTS portal_id"));
+    assert!(migration.contains("SET portal_id = 'default'"));
+    assert!(migration.contains("ALTER COLUMN portal_id SET NOT NULL"));
+    assert!(migration.contains("announcements_portal_active_created_idx"));
+    assert!(EMPTY_DATABASE_SNAPSHOT_SQL
+        .contains("portal_id character varying(32) DEFAULT 'default'::character varying NOT NULL"));
+    assert!(EMPTY_DATABASE_SNAPSHOT_SQL.contains("announcements_portal_active_created_idx"));
 }

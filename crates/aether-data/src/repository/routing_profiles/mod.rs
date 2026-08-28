@@ -1,7 +1,5 @@
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 
 pub(crate) use aether_data_contracts::repository::routing_profiles::{
     CreateRoutingGroupBindingRecord, CreateRoutingGroupRecord, CreateRoutingGroupVersionRecord,
@@ -11,6 +9,4 @@ pub(crate) use aether_data_contracts::repository::routing_profiles::{
     UpdateRoutingGroupRecord,
 };
 pub use memory::InMemoryRoutingGroupRepository;
-pub use mysql::MysqlRoutingGroupRepository;
 pub use postgres::PostgresRoutingGroupRepository;
-pub use sqlite::SqliteRoutingGroupRepository;

@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 
+pub const DEFAULT_ANNOUNCEMENT_PORTAL_ID: &str = "default";
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredAnnouncement {
     pub id: String,
+    pub portal_id: String,
     pub title: String,
     pub content: String,
     pub kind: String,
@@ -36,9 +39,51 @@ impl StoredAnnouncement {
         created_at_unix_ms: i64,
         updated_at_unix_secs: i64,
     ) -> Result<Self, crate::DataLayerError> {
+        Self::new_for_portal(
+            id,
+            DEFAULT_ANNOUNCEMENT_PORTAL_ID.to_string(),
+            title,
+            content,
+            kind,
+            priority,
+            is_active,
+            is_pinned,
+            requires_ack,
+            author_id,
+            author_username,
+            start_time_unix_secs,
+            end_time_unix_secs,
+            created_at_unix_ms,
+            updated_at_unix_secs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_for_portal(
+        id: String,
+        portal_id: String,
+        title: String,
+        content: String,
+        kind: String,
+        priority: i32,
+        is_active: bool,
+        is_pinned: bool,
+        requires_ack: bool,
+        author_id: Option<String>,
+        author_username: Option<String>,
+        start_time_unix_secs: Option<i64>,
+        end_time_unix_secs: Option<i64>,
+        created_at_unix_ms: i64,
+        updated_at_unix_secs: i64,
+    ) -> Result<Self, crate::DataLayerError> {
         if id.trim().is_empty() {
             return Err(crate::DataLayerError::UnexpectedValue(
                 "announcements.id is empty".to_string(),
+            ));
+        }
+        if portal_id.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "announcements.portal_id is empty".to_string(),
             ));
         }
         if title.trim().is_empty() {
@@ -59,6 +104,7 @@ impl StoredAnnouncement {
 
         Ok(Self {
             id,
+            portal_id,
             title,
             content,
             kind,
@@ -108,10 +154,28 @@ pub trait AnnouncementReadRepository: Send + Sync {
     async fn find_by_id(
         &self,
         announcement_id: &str,
+    ) -> Result<Option<StoredAnnouncement>, crate::DataLayerError> {
+        self.find_by_id_for_portal(DEFAULT_ANNOUNCEMENT_PORTAL_ID, announcement_id)
+            .await
+    }
+
+    async fn find_by_id_for_portal(
+        &self,
+        portal_id: &str,
+        announcement_id: &str,
     ) -> Result<Option<StoredAnnouncement>, crate::DataLayerError>;
 
     async fn list_announcements(
         &self,
+        query: &AnnouncementListQuery,
+    ) -> Result<StoredAnnouncementPage, crate::DataLayerError> {
+        self.list_announcements_for_portal(DEFAULT_ANNOUNCEMENT_PORTAL_ID, query)
+            .await
+    }
+
+    async fn list_announcements_for_portal(
+        &self,
+        portal_id: &str,
         query: &AnnouncementListQuery,
     ) -> Result<StoredAnnouncementPage, crate::DataLayerError>;
 
@@ -119,10 +183,40 @@ pub trait AnnouncementReadRepository: Send + Sync {
         &self,
         user_id: &str,
         now_unix_secs: u64,
+    ) -> Result<u64, crate::DataLayerError> {
+        self.count_unread_active_announcements_for_portal(
+            DEFAULT_ANNOUNCEMENT_PORTAL_ID,
+            user_id,
+            now_unix_secs,
+        )
+        .await
+    }
+
+    async fn count_unread_active_announcements_for_portal(
+        &self,
+        portal_id: &str,
+        user_id: &str,
+        now_unix_secs: u64,
     ) -> Result<u64, crate::DataLayerError>;
 
     async fn list_required_unread_active_announcements(
         &self,
+        user_id: &str,
+        now_unix_secs: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredAnnouncement>, crate::DataLayerError> {
+        self.list_required_unread_active_announcements_for_portal(
+            DEFAULT_ANNOUNCEMENT_PORTAL_ID,
+            user_id,
+            now_unix_secs,
+            limit,
+        )
+        .await
+    }
+
+    async fn list_required_unread_active_announcements_for_portal(
+        &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
         limit: usize,
@@ -225,20 +319,63 @@ pub trait AnnouncementWriteRepository: Send + Sync {
     async fn create_announcement(
         &self,
         record: CreateAnnouncementRecord,
+    ) -> Result<StoredAnnouncement, crate::DataLayerError> {
+        self.create_announcement_for_portal(DEFAULT_ANNOUNCEMENT_PORTAL_ID, record)
+            .await
+    }
+
+    async fn create_announcement_for_portal(
+        &self,
+        portal_id: &str,
+        record: CreateAnnouncementRecord,
     ) -> Result<StoredAnnouncement, crate::DataLayerError>;
 
     async fn update_announcement(
         &self,
+        record: UpdateAnnouncementRecord,
+    ) -> Result<Option<StoredAnnouncement>, crate::DataLayerError> {
+        self.update_announcement_for_portal(DEFAULT_ANNOUNCEMENT_PORTAL_ID, record)
+            .await
+    }
+
+    async fn update_announcement_for_portal(
+        &self,
+        portal_id: &str,
         record: UpdateAnnouncementRecord,
     ) -> Result<Option<StoredAnnouncement>, crate::DataLayerError>;
 
     async fn delete_announcement(
         &self,
         announcement_id: &str,
+    ) -> Result<bool, crate::DataLayerError> {
+        self.delete_announcement_for_portal(DEFAULT_ANNOUNCEMENT_PORTAL_ID, announcement_id)
+            .await
+    }
+
+    async fn delete_announcement_for_portal(
+        &self,
+        portal_id: &str,
+        announcement_id: &str,
     ) -> Result<bool, crate::DataLayerError>;
 
     async fn mark_announcement_as_read(
         &self,
+        user_id: &str,
+        announcement_id: &str,
+        read_at_unix_secs: u64,
+    ) -> Result<bool, crate::DataLayerError> {
+        self.mark_announcement_as_read_for_portal(
+            DEFAULT_ANNOUNCEMENT_PORTAL_ID,
+            user_id,
+            announcement_id,
+            read_at_unix_secs,
+        )
+        .await
+    }
+
+    async fn mark_announcement_as_read_for_portal(
+        &self,
+        portal_id: &str,
         user_id: &str,
         announcement_id: &str,
         read_at_unix_secs: u64,

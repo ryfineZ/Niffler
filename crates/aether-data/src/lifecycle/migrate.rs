@@ -13,8 +13,6 @@ use sqlx::{
 };
 use tracing::{error, info, warn};
 
-mod mysql;
-mod sqlite;
 #[cfg(test)]
 mod tests;
 
@@ -72,38 +70,6 @@ pub async fn pending_migrations(pool: &PgPool) -> Result<Vec<PendingMigrationInf
     pending_migrations_locked(&mut conn).await
 }
 
-pub async fn run_mysql_migrations(pool: &sqlx::MySqlPool) -> Result<(), MigrateError> {
-    mysql::run_migrations(pool).await
-}
-
-pub async fn pending_mysql_migrations(
-    pool: &sqlx::MySqlPool,
-) -> Result<Vec<PendingMigrationInfo>, MigrateError> {
-    mysql::pending_migrations(pool).await
-}
-
-pub async fn prepare_mysql_database_for_startup(
-    pool: &sqlx::MySqlPool,
-) -> Result<Vec<PendingMigrationInfo>, MigrateError> {
-    mysql::prepare_database_for_startup(pool).await
-}
-
-pub async fn run_sqlite_migrations(pool: &sqlx::SqlitePool) -> Result<(), MigrateError> {
-    sqlite::run_migrations(pool).await
-}
-
-pub async fn pending_sqlite_migrations(
-    pool: &sqlx::SqlitePool,
-) -> Result<Vec<PendingMigrationInfo>, MigrateError> {
-    sqlite::pending_migrations(pool).await
-}
-
-pub async fn prepare_sqlite_database_for_startup(
-    pool: &sqlx::SqlitePool,
-) -> Result<Vec<PendingMigrationInfo>, MigrateError> {
-    sqlite::prepare_database_for_startup(pool).await
-}
-
 pub async fn prepare_database_for_startup(
     pool: &PgPool,
 ) -> Result<Vec<PendingMigrationInfo>, MigrateError> {
@@ -129,15 +95,6 @@ pub async fn prepare_database_for_startup(
     }
 
     result
-}
-
-fn is_missing_sqlx_migrations_table_error(err: &MigrateError) -> bool {
-    let message = err.to_string().to_ascii_lowercase();
-    message.contains("_sqlx_migrations")
-        && (message.contains("no such table")
-            || message.contains("doesn't exist")
-            || message.contains("does not exist")
-            || message.contains("unknown table"))
 }
 
 async fn run_migrations_locked(conn: &mut PgConnection) -> Result<(), MigrateError> {
