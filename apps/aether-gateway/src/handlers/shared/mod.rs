@@ -24,11 +24,10 @@ pub(crate) use self::catalog::{
     default_provider_key_status_snapshot, effective_catalog_encryption_key,
     encrypt_catalog_secret_with_fallbacks, masked_catalog_api_key, merge_codex_metadata_bucket,
     merge_codex_response_header_metadata_bucket, parse_catalog_auth_config_json,
-    provider_catalog_key_supports_format,
-    provider_key_account_label_from_auth_config, provider_key_health_summary,
-    provider_key_scheduling_state_payload, provider_key_status_snapshot_payload,
-    sync_provider_key_oauth_status_snapshot, sync_provider_key_quota_status_snapshot,
-    take_secret_prefix, take_secret_suffix,
+    provider_catalog_key_supports_format, provider_key_account_label_from_auth_config,
+    provider_key_health_summary, provider_key_scheduling_state_payload,
+    provider_key_status_snapshot_payload, sync_provider_key_oauth_status_snapshot,
+    sync_provider_key_quota_status_snapshot, take_secret_prefix, take_secret_suffix,
 };
 pub(crate) use self::email_templates::{
     admin_email_template_definition, admin_email_template_html_key,

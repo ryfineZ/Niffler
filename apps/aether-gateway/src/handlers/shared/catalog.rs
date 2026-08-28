@@ -464,9 +464,7 @@ fn codex_quota_window_is_account_scoped(window: &Value) -> bool {
         .map(str::trim)
         .unwrap_or_default()
         .to_ascii_lowercase();
-    !code.starts_with("spark:")
-        && !code.starts_with("spark_")
-        && !code.starts_with("feature:")
+    !code.starts_with("spark:") && !code.starts_with("spark_") && !code.starts_with("feature:")
 }
 
 fn codex_quota_window_code(window: &Value) -> Option<&str> {
@@ -3499,15 +3497,16 @@ mod tests {
             .expect("merged windows should exist");
 
         assert_eq!(merged["account_id"], json!("account-1"));
-        assert_eq!(merged["rate_limit_reset_credits"]["available_count"], json!(1));
+        assert_eq!(
+            merged["rate_limit_reset_credits"]["available_count"],
+            json!(1)
+        );
         assert_eq!(merged["spark_primary_used_percent"], json!(3.0));
         assert_eq!(windows.len(), 3);
         assert!(windows.iter().any(|window| {
             window["code"] == json!("weekly") && window["used_percent"] == json!(12.0)
         }));
-        assert!(!windows
-            .iter()
-            .any(|window| window["code"] == json!("5h")));
+        assert!(!windows.iter().any(|window| window["code"] == json!("5h")));
         assert!(windows
             .iter()
             .any(|window| window["code"] == json!("spark:5h")));
