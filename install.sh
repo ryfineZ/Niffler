@@ -8,17 +8,12 @@ MODE="${AETHER_INSTALL_MODE:-compose}"
 APP_IMAGE="${AETHER_APP_IMAGE:-}"
 VERSION="${AETHER_VERSION:-}"
 APP_IMAGE_OVERRIDE_REQUESTED="false"
-VERSION_OVERRIDE_REQUESTED="false"
 ENV_SOURCE=""
 SKIP_START="false"
 
 if [[ -n "${AETHER_APP_IMAGE:-}" ]]; then
     APP_IMAGE_OVERRIDE_REQUESTED="true"
 fi
-if [[ -n "${AETHER_VERSION:-}" ]]; then
-    VERSION_OVERRIDE_REQUESTED="true"
-fi
-
 usage() {
     cat <<'EOF'
 Usage: install.sh [options]
@@ -91,8 +86,8 @@ parse_args() {
                 ;;
             --version)
                 [[ $# -ge 2 ]] || die "--version requires a tag"
+                [[ -n "$2" ]] || die "--version requires a non-empty tag"
                 VERSION="$2"
-                VERSION_OVERRIDE_REQUESTED="true"
                 shift 2
                 ;;
             --skip-start)
@@ -202,6 +197,61 @@ read_admin_password() {
     done
 }
 
+legacy_database_kind_in_file() {
+    local file="$1"
+
+    [[ -f "${file}" ]] || return 0
+    awk '
+        {
+            line = tolower($0)
+            gsub(/[[:space:]\047\042]/, "", line)
+            if (line ~ /^#/) next
+
+            if (line ~ /^-?(export)?aether_database_driver[:=]sqlite([#].*)?$/ ||
+                line ~ /^-?(export)?(aether_database_url|database_url|aether_gateway_data_postgres_url)[:=]sqlite:/) {
+                print "SQLite"
+                exit
+            }
+            if (line ~ /^-?(export)?aether_database_driver[:=](mysql|mariadb)([#].*)?$/ ||
+                line ~ /^-?(export)?(aether_database_url|database_url|aether_gateway_data_postgres_url)[:=](mysql|mariadb):/) {
+                print "MySQL/MariaDB"
+                exit
+            }
+            if (line ~ /^(mysql|mariadb):$/ ||
+                line ~ /^image:(.*\/)?(mysql|mariadb)(:|@|$)/) {
+                print "MySQL/MariaDB"
+                exit
+            }
+        }
+    ' "${file}"
+}
+
+reject_legacy_database_file() {
+    local file="$1"
+    local description="$2"
+    local database_kind
+
+    database_kind="$(legacy_database_kind_in_file "${file}")"
+    [[ -z "${database_kind}" ]] || die "legacy ${database_kind} database configuration detected in ${description} (${file}); direct upgrade is unsafe because this release only supports PostgreSQL. Migrate or export the old data to PostgreSQL before rerunning this installer. No deployment files were replaced."
+}
+
+guard_legacy_database_configuration() {
+    local existing_env="${COMPOSE_DIR}/.env"
+    local existing_compose="${COMPOSE_DIR}/docker-compose.yml"
+    local legacy_system_env="${AETHER_LEGACY_SYSTEM_ENV_PATH:-/etc/aether/aether-gateway.env}"
+
+    reject_legacy_database_file "${existing_env}" "the existing deployment environment"
+    reject_legacy_database_file "${existing_compose}" "the existing Docker Compose file"
+
+    if [[ ! -f "${existing_env}" && -n "${ENV_SOURCE}" ]]; then
+        reject_legacy_database_file "${ENV_SOURCE}" "the requested environment seed"
+    fi
+
+    if [[ -n "${AETHER_LEGACY_SYSTEM_ENV_PATH:-}" || -f /etc/systemd/system/aether-gateway.service || -f /Library/LaunchDaemons/com.aether.gateway.plist ]]; then
+        reject_legacy_database_file "${legacy_system_env}" "the legacy system-service environment"
+    fi
+}
+
 prepare_env() {
     local env_path="${COMPOSE_DIR}/.env"
     local admin_password
@@ -211,7 +261,7 @@ prepare_env() {
         if [[ "${APP_IMAGE_OVERRIDE_REQUESTED}" == "true" ]]; then
             set_env_value "${env_path}" APP_IMAGE "${APP_IMAGE}"
             info "updated APP_IMAGE in existing ${env_path}"
-        elif [[ "${VERSION_OVERRIDE_REQUESTED}" == "true" ]]; then
+        elif [[ -n "${VERSION}" ]]; then
             set_env_value "${env_path}" APP_IMAGE "ghcr.io/ryfinez/niffler:${VERSION#v}"
             info "updated APP_IMAGE in existing ${env_path}"
         fi
@@ -224,7 +274,7 @@ prepare_env() {
 
         if [[ "${APP_IMAGE_OVERRIDE_REQUESTED}" == "true" ]]; then
             set_env_value "${env_path}" APP_IMAGE "${APP_IMAGE}"
-        elif [[ "${VERSION_OVERRIDE_REQUESTED}" == "true" ]]; then
+        elif [[ -n "${VERSION}" ]]; then
             set_env_value "${env_path}" APP_IMAGE "ghcr.io/ryfinez/niffler:${VERSION#v}"
         fi
         return
@@ -269,8 +319,10 @@ main() {
             ;;
     esac
 
-    mkdir -p "${COMPOSE_DIR}" "${COMPOSE_DIR}/logs"
+    mkdir -p "${COMPOSE_DIR}"
     COMPOSE_DIR="$(cd "${COMPOSE_DIR}" && pwd)"
+    guard_legacy_database_configuration
+    mkdir -p "${COMPOSE_DIR}/logs"
 
     info "preparing PostgreSQL Docker Compose deployment in ${COMPOSE_DIR}"
     install_project_file docker-compose.yml "${COMPOSE_DIR}/docker-compose.yml" 0644

@@ -1623,7 +1623,7 @@ async fn proxy_request_inner(
         ));
     }
 
-    record_platform_pending_usage(
+    if let Err(error) = record_platform_pending_usage(
         &state,
         &request_id,
         control_decision,
@@ -1631,7 +1631,14 @@ async fn proxy_request_inner(
         &parts.headers,
         buffered_body.as_ref(),
     )
-    .await?;
+    .await
+    {
+        warn!(
+            request_id = %request_id,
+            error = ?error,
+            "failed to record pending platform usage; continuing with the AI request"
+        );
+    }
 
     if let Some(rejection) = trusted_auth_local_rejection(control_decision, &parts.headers) {
         let (reason, message) = auth_rejection_usage_reason(&rejection);

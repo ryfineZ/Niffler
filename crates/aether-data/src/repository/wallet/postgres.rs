@@ -7085,4 +7085,266 @@ INSERT INTO billing_plans (
         .expect("wallet balance should query after duplicate credit");
         assert_eq!(balance_after_duplicate, -1.0);
     }
+
+    #[tokio::test]
+    async fn postgres_plan_purchase_limits_are_enforced_when_url_is_set() {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping postgres plan purchase limit test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let key = &suffix[..20];
+        let active_user_id = format!("u-active-{key}");
+        let active_wallet_id = format!("w-active-{key}");
+        let active_plan_id = format!("p-active-{key}");
+        let other_plan_id = format!("p-other-{key}");
+        let lifetime_user_id = format!("u-life-{key}");
+        let lifetime_wallet_id = format!("w-life-{key}");
+        let lifetime_plan_id = format!("p-life-{key}");
+        let repository = SqlxWalletRepository::new(pool.clone());
+
+        for (user_id, wallet_id, label) in [
+            (&active_user_id, &active_wallet_id, "active"),
+            (&lifetime_user_id, &lifetime_wallet_id, "lifetime"),
+        ] {
+            sqlx::query("INSERT INTO users (id, username, email_verified) VALUES ($1, $2, FALSE)")
+                .bind(user_id)
+                .bind(format!("plan-limit-{label}-{suffix}"))
+                .execute(&pool)
+                .await
+                .expect("plan limit user should seed");
+            repository
+                .create_wallet_recharge_order(CreateWalletRechargeOrderInput {
+                    preferred_wallet_id: Some(wallet_id.to_string()),
+                    user_id: user_id.to_string(),
+                    amount_usd: 1.0,
+                    pay_amount: Some(1.0),
+                    pay_currency: Some("USD".to_string()),
+                    exchange_rate: Some(1.0),
+                    payment_method: "bootstrap".to_string(),
+                    payment_provider: None,
+                    payment_channel: None,
+                    gateway_order_id: format!("gw-bootstrap-{label}-{suffix}"),
+                    gateway_response: json!({ "bootstrap": true }),
+                    order_no: format!("po-bootstrap-{label}-{suffix}"),
+                    expires_at_unix_secs: 4_102_444_800,
+                })
+                .await
+                .expect("plan limit wallet should create");
+        }
+
+        let active_snapshot = json!({
+            "id": active_plan_id,
+            "title": "Active plan",
+            "duration_unit": "month",
+            "duration_value": 1,
+            "max_active_per_user": 1,
+            "purchase_limit_scope": "active_period",
+            "entitlements": [{"type": "daily_quota", "daily_quota_usd": 10.0}]
+        });
+        let other_snapshot = json!({
+            "id": other_plan_id,
+            "title": "Other plan",
+            "duration_unit": "month",
+            "duration_value": 1,
+            "max_active_per_user": 1,
+            "purchase_limit_scope": "active_period",
+            "entitlements": [{"type": "daily_quota", "daily_quota_usd": 20.0}]
+        });
+        let lifetime_snapshot = json!({
+            "id": lifetime_plan_id,
+            "title": "Lifetime plan",
+            "duration_unit": "month",
+            "duration_value": 1,
+            "max_active_per_user": 1,
+            "purchase_limit_scope": "lifetime",
+            "entitlements": [{"type": "wallet_credit", "amount_usd": 1.0, "balance_bucket": "gift"}]
+        });
+        for (plan_id, title, scope, snapshot) in [
+            (
+                &active_plan_id,
+                "Active plan",
+                "active_period",
+                &active_snapshot,
+            ),
+            (
+                &other_plan_id,
+                "Other plan",
+                "active_period",
+                &other_snapshot,
+            ),
+            (
+                &lifetime_plan_id,
+                "Lifetime plan",
+                "lifetime",
+                &lifetime_snapshot,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO billing_plans (
+  id, title, price_amount, price_currency, duration_unit, duration_value,
+  max_active_per_user, purchase_limit_scope, entitlements_json, created_at, updated_at
+) VALUES ($1, $2, 1, 'USD', 'month', 1, 1, $3, $4, NOW(), NOW())
+                "#,
+            )
+            .bind(plan_id)
+            .bind(title)
+            .bind(scope)
+            .bind(snapshot["entitlements"].clone())
+            .execute(&pool)
+            .await
+            .expect("plan should seed");
+        }
+
+        let active_order = match repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &active_user_id,
+                &active_plan_id,
+                &active_snapshot,
+                &format!("active-first-{suffix}"),
+            ))
+            .await
+            .expect("first active-period plan order should resolve")
+        {
+            CreatePlanPurchaseOrderOutcome::Created(order) => order,
+            other => panic!("first active-period plan order should be created, got {other:?}"),
+        };
+        let duplicate_pending = repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &active_user_id,
+                &active_plan_id,
+                &active_snapshot,
+                &format!("active-duplicate-{suffix}"),
+            ))
+            .await
+            .expect("duplicate pending order should resolve");
+        assert!(matches!(
+            duplicate_pending,
+            CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached
+        ));
+        let different_pending = repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &active_user_id,
+                &other_plan_id,
+                &other_snapshot,
+                &format!("other-pending-{suffix}"),
+            ))
+            .await
+            .expect("different pending plan should resolve");
+        assert!(matches!(
+            different_pending,
+            CreatePlanPurchaseOrderOutcome::OverlappingPlanExists
+        ));
+
+        let WalletMutationOutcome::Applied((_, true)) = repository
+            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
+                order_id: active_order.id,
+                gateway_order_id: Some(format!("gw-active-paid-{suffix}")),
+                pay_amount: Some(1.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                gateway_response_patch: Some(json!({ "settled": true })),
+                operator_id: Some("postgres-test".to_string()),
+            })
+            .await
+            .expect("active-period plan credit should resolve")
+        else {
+            panic!("active-period plan credit should apply");
+        };
+        let different_active = repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &active_user_id,
+                &other_plan_id,
+                &other_snapshot,
+                &format!("other-active-{suffix}"),
+            ))
+            .await
+            .expect("different active plan should resolve");
+        assert!(matches!(
+            different_active,
+            CreatePlanPurchaseOrderOutcome::OverlappingPlanExists
+        ));
+
+        let lifetime_order = match repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &lifetime_user_id,
+                &lifetime_plan_id,
+                &lifetime_snapshot,
+                &format!("lifetime-first-{suffix}"),
+            ))
+            .await
+            .expect("first lifetime plan order should resolve")
+        {
+            CreatePlanPurchaseOrderOutcome::Created(order) => order,
+            other => panic!("first lifetime plan order should be created, got {other:?}"),
+        };
+        let WalletMutationOutcome::Applied((_, true)) = repository
+            .credit_admin_payment_order(CreditAdminPaymentOrderInput {
+                order_id: lifetime_order.id,
+                gateway_order_id: Some(format!("gw-lifetime-paid-{suffix}")),
+                pay_amount: Some(1.0),
+                pay_currency: Some("USD".to_string()),
+                exchange_rate: Some(1.0),
+                gateway_response_patch: Some(json!({ "settled": true })),
+                operator_id: Some("postgres-test".to_string()),
+            })
+            .await
+            .expect("lifetime plan credit should resolve")
+        else {
+            panic!("lifetime plan credit should apply");
+        };
+        let lifetime_second = repository
+            .create_plan_purchase_order(plan_purchase_input(
+                &lifetime_user_id,
+                &lifetime_plan_id,
+                &lifetime_snapshot,
+                &format!("lifetime-second-{suffix}"),
+            ))
+            .await
+            .expect("second lifetime plan order should resolve");
+        assert!(matches!(
+            lifetime_second,
+            CreatePlanPurchaseOrderOutcome::ActivePlanLimitReached
+        ));
+    }
+
+    fn plan_purchase_input(
+        user_id: &str,
+        plan_id: &str,
+        snapshot: &serde_json::Value,
+        order_key: &str,
+    ) -> CreatePlanPurchaseOrderInput {
+        CreatePlanPurchaseOrderInput {
+            preferred_wallet_id: None,
+            user_id: user_id.to_string(),
+            amount_usd: 1.0,
+            pay_amount: 1.0,
+            pay_currency: "USD".to_string(),
+            exchange_rate: 1.0,
+            payment_method: "epay".to_string(),
+            payment_provider: Some("epay".to_string()),
+            payment_channel: Some("card".to_string()),
+            gateway_order_id: format!("gw-{order_key}"),
+            gateway_response: json!({ "checkout": true }),
+            order_no: format!("po-{order_key}"),
+            product_id: plan_id.to_string(),
+            product_snapshot: snapshot.clone(),
+            expires_at_unix_secs: 4_102_444_800,
+        }
+    }
 }

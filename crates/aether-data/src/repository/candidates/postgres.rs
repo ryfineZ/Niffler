@@ -1087,4 +1087,139 @@ mod tests {
             .await
             .expect("billing admission should clean up");
     }
+
+    #[tokio::test]
+    async fn postgres_request_retries_reuse_admission_and_reject_identity_changes_when_url_is_set()
+    {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping postgres request retry admission test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let request_id = format!("pg-retry-admission-{suffix}");
+        let global_model_id = format!("global-{suffix}");
+        let entitlement_id = format!("entitlement-{suffix}");
+        let provider_one = format!("provider-one-{suffix}");
+        let provider_two = format!("provider-two-{suffix}");
+        let repository = SqlxRequestCandidateReadRepository::new(pool.clone());
+        let candidate = |retry_index: u32, provider_id: &str| UpsertRequestCandidateRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_id: request_id.clone(),
+            user_id: None,
+            api_key_id: None,
+            username: None,
+            api_key_name: None,
+            candidate_index: 0,
+            retry_index,
+            provider_id: Some(provider_id.to_string()),
+            endpoint_id: Some(format!("endpoint-{retry_index}-{suffix}")),
+            key_id: None,
+            status: RequestCandidateStatus::Pending,
+            skip_reason: None,
+            is_cached: Some(false),
+            status_code: None,
+            error_type: None,
+            error_message: None,
+            latency_ms: None,
+            concurrent_requests: None,
+            extra_data: None,
+            required_capabilities: None,
+            created_at_unix_ms: Some(1_000_000 + u64::from(retry_index)),
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+        };
+        let admission = BillingRequestAdmissionInput {
+            request_id: request_id.clone(),
+            user_id: None,
+            api_key_id: None,
+            wallet_id: None,
+            global_model_id: Some(global_model_id.clone()),
+            funding_source: BillingFundingSource::Plan,
+            wallet_balance_at_admission: Some(1.0),
+            wallet_payment_allowed: true,
+            wallet_overage_allowed: true,
+            entitlement_ids: vec![entitlement_id.clone()],
+            entitlement_provider_scopes: std::collections::BTreeMap::from([(
+                entitlement_id,
+                vec![provider_one.clone(), provider_two.clone()],
+            )]),
+            allowed_provider_ids: vec![provider_one.clone(), provider_two.clone()],
+            schema_version: 1,
+        };
+
+        repository
+            .upsert_with_billing_admission(candidate(0, &provider_one), admission)
+            .await
+            .expect("first admission should commit");
+        let stored_admission = repository
+            .find_billing_admission(&request_id)
+            .await
+            .expect("admission lookup should succeed")
+            .expect("admission should exist");
+        repository
+            .upsert_with_billing_admission(candidate(1, &provider_two), stored_admission.to_input())
+            .await
+            .expect("retry within the provider scope should reuse admission");
+
+        let mut refreshed_snapshot = stored_admission.to_input();
+        refreshed_snapshot.funding_source = BillingFundingSource::Wallet;
+        refreshed_snapshot.wallet_balance_at_admission = Some(0.25);
+        refreshed_snapshot.wallet_overage_allowed = false;
+        refreshed_snapshot.entitlement_ids.clear();
+        refreshed_snapshot.entitlement_provider_scopes.clear();
+        refreshed_snapshot.allowed_provider_ids.clear();
+        let (_, reused_admission) = repository
+            .upsert_with_billing_admission(candidate(2, &provider_two), refreshed_snapshot)
+            .await
+            .expect("retry should preserve the first billing decision");
+        assert_eq!(reused_admission.funding_source, BillingFundingSource::Plan);
+        assert_eq!(reused_admission.wallet_balance_at_admission, Some(1.0));
+
+        assert!(repository
+            .upsert_with_billing_admission(
+                candidate(3, &format!("outside-{suffix}")),
+                stored_admission.to_input(),
+            )
+            .await
+            .is_err());
+        let mut conflicting_identity = stored_admission.to_input();
+        conflicting_identity.global_model_id = Some(format!("other-{global_model_id}"));
+        assert!(repository
+            .upsert_with_billing_admission(candidate(4, &provider_one), conflicting_identity)
+            .await
+            .is_err());
+
+        let candidate_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM request_candidates WHERE request_id = $1")
+                .bind(&request_id)
+                .fetch_one(&pool)
+                .await
+                .expect("candidate count should query");
+        assert_eq!(candidate_count, 3);
+
+        sqlx::query("DELETE FROM request_candidates WHERE request_id = $1")
+            .bind(&request_id)
+            .execute(&pool)
+            .await
+            .expect("candidates should clean up");
+        sqlx::query("DELETE FROM billing_request_admissions WHERE request_id = $1")
+            .bind(&request_id)
+            .execute(&pool)
+            .await
+            .expect("billing admission should clean up");
+    }
 }
