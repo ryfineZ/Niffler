@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const USAGE_EVENT_VERSION: u8 = 1;
+/// Marks a terminal text request whose upstream usage was unavailable and could
+/// not be estimated locally. Such records must remain pending for later repair.
+pub const USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY: &str = "usage_pending_missing_upstream";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

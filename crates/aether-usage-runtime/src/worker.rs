@@ -13,6 +13,9 @@ use crate::{
     UsageRuntimeConfig, UsageSettlementWriter,
 };
 
+const USAGE_EVENT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const USAGE_EVENT_MAX_ATTEMPTS: usize = 3;
+
 #[async_trait]
 pub trait UsageEventRecorder: Send + Sync {
     async fn record_usage_event(&self, event: &UsageEvent) -> Result<(), DataLayerError>;
@@ -35,6 +38,41 @@ pub trait UsageRecordWriter: Send + Sync {
         &self,
         record: UpsertUsageRecord,
     ) -> Result<Option<StoredRequestUsageAudit>, DataLayerError>;
+}
+
+/// Persist a usage row while tolerating a provider API key being deleted after routing.
+///
+/// Usage events are asynchronous, so a key can disappear between request routing and queue
+/// consumption. The provider and endpoint remain useful audit dimensions; only the stale foreign
+/// key reference is removed before retrying the write.
+pub async fn upsert_usage_record_with_provider_api_key_fallback<T>(
+    data: &T,
+    record: UpsertUsageRecord,
+) -> Result<Option<StoredRequestUsageAudit>, DataLayerError>
+where
+    T: UsageRecordWriter + Send + Sync + ?Sized,
+{
+    match data.upsert_usage_record(record.clone()).await {
+        Ok(stored) => Ok(stored),
+        Err(err)
+            if record.provider_api_key_id.is_some()
+                && is_missing_provider_api_key_foreign_key(&err) =>
+        {
+            let provider_api_key_id = record.provider_api_key_id.clone();
+            let mut fallback_record = record;
+            fallback_record.provider_api_key_id = None;
+            warn!(
+                event_name = "usage_provider_api_key_missing_fallback",
+                log_type = "ops",
+                request_id = %fallback_record.request_id,
+                provider_api_key_id = ?provider_api_key_id,
+                error = %err,
+                "provider API key was deleted before the usage event was consumed; preserving the usage record without the stale key reference"
+            );
+            data.upsert_usage_record(fallback_record).await
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub struct UsageDataEventRecorder<T> {
@@ -81,10 +119,22 @@ impl UsageQueueWorker {
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
-        spawn_on_usage_background_runtime(async move { self.run_forever().await })
+        spawn_on_usage_background_runtime(async move {
+            loop {
+                self.run_forever().await;
+                warn!(
+                    event_name = "usage_worker_restarting",
+                    log_type = "ops",
+                    worker_consumer = %self.consumer,
+                    worker_group = %self.config.consumer_group,
+                    "usage worker stopped; restarting"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
     }
 
-    async fn run_forever(self) {
+    async fn run_forever(&self) {
         if let Err(err) = self.queue.ensure_consumer_group().await {
             warn!(
                 event_name = "usage_worker_consumer_group_failed",
@@ -198,7 +248,40 @@ impl UsageQueueWorker {
             }
         };
 
-        self.recorder.record_usage_event(&event).await?;
+        let mut last_error = None;
+        for attempt in 1..=USAGE_EVENT_MAX_ATTEMPTS {
+            match tokio::time::timeout(
+                USAGE_EVENT_ATTEMPT_TIMEOUT,
+                self.recorder.record_usage_event(&event),
+            )
+            .await
+            {
+                Ok(Ok(())) => return Ok(true),
+                Ok(Err(err)) => last_error = Some(err.to_string()),
+                Err(_) => {
+                    last_error = Some(format!(
+                        "record_usage_event timed out after {}s",
+                        USAGE_EVENT_ATTEMPT_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+            if attempt < USAGE_EVENT_MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(250 * attempt as u64)).await;
+            }
+        }
+
+        let reason = last_error.unwrap_or_else(|| "record_usage_event failed".to_string());
+        self.queue.push_dead_letter(entry, &reason).await?;
+        warn!(
+            event_name = "usage_worker_event_dead_lettered",
+            log_type = "ops",
+            worker_consumer = %self.consumer,
+            worker_group = %self.config.consumer_group,
+            request_id = %event.request_id,
+            attempts = USAGE_EVENT_MAX_ATTEMPTS,
+            error = %reason,
+            "usage event processing failed after retries; moved to dead-letter stream"
+        );
         Ok(true)
     }
 }
@@ -219,11 +302,29 @@ where
     T: UsageRecordWriter + UsageSettlementWriter + ManualProxyNodeCounter + Send + Sync,
 {
     let record = build_upsert_usage_record_from_event(event)?;
-    if let Some(stored) = data.upsert_usage_record(record).await? {
-        settle_usage_if_needed(data, &stored).await?;
+    let stored = upsert_usage_record_with_provider_api_key_fallback(data, record).await?;
+    if let Some(stored) = stored {
+        if let Err(err) = settle_usage_if_needed(data, &stored).await {
+            warn!(
+                event_name = "usage_settlement_deferred",
+                log_type = "ops",
+                request_id = %event.request_id,
+                billing_status = ?stored.billing_status,
+                error = %err,
+                "usage record was written but settlement failed; leaving it for retry"
+            );
+        }
     }
     increment_manual_proxy_node_from_event(data, event).await;
     Ok(())
+}
+
+fn is_missing_provider_api_key_foreign_key(error: &DataLayerError) -> bool {
+    matches!(
+        error,
+        DataLayerError::Postgres(message)
+            if message.contains("usage_provider_api_key_id_fkey")
+    )
 }
 
 async fn increment_manual_proxy_node_from_event<T>(data: &T, event: &UsageEvent)
@@ -302,6 +403,8 @@ mod tests {
     struct TestUsageStore {
         records: Mutex<Vec<UpsertUsageRecord>>,
         settlements: Mutex<Vec<UsageSettlementInput>>,
+        settlement_error: bool,
+        reject_provider_api_key_fk: bool,
     }
 
     #[async_trait]
@@ -311,6 +414,11 @@ mod tests {
             record: UpsertUsageRecord,
         ) -> Result<Option<StoredRequestUsageAudit>, aether_data_contracts::DataLayerError>
         {
+            if self.reject_provider_api_key_fk && record.provider_api_key_id.is_some() {
+                return Err(aether_data_contracts::DataLayerError::Postgres(
+                    "insert or update on table \"usage\" violates foreign key constraint \"usage_provider_api_key_id_fkey\"".to_string(),
+                ));
+            }
             self.records
                 .lock()
                 .expect("records lock")
@@ -371,6 +479,11 @@ mod tests {
             &self,
             input: UsageSettlementInput,
         ) -> Result<Option<StoredUsageSettlement>, aether_data_contracts::DataLayerError> {
+            if self.settlement_error {
+                return Err(aether_data_contracts::DataLayerError::UnexpectedValue(
+                    "synthetic settlement failure".to_string(),
+                ));
+            }
             self.settlements
                 .lock()
                 .expect("settlements lock")
@@ -411,6 +524,8 @@ mod tests {
                 input_tokens: Some(4),
                 output_tokens: Some(6),
                 total_tokens: Some(10),
+                total_cost_usd: Some(1.25),
+                actual_total_cost_usd: Some(1.25),
                 response_time_ms: Some(52),
                 ..UsageEventData::default()
             },
@@ -435,5 +550,46 @@ mod tests {
         let settlements = store.settlements.lock().expect("settlements lock");
         assert_eq!(settlements.len(), 1);
         assert_eq!(settlements[0].request_id, "req-worker-123");
+    }
+
+    #[tokio::test]
+    async fn write_event_record_keeps_usage_when_settlement_fails() {
+        let store = TestUsageStore {
+            settlement_error: true,
+            ..TestUsageStore::default()
+        };
+        let event = sample_event();
+
+        write_event_record(&store, &event)
+            .await
+            .expect("settlement failure must not stop usage consumption");
+
+        assert_eq!(store.records.lock().expect("records lock").len(), 1);
+        assert!(store
+            .settlements
+            .lock()
+            .expect("settlements lock")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_event_record_recovers_when_provider_key_was_deleted() {
+        let store = TestUsageStore {
+            reject_provider_api_key_fk: true,
+            ..TestUsageStore::default()
+        };
+        let event = sample_event();
+
+        write_event_record(&store, &event)
+            .await
+            .expect("stale provider key must not block usage consumption");
+
+        let records = store.records.lock().expect("records lock");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider_api_key_id, None);
+        assert_eq!(
+            event.data.provider_api_key_id.as_deref(),
+            Some("provider-key-worker-123")
+        );
     }
 }

@@ -2331,3 +2331,60 @@
 - 当前 ColoCrossing PostgreSQL 15.18 主库 healthy、可写、重启 0；PgBouncer active，三个生产池无等待。Redis PONG/healthy、无拒绝连接或淘汰，该告警窗口日志也无 Redis 错误。因此没有证据支持新主库、Redis 或 WireGuard 持续抖动。
 - 00:47:55 恢复后监控状态一直为 `ok/0`，没有新的 Background 状态变更告警；当前五个公开健康入口最终均可返回 200。
 - 两组消息属于迁移期间真实的“容器暂时不 healthy”，但相对于计划维护是缺少维护静默产生的预期告警；不是监控脚本凭空误报，也不是后台业务任务连续失败三次。
+# 2026-09-03 用户请求未计费故障
+
+## 已确认事实
+
+- 截图中的 0/0 与 $0.00 是数据库已持久化的值，前端没有重新计算金额。
+- Pro 模型（含 gpt-5.6-sol、gpt-5.6-luna、gpt-5.6-terra 等）均有有效价格规则；直查计费上下文可命中。
+- 回归从 2026-09-01 07:00 UTC（新加坡时间 15:00）开始，多个 provider 同时出现：HTTP 200 成功请求继续增长，但响应头、终态 usage、billing snapshot 大量消失。
+- 当前请求体采集级别为 `basic`，缺少终态 usage 时无法通过请求体估算 token。
+- 受影响记录通常已被写入并结算为 0；历史记录本身没有足够信息可靠重建真实 token。
+- 后台另有持续的 `billing admission missing` 结算重试错误；Pro 截图相关记录均有 admission，属于独立缺陷。
+
+## 代码链路
+
+- `apps/aether-gateway/src/execution_runtime/stream/execution.rs` 负责流式终态观察和事件构造。
+- `crates/aether-ai-formats/src/formats/openai/chat/stream.rs` 从 OpenAI Responses 的 `response.completed.usage` 提取 usage。
+- `crates/aether-usage-runtime/src/write.rs` 在没有标准化 usage 或可解析正文时会落到 0 token。
+- `crates/aether-billing/src/event_enrichment.rs` 只在终态事件有计费上下文时补全价格；上下文缺失时当前实现静默返回。
+- `crates/aether-usage-runtime/src/record.rs` 终态记录默认 pending，随后可被 settle；缺少 usage 保护时会把 0 元当作已结算结果。
+
+## 当前判断
+
+根因已确认在应用侧的 usage 队列消费与 stale cleanup 恢复逻辑：数据库连接池异常使终态事件消费停止，随后旧恢复 SQL 将没有 usage/价格快照的 streaming 记录直接标记为 settled。供应商价格表和计费上下文均存在，不是供应商统一缺少计费能力。
+
+- 追加日志核对显示 `stream_pump_body_read_error` 在 07:03、07:08、07:26、07:32、07:39、07:43、07:48、08:14、08:38、09:38 UTC 持续出现，均为 HTTP 200 的 HTTP/2 internal stream error。它能解释一部分中断流，但无法解释其余大量成功 200 请求同样为 0/0。
+- 未发现 09-01 07:00 UTC 附近的应用部署或相关源码变更；当前镜像与 HEAD 的流式/计费实现一致。因此回归更像运行时数据路径或条件分支触发，而非价格迁移或同日发布。
+
+## 2026-09-03 修复后代码事实
+
+- 旧链路有两个连续缺陷：终态事件没有 usage 时，事件字段保持空值；更关键的是 stale cleanup 恢复 SQL 在候选成功后无条件把 streaming 记录写成 `completed + settled` 并创建快照。两条路径都没有检查真实用量或价格是否已知，因此把未知用量当作 0 元完成结算。
+- 现已增加受控元数据 `usage_pending_missing_upstream=true`。仅对成功文本生成接口、且没有任何正用量/估算的终态设置；已有真实 usage 或本地估算的请求不受影响，图片/嵌入等接口不套用该标记。
+- 结算层现在识别该标记并保持 `billing_status=pending`；即使标记因旧事件缺失，只要成本为 0 且没有 billing/settlement snapshot，也会跳过结算，防止“未定价”被当成免费。
+- 该修复不凭空重算历史 token，也不扩大正文留存；已结算的历史 0 元记录仍需要后续依据外部账单或补采集数据人工/专项回填。
+
+## 2026-09-03 根因复核与队列修复
+
+- 用户指出“几乎所有供应商同时异常”后，已纠正此前错误的供应商侧归因。生产 Redis `usage:events` 的
+  `usage_consumers` 消费组 `last-delivered-id=1788245793889-0`，对应 **2026-09-01 06:56:33 UTC / 新加坡 14:56:33**；
+  该组之后没有继续消费，当前仍有 39 条 pending，消费者 `3e00c940dc8b:1` 已空闲约 37 小时。
+- 同一时间点后台日志出现 PostgreSQL `pool timed out while waiting for an open connection`；usage worker 原实现对数据库写入/结算
+  没有单条超时，任务监督器也不会重启已退出或卡住的 worker。前台继续返回 200 并写入 streaming 记录，终态 usage 事件留在 Redis。
+- `pending_cleanup` 后续根据 `request_candidates.status=success` 和 `stream_completed=true` 执行
+  `UPDATE_RECOVERED_STALE_USAGE_SQL`，原 SQL 无条件把没有 usage/价格快照的 streaming 记录改成 `completed + settled`，并插入 settled 快照；
+  这就是截图里官方 $0.00 的直接落库路径。样本 `f6cdae5f-2554-4afa-a2d4-136dae416a92` 的记录创建于 06:58，
+  07:08:45 被恢复 SQL 结算，token/cost 全为 0 且没有 billing/settlement snapshot。
+- 故障明确影响的外部供应商为：`Pro号池`（`https://chatgpt.com/backend-api/codex`，主要 `openai:responses`）、
+  `Kiro(skyhope)0.125`（`https://us-ai3.twskyhope.top`，主要 `claude:messages`）和
+  `Kiro(xiayu)`（`https://subapi.11451495.xyz`，主要 `claude:messages`）。2026-09-01 06:57–09:00 UTC 三者分别有
+  6,562/0、123/0、120/0 条“正用量”记录；`Niffler 平台`是内部平台处理请求，按设计不计入用户账单；`CC-Max(skyhope) 1.2` 在该时段没有新请求。
+- 已将恢复 SQL 改为：只有已有 settled 快照的记录保持 settled；没有快照的恢复记录改为 `completed + billing_status=pending`，不创建结算快照，交给正常补量/结算流程。
+- 已将 worker 改为：单事件最多 3 次、每次 10 秒处理超时，失败事件先写死信再 ack；worker 主循环停止后自动重启；usage upsert 成功但结算失败时不阻塞队列，保留 pending 供重试。
+
+## 2026-09-03 usage 队列卡死根因复核
+
+- 已从 PostgreSQL 真实日志确认，2026-09-01 05:30–06:56 UTC 每约 30–40 秒重复同一外键错误：usage 事件引用的 `provider_api_key_id=1769eaff-bdb7-48aa-9a4c-f26a2a44ae8a` 已不在 `provider_api_keys` 表中。
+- 该 key 属于 Pro号池的 `openai:responses` endpoint；`request_candidates` 仍有 42,115 条历史记录引用它，最后一条在 2026-08-25 09:48:27，紧接着 Redis pending entry `1787651309391-0`，证明是删除 key 后遗留在 usage stream 的失效事件。
+- 旧 worker 遇到该事件时整批返回错误，stale reclaim 又反复领取同一 pending entry；因此一个供应商的失效引用阻塞了所有共用 `usage:events` 的供应商。2026-09-01 06:56 UTC 的连接池超时是放大因素，不是首个触发点。
+- Redis stream 只有 `MAXLEN ~ 2000`，故障持续期间更早的 pending payload 已被裁剪，不能依赖 Redis 恢复全部历史 usage；这部分需要依据数据库、上游账单或审计数据另行回填。

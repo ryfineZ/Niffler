@@ -20,6 +20,7 @@ use crate::request_metadata::{
 use crate::{
     map_usage_from_response, GatewayStreamReportRequest, GatewaySyncReportRequest,
     StandardizedUsage, UsageEvent, UsageEventData, UsageEventType,
+    USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,6 +631,7 @@ fn build_terminal_usage_event_from_seed_impl(
     if matches!(event_type, UsageEventType::Completed) {
         apply_completed_image_usage_estimate(&mut data);
         apply_completed_text_missing_usage_estimate(&mut data, request_usage_estimate.as_ref());
+        mark_completed_text_usage_pending_if_unavailable(&mut data);
     }
 
     if matches!(event_type, UsageEventType::Cancelled) {
@@ -713,7 +715,11 @@ pub fn build_terminal_usage_context_seed(
             client_response_body_ref: context_string(context, "client_response_body_ref"),
         },
         body_states: request_capture.body_states,
-        request_usage_estimate: estimate_plan_request_usage(plan),
+        request_usage_estimate: estimate_plan_request_usage(plan).or_else(|| {
+            context_value(context, "original_request_body")
+                .filter(|value| !value.is_null())
+                .and_then(|value| estimate_request_usage(&value))
+        }),
         request_metadata: merge_usage_request_metadata_owned(
             build_usage_request_metadata_seed(plan, context),
             build_plan_body_capture_metadata(plan.body.body_bytes_b64.as_deref()),
@@ -2477,6 +2483,9 @@ fn apply_completed_text_missing_usage_estimate(
 }
 
 fn usage_event_data_allows_missing_usage_text_estimate(data: &UsageEventData) -> bool {
+    if usage_event_data_is_image(data) {
+        return false;
+    }
     [
         data.endpoint_kind.as_deref(),
         data.provider_endpoint_kind.as_deref(),
@@ -2517,6 +2526,24 @@ fn mark_usage_estimated_due_to_missing_upstream_usage(data: &mut UsageEventData)
     };
     metadata.insert(
         "usage_estimated_due_to_missing_upstream_usage".to_string(),
+        Value::Bool(true),
+    );
+    data.request_metadata = Some(Value::Object(metadata));
+}
+
+fn mark_completed_text_usage_pending_if_unavailable(data: &mut UsageEventData) {
+    if !usage_event_data_allows_missing_usage_text_estimate(data)
+        || usage_event_data_has_positive_usage(data)
+    {
+        return;
+    }
+
+    let mut metadata = match data.request_metadata.take() {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    };
+    metadata.insert(
+        USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY.to_string(),
         Value::Bool(true),
     );
     data.request_metadata = Some(Value::Object(metadata));
@@ -3195,7 +3222,7 @@ mod tests {
     };
     use crate::{
         build_upsert_usage_record_from_event, GatewayStreamReportRequest, GatewaySyncReportRequest,
-        UsageEvent, UsageEventData, UsageEventType,
+        UsageEvent, UsageEventData, UsageEventType, USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY,
     };
     use aether_contracts::{
         ExecutionPlan, ExecutionStreamTerminalSummary, RequestBody, StandardizedUsage,
@@ -4740,6 +4767,83 @@ mod tests {
     }
 
     #[test]
+    fn completed_text_usage_without_usage_or_estimate_stays_pending() {
+        let plan = ExecutionPlan {
+            request_id: "req-stream-missing-usage-pending-1".to_string(),
+            candidate_id: None,
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-openai-usage-local-1".to_string(),
+            endpoint_id: "endpoint-openai-usage-local-1".to_string(),
+            key_id: "key-openai-usage-local-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/responses".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody {
+                json_body: None,
+                body_bytes_b64: None,
+                body_ref: Some(
+                    "usage://request/req-stream-missing-usage-pending-1/body".to_string(),
+                ),
+            },
+            stream: true,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "openai:responses".to_string(),
+            model_name: Some("gpt-5.6-sol".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewayStreamReportRequest {
+            trace_id: "trace-stream-missing-usage-pending-1".to_string(),
+            report_kind: "openai_responses_stream_success".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "openai:responses",
+                "provider_api_format": "openai:responses",
+            })),
+            status_code: 200,
+            headers: BTreeMap::new(),
+            provider_body_base64: None,
+            provider_body_state: Some(UsageBodyCaptureState::Disabled),
+            client_body_base64: None,
+            client_body_state: Some(UsageBodyCaptureState::Disabled),
+            terminal_summary: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_stream_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("usage event should build");
+
+        assert_eq!(event.data.input_tokens, None);
+        assert_eq!(event.data.output_tokens, None);
+        assert_eq!(event.data.total_tokens, None);
+        assert_eq!(
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get(USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let record =
+            build_upsert_usage_record_from_event(&event).expect("usage record should build");
+        assert_eq!(record.billing_status, "pending");
+        assert_eq!(record.total_tokens, None);
+        assert_eq!(
+            record
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get(USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn completed_embedding_usage_does_not_use_text_missing_usage_estimate() {
         let request_body = json!({
             "model": "text-embedding-3-small",
@@ -5151,6 +5255,48 @@ mod tests {
             .request_metadata
             .as_ref()
             .is_none_or(|value| { value.get("provider_request_body_ref").is_none() }));
+    }
+
+    #[test]
+    fn context_seed_estimates_original_body_when_plan_body_is_ref_backed() {
+        let plan = ExecutionPlan {
+            request_id: "req-context-estimate-1".to_string(),
+            candidate_id: None,
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/responses".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody {
+                json_body: None,
+                body_bytes_b64: None,
+                body_ref: Some("blob://request-body-1".to_string()),
+            },
+            stream: true,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "openai:responses".to_string(),
+            model_name: Some("gpt-5.4".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let seed = build_terminal_usage_context_seed(
+            &plan,
+            Some(&json!({
+                "original_request_body": {
+                    "model": "gpt-5.4",
+                    "input": "estimate this request body"
+                }
+            })),
+        );
+
+        assert!(seed
+            .request_usage_estimate
+            .is_some_and(|estimate| estimate.input_tokens > 0));
     }
 
     #[test]

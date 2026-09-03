@@ -121,6 +121,29 @@ use crate::{
     AppState, GatewayError, GEMINI_FILES_DOWNLOAD_PLAN_KIND, OPENAI_VIDEO_CONTENT_PLAN_KIND,
 };
 
+fn merge_stream_usage_report_context(context: Option<Value>, plan: &ExecutionPlan) -> Value {
+    let mut context = context.unwrap_or_else(|| json!({}));
+    if !context.is_object() {
+        context = json!({});
+    }
+    let object = context
+        .as_object_mut()
+        .expect("stream usage report context must be an object");
+    for (key, value) in [
+        ("provider_api_format", plan.provider_api_format.as_str()),
+        ("client_api_format", plan.client_api_format.as_str()),
+    ] {
+        let missing = object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty());
+        if missing && !value.trim().is_empty() {
+            object.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    context
+}
+
 const OPENAI_IMAGE_STREAM_PLAN_KIND: &str = "openai_image_stream";
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const SSE_KEEPALIVE_BYTES: &[u8] = b": aether-keepalive\n\n";
@@ -3048,18 +3071,15 @@ async fn execute_stream_from_frame_stream(
         } else {
             maybe_build_provider_private_stream_normalizer(report_context_owned.as_ref())
         };
+        let stream_usage_report_context = Some(merge_stream_usage_report_context(
+            normalized_stream_report_context_owned,
+            &plan_for_report,
+        ));
         let mut local_stream_rewriter = if sync_json_stream_bridge_active_for_report {
             None
         } else {
-            maybe_build_stream_response_rewriter(normalized_stream_report_context_owned.as_ref())
+            maybe_build_stream_response_rewriter(stream_usage_report_context.as_ref())
         };
-        let stream_usage_report_context =
-            normalized_stream_report_context_owned.clone().or_else(|| {
-                Some(serde_json::json!({
-                    "provider_api_format": plan_for_report.provider_api_format.as_str(),
-                    "client_api_format": plan_for_report.client_api_format.as_str(),
-                }))
-            });
         let mut stream_usage_observer = stream_usage_report_context
             .as_ref()
             .filter(|_| !sync_json_stream_bridge_active_for_report)
@@ -4149,9 +4169,9 @@ mod tests {
         encode_openai_responses_failed_event, execute_execution_runtime_stream,
         execute_stream_from_frame_stream, execution_frame_max_bytes, extend_bounded,
         maybe_apply_kiro_prompt_cache_usage_to_stream_summary, merge_stream_terminal_summary,
-        should_limit_direct_finalize_prefetch, should_probe_success_failover_before_stream,
-        should_skip_direct_finalize_prefetch, OpenAiResponsesImageTerminalTracker,
-        StreamObjectCapture,
+        merge_stream_usage_report_context, should_limit_direct_finalize_prefetch,
+        should_probe_success_failover_before_stream, should_skip_direct_finalize_prefetch,
+        OpenAiResponsesImageTerminalTracker, StreamObjectCapture,
     };
     use crate::control::GatewayControlDecision;
     use crate::request_candidate_runtime::flush_request_candidate_status_writes;
@@ -4181,6 +4201,21 @@ mod tests {
         assert_eq!(buffer, b"1234567");
         extend_bounded(&mut buffer, b"ignored", 7);
         assert_eq!(buffer, b"1234567");
+    }
+
+    #[test]
+    fn stream_usage_report_context_falls_back_to_execution_plan_formats() {
+        let plan = openai_responses_stream_failover_test_plan("req-context-fallback-1");
+        let context = merge_stream_usage_report_context(Some(json!({})), &plan);
+
+        assert_eq!(
+            context.get("provider_api_format").and_then(Value::as_str),
+            Some("openai:responses")
+        );
+        assert_eq!(
+            context.get("client_api_format").and_then(Value::as_str),
+            Some("openai:responses")
+        );
     }
 
     fn test_decision() -> GatewayControlDecision {

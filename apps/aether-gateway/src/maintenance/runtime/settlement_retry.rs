@@ -1,5 +1,5 @@
 use aether_data_contracts::DataLayerError;
-use aether_usage_runtime::settle_usage_if_needed;
+use aether_usage_runtime::{settle_usage_if_needed, should_attempt_usage_settlement};
 use tracing::error;
 
 use crate::data::GatewayDataState;
@@ -24,6 +24,9 @@ pub(super) async fn retry_pending_usage_settlements_once(
         .await?;
     let mut summary = PendingSettlementRetrySummary::default();
     for usage in pending {
+        if !should_attempt_usage_settlement(&usage) {
+            continue;
+        }
         match settle_usage_if_needed(data, &usage).await {
             Ok(()) => summary.settled += 1,
             Err(err) => {

@@ -1768,28 +1768,29 @@ WHERE request_id = ANY($1)
 "#;
 
 const UPDATE_RECOVERED_STALE_USAGE_SQL: &str = r#"
-WITH updated_usage AS (
-    UPDATE usage
-    SET status = 'completed',
-        status_code = 200,
-        error_message = NULL,
-        billing_status = 'settled',
-        finalized_at = $2
-    WHERE request_id = $1
-    RETURNING request_id
-)
-INSERT INTO usage_settlement_snapshots (
-    request_id,
-    billing_status,
-    finalized_at
-)
-SELECT request_id, 'settled', $2
-FROM updated_usage
-ON CONFLICT (request_id)
-DO UPDATE SET
-    billing_status = EXCLUDED.billing_status,
-    finalized_at = EXCLUDED.finalized_at,
-    updated_at = NOW()
+UPDATE usage
+SET status = 'completed',
+    status_code = 200,
+    error_message = NULL,
+    billing_status = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM usage_settlement_snapshots
+            WHERE usage_settlement_snapshots.request_id = usage.request_id
+              AND usage_settlement_snapshots.billing_status = 'settled'
+        ) THEN 'settled'
+        ELSE 'pending'
+    END,
+    finalized_at = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM usage_settlement_snapshots
+            WHERE usage_settlement_snapshots.request_id = usage.request_id
+              AND usage_settlement_snapshots.billing_status = 'settled'
+        ) THEN $2
+        ELSE NULL
+    END
+WHERE request_id = $1
 "#;
 
 const UPDATE_FAILED_STALE_USAGE_SQL: &str = r#"

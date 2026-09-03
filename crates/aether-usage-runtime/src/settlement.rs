@@ -3,6 +3,8 @@ use aether_data_contracts::repository::usage::StoredRequestUsageAudit;
 use aether_data_contracts::{DataLayerError, DataLayerError::InvalidInput};
 use async_trait::async_trait;
 
+use crate::USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY;
+
 #[async_trait]
 pub trait UsageSettlementWriter: Send + Sync {
     fn has_usage_settlement_writer(&self) -> bool;
@@ -17,10 +19,7 @@ pub async fn settle_usage_if_needed(
     writer: &dyn UsageSettlementWriter,
     usage: &StoredRequestUsageAudit,
 ) -> Result<(), DataLayerError> {
-    if !writer.has_usage_settlement_writer() || usage.billing_status != "pending" {
-        return Ok(());
-    }
-    if !matches!(usage.status.as_str(), "completed" | "failed" | "cancelled") {
+    if !writer.has_usage_settlement_writer() || !should_attempt_usage_settlement(usage) {
         return Ok(());
     }
 
@@ -47,6 +46,27 @@ pub async fn settle_usage_if_needed(
     Ok(())
 }
 
+pub fn should_attempt_usage_settlement(usage: &StoredRequestUsageAudit) -> bool {
+    if usage.billing_status != "pending"
+        || !matches!(usage.status.as_str(), "completed" | "failed" | "cancelled")
+    {
+        return false;
+    }
+    if usage
+        .request_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if usage.total_cost_usd == 0.0 && !usage_has_billing_snapshot(usage) {
+        return false;
+    }
+    true
+}
+
 fn usage_api_key_is_standalone(usage: &StoredRequestUsageAudit) -> bool {
     usage
         .request_metadata
@@ -63,6 +83,26 @@ fn usage_base_cost_usd(usage: &StoredRequestUsageAudit) -> f64 {
         .and_then(|metadata| metadata.get("base_cost_usd"))
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(usage.total_cost_usd)
+}
+
+fn usage_has_billing_snapshot(usage: &StoredRequestUsageAudit) -> bool {
+    let Some(metadata) = usage
+        .request_metadata
+        .as_ref()
+        .and_then(|value| value.as_object())
+    else {
+        return false;
+    };
+    metadata
+        .get("billing_snapshot")
+        .is_some_and(|value| !value.is_null())
+        || metadata
+            .get("settlement_snapshot")
+            .is_some_and(|value| !value.is_null())
+        || metadata
+            .get("is_free_tier")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
 }
 
 fn finite_cost(value: f64) -> Result<f64, DataLayerError> {
@@ -199,6 +239,46 @@ mod tests {
         assert_eq!(inputs[0].billing_status, "pending");
         assert_eq!(inputs[0].total_cost_usd, 1.25);
         assert_eq!(inputs[0].actual_total_cost_usd, 0.75);
+    }
+
+    #[tokio::test]
+    async fn skips_settlement_when_upstream_usage_is_pending() {
+        let writer = TestSettlementWriter {
+            has_writer: true,
+            ..Default::default()
+        };
+        let mut usage = sample_usage();
+        usage.total_cost_usd = 0.0;
+        usage.actual_total_cost_usd = 0.0;
+        usage.request_metadata = Some(json!({
+            crate::USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY: true
+        }));
+
+        settle_usage_if_needed(&writer, &usage)
+            .await
+            .expect("pending usage should not fail settlement");
+
+        let inputs = writer.inputs.lock().expect("settlement inputs lock");
+        assert!(inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_zero_cost_settlement_without_pricing_snapshot() {
+        let writer = TestSettlementWriter {
+            has_writer: true,
+            ..Default::default()
+        };
+        let mut usage = sample_usage();
+        usage.total_cost_usd = 0.0;
+        usage.actual_total_cost_usd = 0.0;
+        usage.request_metadata = Some(json!({"trace_id": "trace-1"}));
+
+        settle_usage_if_needed(&writer, &usage)
+            .await
+            .expect("unpriced usage should not fail settlement");
+
+        let inputs = writer.inputs.lock().expect("settlement inputs lock");
+        assert!(inputs.is_empty());
     }
 
     #[tokio::test]

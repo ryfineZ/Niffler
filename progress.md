@@ -1648,3 +1648,26 @@
 - 已独立核对宿主资源、内核和 Compose 标签：无 OOM/I/O/内存压力，第二轮是 `.env.background` 更新后的计划重建；另记录既存结算重试错误为独立问题。
 - 已核对新主库、PgBouncer 三个池和 Redis 当前健康，告警窗口无依赖错误；恢复后监控未再触发 Background 告警。
 - 已完成只读诊断：两轮告警均由数据库迁移期间计划停启、Compose 重建及旧 PgBouncer 会话锁导致的初始化等待触发；本轮没有修改或重启生产服务。
+# 2026-09-03 用户请求未计费故障修复
+
+- 已从生产数据库确认：受影响请求自身为 0/0 token、0 成本，前端不是计算错误。
+- 已确认价格规则存在，且回归跨多个 provider；UTC 07:00 后成功 200 仍在，但响应头、usage 和计费快照同步减少。
+- 已确认 body capture 为 basic，缺少终态 usage 时无法安全回填；后台 admission 缺失告警与截图中的已结算 0 元记录分开处理。
+- 诊断阶段未修改生产状态；现已完成代码修复与回归测试，待全量检查后再决定是否发布。
+
+## 2026-09-03 用户请求未计费修复实现
+
+- 已先更新 `docs/architecture/2026-06-29-usage-missing-upstream-usage-billing.md`：成功文本请求没有真实或估算 usage 时进入待补用量状态，不能按 0 元结算；历史 0 元记录不自动回填。
+- 已在 usage event 中加入 `usage_pending_missing_upstream` 受控元数据，并纳入元数据白名单，保证队列和数据库写入后仍可识别。
+- 已修复终态构造：成功文本请求没有正用量、也无法估算时打待补用量标记；图片请求不再误套用文本缺失用量估算。
+- 已修复结算保护：带待补用量标记的终态不调用钱包结算；没有价格快照且成本为 0 的记录也不当作已定价请求结算。新增运行日志 `usage_terminal_missing_upstream_usage`。
+- 已新增“无 usage/无估算保持 pending”和“待补用量跳过结算”等回归测试；`cargo test -p aether-usage-runtime` 126 项全部通过，网关流式执行定向测试 43 项全部通过。
+- 当前仍未发布生产、未修改历史数据库记录；全量静态检查已完成，等待发布决策和历史挂账专项处理。
+- 全工作区 `cargo check --workspace` 通过；usage runtime `cargo clippy -p aether-usage-runtime --all-targets -- -D warnings` 通过；`git diff --check` 通过。
+- 本轮没有提交、部署或修改线上数据库；生产发布仍需单独走发布流程，历史 0 元记录不自动回填。
+- 根因复核补充：首个卡点不是供应商价格或“统一缺 usage”，而是 Redis 中一条引用已删除 Pro 号池 key 的旧 usage 事件。PostgreSQL 从 05:30 到 06:56 UTC 持续报同一 `usage_provider_api_key_id_fkey`，旧 worker 反复 reclaim 该 poison event 并阻塞共享队列；06:56 的连接池超时属于放大因素。
+- Redis `usage:events` 使用 `MAXLEN ~ 2000`，故障期间更早的 pending payload 已被裁剪。代码修复需同时处理失效 provider key、单事件失败隔离和 worker 自恢复，历史 0 元记录仍需依据外部账单专项回填。
+- 已纠正此前错误的供应商侧判断：Redis `usage_consumers` 在 2026-09-01 06:56:33 UTC 停止推进，39 条事件仍 pending；同秒后台出现 PostgreSQL 连接池超时。队列 worker 没有单事件超时，也不会自恢复，导致终态 usage 无人消费。
+- 已确认 0 元并非仅“usage 解析失败”：`pending_cleanup` 的旧恢复 SQL 在候选请求成功后无条件把缺少终态 usage 的 streaming 记录设为 `completed + settled`，并插入 settled 快照。样本请求在 06:58 创建、07:08:45 被该 SQL 结算，0 token/0 成本且无计费快照。
+- 已明确受影响供应商：Pro号池、Kiro(skyhope)0.125、Kiro(xiayu)；Niffler 平台请求按设计不计费，CC-Max(skyhope) 该时段无新请求。
+- 已修复恢复 SQL、usage worker 自恢复/超时/死信、结算失败隔离，并补充流式格式兜底及缺失 usage 待结算保护；`cargo test -p aether-data` 427/428 通过，唯一失败为既有 PostgreSQL 测试夹具缺少 `provider_api_keys.total_tokens` 默认值，与本改动无关。
