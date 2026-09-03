@@ -2364,6 +2364,7 @@ ORDER BY request_count DESC, "usage".provider_name ASC
         let sql = FIND_BY_ID_SQL.replacen(
             "WHERE \"usage\".id = $1\nLIMIT 1",
             r#"WHERE "usage".status IN ('completed', 'failed', 'cancelled')
+  AND "usage".billing_status = 'pending'
   AND COALESCE(usage_settlement_snapshots.billing_status, "usage".billing_status) = 'pending'
   AND (
     COALESCE(
