@@ -1671,3 +1671,28 @@
 - 已确认 0 元并非仅“usage 解析失败”：`pending_cleanup` 的旧恢复 SQL 在候选请求成功后无条件把缺少终态 usage 的 streaming 记录设为 `completed + settled`，并插入 settled 快照。样本请求在 06:58 创建、07:08:45 被该 SQL 结算，0 token/0 成本且无计费快照。
 - 已明确受影响供应商：Pro号池、Kiro(skyhope)0.125、Kiro(xiayu)；Niffler 平台请求按设计不计费，CC-Max(skyhope) 该时段无新请求。
 - 已修复恢复 SQL、usage worker 自恢复/超时/死信、结算失败隔离，并补充流式格式兜底及缺失 usage 待结算保护；`cargo test -p aether-data` 427/428 通过，唯一失败为既有 PostgreSQL 测试夹具缺少 `provider_api_keys.total_tokens` 默认值，与本改动无关。
+
+## 2026-09-03 历史账务恢复追加进度
+- 新增 `docs/operations/2026-09-03-missing-usage-recovery.md`、`scripts/oneoff/recover_missing_usage_billing.py` 和 recovery cases 数据迁移；尚未对生产执行迁移或扣款。
+- 脚本默认只读 dry-run；apply 需要显式 batch id 确认，并把可估算记录恢复为 pending，交给现有 settlement retry 处理钱包/套餐语义。
+- 只读查询曾使用错误列名 `body_kind`，已改为 `body_field`；没有造成写入。
+- 脚本 dry-run SQL 已在生产只读执行成功；apply SQL 使用完整事务做过 rollback 验证：创建表、插入 82,249 个 case、更新 82,249 条 snapshot/usage 均成功后回滚，未改变生产数据。
+- 已在生产创建幂等的 `usage_billing_recovery_cases` 表，并以批次 `historical-p50-v1-20260903T070814Z` 写入 82,249 条恢复案例。
+- 82,249 条 usage 与 settlement snapshot 已恢复为 `pending`，估算金额和估算证据已写入；这一步没有扣钱包，等待现有结算路径执行。
+- 观察到批次未消费后定位到第二个阻塞：pending retry 每 5 分钟只取最老 100 条，而 5 月的零成本无快照旧挂账占满批次，全部被 `should_attempt_usage_settlement` 跳过。
+- 已更新 PostgreSQL pending 查询，只领取具备非零成本或 billing/settlement snapshot/免费层标记的终态记录；旧无证据挂账不再阻塞可结算记录。该修复待发布并在线验证。
+
+## 2026-09-03 历史账务恢复最终状态
+- 首批 `historical-p50-v1-20260903T070814Z` 的 82,249 条已全部 settled；第二批 `historical-p50-v1-pending-v1-20260903T082539Z` 发现并补回部署前仍 pending 的 74 条，也已全部 settled。
+- 两批合计 82,323 条；估算用户价 `$521.33387640`，其中首批 `$520.42366651`、补批 `$0.91020989`。第一批钱包余额实际减少 `$504.36284898`，unlimited 的 `$16.06081753` 不扣钱包。
+- 线上当前提交 `8259e4534f67d37e10d9209b506cd2f8a3ea2460`，Background/Frontdoor healthy、重启 0；Redis usage 消费组 pending=0、lag=0。部署后 4,200 条新 usage 中 pending=0，0 token/0 成本 pending=0。
+- 生产仍有 160 条更早的 pending 记录，全部缺 billing admission；其中 155 条没有任何旧 token/cost 证据，5 条只有旧 usage 字段但没有准入/钱包依据。已批量写入 `legacy-pending-manual-review-v1-20260903T082900Z`，状态均为 `manual_review`，未收费、未篡改原 usage。
+- 生产手工建立的 `idx_usage_pending_settlement_scan` 已被新查询使用；它不是重复 migration，已在线验证 planner 使用 `Parallel Index Scan`。此前排查遗留的一条长时间 dry-run CTE 已 terminate，无 active 残留。
+- 追加恢复脚本 `--include-pending-before`，只允许在明确截止时间的事故补批中纳入 pending 记录，默认行为仍只处理错误 settled 的历史记录。
+
+## 错误记录补充
+| 错误 | 处理 |
+|------|------|
+| 生产状态核对初次把 `usage_billing_snapshots` 当作表名 | 实际账务快照表为 `usage_settlement_snapshots`；错误查询只读失败，没有写入，随后按真实 schema 重跑。 |
+| 用错误列 `billing_status` 查询 `provider_api_key_usage_contributions` | 该表没有此列；查询只读失败，改按其真实字段重跑并保留结算快照作为用户金额依据。 |
+| 第一次看见 74 条 pending 误以为发布后仍持续漏记 | 对齐部署时间后确认它们全部在 08:07:03 UTC 发布前；Redis 消费组正常，补批后清零，部署后新请求无同类记录。 |

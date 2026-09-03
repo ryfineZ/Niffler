@@ -4,7 +4,9 @@
 Default mode is a read-only dry run. ``--apply --confirm <batch-id>`` stages
 estimated usage records as pending so the existing settlement retry path applies
 wallet, plan, unlimited, and provider projection semantics. It never sends a
-provider request and it never deletes the original usage row.
+provider request and it never deletes the original usage row. The optional
+``--include-pending-before`` flag is reserved for a bounded second pass over
+incident records that were still pending when the first pass ran.
 """
 
 from __future__ import annotations
@@ -60,7 +62,11 @@ def sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def recovery_ctes(*, exclude_existing_cases: bool = False) -> str:
+def recovery_ctes(
+    *,
+    exclude_existing_cases: bool = False,
+    include_pending_before: str | None = None,
+) -> str:
     existing_case_filter = ""
     if exclude_existing_cases:
         existing_case_filter = """
@@ -71,6 +77,15 @@ def recovery_ctes(*, exclude_existing_cases: bool = False) -> str:
             AND c.action IN ('staged', 'settled', 'waived', 'manual_review')
       )
 """
+    billing_status_filter = "u.billing_status = 'settled'"
+    if include_pending_before:
+        billing_status_filter = f"""(
+      u.billing_status = 'settled'
+      OR (
+        u.billing_status = 'pending'
+        AND u.created_at < {sql_literal(include_pending_before)}::timestamptz
+      )
+    )"""
     return f"""
 WITH bad AS MATERIALIZED (
     SELECT
@@ -100,7 +115,7 @@ WITH bad AS MATERIALIZED (
       AND u.provider_name <> 'Niffler 平台'
       AND u.status = 'completed'
       AND u.status_code = 200
-      AND u.billing_status = 'settled'
+      AND {billing_status_filter}
       AND COALESCE(u.total_tokens, 0) = 0
       AND COALESCE(u.total_cost_usd, 0) = 0
       AND NOT EXISTS (
@@ -172,8 +187,8 @@ estimated AS (
 """
 
 
-def dry_run() -> None:
-    sql = recovery_ctes() + """
+def dry_run(*, include_pending_before: str | None = None) -> None:
+    sql = recovery_ctes(include_pending_before=include_pending_before) + """
 SELECT
     CASE WHEN GROUPING(provider_name) = 1 THEN 'TOTAL' ELSE provider_name END AS provider_name,
     CASE WHEN GROUPING(evidence_status) = 1 THEN 'TOTAL' ELSE evidence_status END AS evidence_status,
@@ -192,7 +207,7 @@ ORDER BY GROUPING(provider_name), provider_name, evidence_status, funding_source
     print(run_psql(sql).strip())
 
 
-def apply(batch_id: str) -> None:
+def apply(batch_id: str, *, include_pending_before: str | None = None) -> None:
     sql = f"""
 BEGIN;
 CREATE TABLE IF NOT EXISTS public.usage_billing_recovery_cases (
@@ -234,7 +249,10 @@ CREATE INDEX IF NOT EXISTS ix_usage_billing_recovery_cases_user
     ON public.usage_billing_recovery_cases (user_id, created_at);
 
 CREATE TEMP TABLE tmp_usage_billing_recovery ON COMMIT DROP AS
-""" + recovery_ctes(exclude_existing_cases=True) + f"""
+""" + recovery_ctes(
+    exclude_existing_cases=True,
+    include_pending_before=include_pending_before,
+) + f"""
 SELECT
     e.*,
     ROUND((e.base_cost_usd * e.sales_multiplier)::numeric, 8)::double precision AS user_cost_usd,
@@ -369,6 +387,10 @@ def main() -> int:
     parser.add_argument("--sync", action="store_true", help="根据 usage/snapshot 状态同步 recovery case")
     parser.add_argument("--confirm", help="必须与 batch id 完全一致，防止误执行")
     parser.add_argument("--batch-id", help="恢复批次 ID；apply 时默认使用 UTC 时间生成")
+    parser.add_argument(
+        "--include-pending-before",
+        help="额外纳入指定时间之前仍 pending 的事故记录；默认只恢复已被错误标记为 settled 的记录",
+    )
     args = parser.parse_args()
 
     try:
@@ -378,14 +400,14 @@ def main() -> int:
             sync(args.batch_id)
             return 0
         if not args.apply:
-            dry_run()
+            dry_run(include_pending_before=args.include_pending_before)
             return 0
         batch_id = args.batch_id or f"{ESTIMATOR_VERSION}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
         if args.confirm != batch_id:
             raise RecoveryError(
                 f"apply 需要 --confirm {batch_id!r}；当前未执行任何写入。"
             )
-        apply(batch_id)
+        apply(batch_id, include_pending_before=args.include_pending_before)
         return 0
     except RecoveryError as exc:
         print(str(exc), file=sys.stderr)

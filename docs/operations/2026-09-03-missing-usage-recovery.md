@@ -44,3 +44,18 @@
 - dry-run 必须输出按 provider、用户、证据级别的记录数和金额，并保存批次摘要。
 - apply 后核对：候选数、settled 数、insufficient_quota 数、钱包余额变化、套餐窗口变化和 recovery case 状态。
 - 若估算政策被否决，必须在结算前保持 pending；若已结算，只能通过现有退款/调账流程冲正，不直接删除 usage 或钱包记录。
+
+## 2026-09-03 生产执行记录
+
+- 已按 `historical-p50-v1-20260903T070814Z` 执行 dry-run 后的恢复批次：82,249 条全部具备历史基线，先恢复为 pending，再通过现有结算路径结算完成。
+- 该批次供应商分布为：Pro号池 79,446 条、Kiro(skyhope)0.125 2,031 条、Kiro(xiayu) 767 条、CC-Max(skyhope) 5 条；其中 82,245 条命中 provider+model P50，4 条回退到 provider P50。
+- 因首批执行时仍有 74 条事故窗口记录保持 pending，使用有明确截止时间的第二批 `historical-p50-v1-pending-v1-20260903T082539Z` 补回；该批次 74 条已全部 settled。
+- 两个恢复批次合计 82,323 条全部 settled，recovery case 无 `manual_review` 或 `insufficient_quota`；估算用户价合计为 `$521.33387640`，其中第一批 `$520.42366651`，第二批 `$0.91020989`。
+- 第一批实际钱包余额减少 `$504.36284898`：wallet funding `$469.95697263`，plan funding 因额度/作用域规则走钱包超额 `$34.40587635`；unlimited 的 `$16.06081753` 不扣钱包。上述金额来自结算快照余额差，不把估算 token 当作供应商原始账单。
+- 生产部署提交为 `8259e4534f67d37e10d9209b506cd2f8a3ea2460`；Background/Frontdoor 均 healthy、重启 0。Redis `usage_consumers` 当前 pending=0、lag=0；部署后新请求没有再出现 0 token/0 成本 pending。
+
+## 无可靠证据的遗留记录
+
+- 生产仍有 160 条更早（2026-09-01 07:00 UTC 之前）的 pending 记录，全部缺少 `billing_request_admissions`；其中 155 条连 usage token/cost 也为 0，5 条只有旧 usage 字段但没有历史准入和钱包结算依据。
+- 这 160 条已记录到 `legacy-pending-manual-review-v1-20260903T082900Z`，状态为 `manual_review`，没有改写 usage、没有创建金额快照、没有扣款。它们不会再被 pending retry 反复尝试，也不会挡住新记录。
+- 对这类记录不能凭空生成“准确账单”。后续只能使用本地仍存在的请求级账单快照、钱包/套餐准入或可验证的审计证据逐条调账；证据不足时保留为待人工复核的应收损失，不静默按 0 元或任意均值收费。

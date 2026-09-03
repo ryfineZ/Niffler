@@ -2388,3 +2388,18 @@
 - 该 key 属于 Pro号池的 `openai:responses` endpoint；`request_candidates` 仍有 42,115 条历史记录引用它，最后一条在 2026-08-25 09:48:27，紧接着 Redis pending entry `1787651309391-0`，证明是删除 key 后遗留在 usage stream 的失效事件。
 - 旧 worker 遇到该事件时整批返回错误，stale reclaim 又反复领取同一 pending entry；因此一个供应商的失效引用阻塞了所有共用 `usage:events` 的供应商。2026-09-01 06:56 UTC 的连接池超时是放大因素，不是首个触发点。
 - Redis stream 只有 `MAXLEN ~ 2000`，故障持续期间更早的 pending payload 已被裁剪，不能依赖 Redis 恢复全部历史 usage；这部分需要依据数据库、上游账单或审计数据另行回填。
+
+## 2026-09-03 历史账务恢复追加发现
+- 生产复核：82,249 条 unresolved 的 request_body、provider_request_body、response_body、client_response_body、compressed body 和 body size 元数据均为 0；不能从请求正文重新计算 token。
+- 82,249 条均有用户和 wallet admission；funding_source=wallet 81,205，plan 508，unlimited 536。所有用户/provider/model 组合在异常前都有历史成功数据，但少数组合没有过去 31 天同组合记录，可回退 provider P50。
+- 估算使用异常前成功请求的 actual_total_cost_usd P50，再乘每条 request_metadata.sales_multiplier；不能把历史 total_cost_usd 的 P50 再乘一次倍率。
+- dry-run 当前结果：82,249 条可按历史 P50 估算，预计用户价合计 $520.42366651，预计内部 provider 成本基线合计 $2,576.38566635；其中 82,245 条 provider/model 有基线，4 条回退 provider P50。
+- 生产分阶段后未出现结算，是因为 pending retry 查询按创建时间取最老 100 条；最老的一批来自 5 月，全部为零成本且没有 billing/settlement snapshot，被 `should_attempt_usage_settlement` 正确跳过，但旧查询没有在 SQL 层过滤，造成新批次饥饿。
+- 已把 pending retry 查询改为只返回有非零成本或 billing/settlement snapshot/免费层标记的终态记录，保证无证据旧挂账不会阻塞可结算记录。
+
+## 2026-09-03 生产恢复与遗留边界
+- 首批 82,249 条和部署前仍 pending 的补批 74 条均已通过历史 P50 估算并结算，recovery case 共 82,323 条、全部 `settled`。
+- 估算用户价总额 `$521.33387640`；首批的 `$504.36284898` 实际从钱包余额减少，unlimited 记录的 `$16.06081753` 按设计不扣款。估算 token/cost 已在快照中标注 `historical_estimate`，不宣称为供应商原始 usage。
+- 线上 8259 提交运行 healthy；Redis usage 消费组 pending=0、lag=0；发布后的 4,200 条新 usage 无 pending、无 0 token/0 成本 pending，说明修复后的实时路径没有继续制造同类挂账。
+- 仍有 160 条事故前旧 pending，全部没有 billing admission；155 条连旧 token/cost 都没有，5 条只有旧 usage 字段但没有准入/钱包依据。已写入 `legacy-pending-manual-review-v1-20260903T082900Z`，全部 `manual_review`，没有伪造金额，也没有扣款。
+- 这类“无可靠数据”记录的处理边界是：保留原始 usage、进入可审计人工复核、排除自动 retry；只有找到本地准入/快照/钱包审计证据才允许调账，证据不存在时不能用 0 元或任意均值冒充真实账单。
