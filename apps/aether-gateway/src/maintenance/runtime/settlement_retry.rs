@@ -1,10 +1,12 @@
 use aether_data_contracts::DataLayerError;
 use aether_usage_runtime::{settle_usage_if_needed, should_attempt_usage_settlement};
+use std::collections::HashSet;
 use tracing::error;
 
 use crate::data::GatewayDataState;
 
 const PENDING_SETTLEMENT_RETRY_BATCH_SIZE: usize = 100;
+const PENDING_SETTLEMENT_RETRY_MAX_BATCHES_PER_RUN: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct PendingSettlementRetrySummary {
@@ -19,27 +21,41 @@ pub(super) async fn retry_pending_usage_settlements_once(
         return Ok(PendingSettlementRetrySummary::default());
     }
 
-    let pending = data
-        .list_pending_terminal_usage_for_settlement(PENDING_SETTLEMENT_RETRY_BATCH_SIZE)
-        .await?;
     let mut summary = PendingSettlementRetrySummary::default();
-    for usage in pending {
-        if !should_attempt_usage_settlement(&usage) {
-            continue;
+    let mut processed_request_ids = HashSet::new();
+    for _ in 0..PENDING_SETTLEMENT_RETRY_MAX_BATCHES_PER_RUN {
+        let pending = data
+            .list_pending_terminal_usage_for_settlement(PENDING_SETTLEMENT_RETRY_BATCH_SIZE)
+            .await?;
+        if pending.is_empty() {
+            break;
         }
-        match settle_usage_if_needed(data, &usage).await {
-            Ok(()) => summary.settled += 1,
-            Err(err) => {
-                summary.failed += 1;
-                error!(
-                    event_name = "usage_pending_settlement_retry_failed",
-                    log_type = "ops",
-                    worker = "pending_cleanup",
-                    request_id = %usage.request_id,
-                    error = %err,
-                    "gateway could not settle a completed usage record; cost remains pending"
-                );
+        let mut attempted = 0;
+        for usage in pending {
+            if !should_attempt_usage_settlement(&usage) {
+                continue;
             }
+            if !processed_request_ids.insert(usage.request_id.clone()) {
+                continue;
+            }
+            attempted += 1;
+            match settle_usage_if_needed(data, &usage).await {
+                Ok(()) => summary.settled += 1,
+                Err(err) => {
+                    summary.failed += 1;
+                    error!(
+                        event_name = "usage_pending_settlement_retry_failed",
+                        log_type = "ops",
+                        worker = "pending_cleanup",
+                        request_id = %usage.request_id,
+                        error = %err,
+                        "gateway could not settle a completed usage record; cost remains pending"
+                    );
+                }
+            }
+        }
+        if attempted == 0 {
+            break;
         }
     }
     Ok(summary)

@@ -2365,6 +2365,21 @@ ORDER BY request_count DESC, "usage".provider_name ASC
             "WHERE \"usage\".id = $1\nLIMIT 1",
             r#"WHERE "usage".status IN ('completed', 'failed', 'cancelled')
   AND COALESCE(usage_settlement_snapshots.billing_status, "usage".billing_status) = 'pending'
+  AND (
+    COALESCE(
+      CAST(usage_settlement_snapshots.billing_total_cost_usd AS DOUBLE PRECISION),
+      CAST("usage".total_cost_usd AS DOUBLE PRECISION),
+      0
+    ) <> 0
+    OR (
+      "usage".request_metadata IS NOT NULL
+      AND (
+        ("usage".request_metadata->>'billing_snapshot') IS NOT NULL
+        OR ("usage".request_metadata->>'settlement_snapshot') IS NOT NULL
+        OR ("usage".request_metadata->>'is_free_tier') = 'true'
+      )
+    )
+  )
 ORDER BY "usage".created_at ASC, "usage".request_id ASC
 LIMIT $1"#,
             1,
