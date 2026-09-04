@@ -271,7 +271,7 @@ SELECT
   rate_multipliers,
   global_priority_by_format,
   allowed_models,
-  NULL::bigint AS expires_at_unix_secs,
+  EXTRACT(EPOCH FROM expires_at)::bigint AS expires_at_unix_secs,
   NULL::integer AS cache_ttl_minutes,
   NULL::integer AS max_probe_interval_minutes,
   NULL::jsonb AS proxy,
@@ -2554,6 +2554,14 @@ mod tests {
         assert!(super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX.contains("auto_fetch_models"));
         assert!(!super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
             .contains("FALSE AS auto_fetch_models"));
+    }
+
+    #[test]
+    fn provider_api_key_summary_queries_include_oauth_expiry_for_status_classification() {
+        assert!(super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
+            .contains("EXTRACT(EPOCH FROM expires_at)::bigint AS expires_at_unix_secs"));
+        assert!(!super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
+            .contains("NULL::bigint AS expires_at_unix_secs"));
     }
 
     #[test]

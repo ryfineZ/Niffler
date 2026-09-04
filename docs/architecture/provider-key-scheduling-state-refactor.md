@@ -136,6 +136,10 @@
 - 列表、详情、tab 数、分页筛选都按 `scheduling_state` 计算。
 - 模型路由和 provider key 详情可以继续显示健康信息，但不能把旧熔断当作主状态。
 
+#### 列表汇总与筛选的一致性
+
+号池账号列表返回的 `summary.statuses`、`summary.plans` 和分页筛选必须使用同一份状态输入。摘要查询可以隐藏密钥、代理和统计等敏感或高成本字段，但不能丢弃参与状态分类的非敏感字段；其中 OAuth 的 `expires_at` 必须保留。对于带 `[REFRESH_FAILED]` 标记的账号，只有访问令牌确实过期时才归入 `invalid`，摘要和完整列表必须得到相同结果。
+
 ### 使用记录
 
 - `apps/aether-gateway/src/handlers/proxy/mod.rs`
