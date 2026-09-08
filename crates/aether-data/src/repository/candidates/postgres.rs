@@ -1113,8 +1113,22 @@ mod tests {
         let request_id = format!("pg-retry-admission-{suffix}");
         let global_model_id = format!("global-{suffix}");
         let entitlement_id = format!("entitlement-{suffix}");
-        let provider_one = format!("provider-one-{suffix}");
-        let provider_two = format!("provider-two-{suffix}");
+        // Production provider IDs are UUIDs and request_candidates.provider_id is varchar(36).
+        // Use valid IDs here and create the referenced parent rows before inserting candidates.
+        let provider_one = uuid::Uuid::new_v4().to_string();
+        let provider_two = uuid::Uuid::new_v4().to_string();
+        let outside_provider = uuid::Uuid::new_v4().to_string();
+        for (provider_id, provider_name) in [
+            (&provider_one, "provider-one"),
+            (&provider_two, "provider-two"),
+        ] {
+            sqlx::query("INSERT INTO providers (id, name) VALUES ($1, $2)")
+                .bind(provider_id)
+                .bind(provider_name)
+                .execute(&pool)
+                .await
+                .expect("provider fixture should insert");
+        }
         let repository = SqlxRequestCandidateReadRepository::new(pool.clone());
         let candidate = |retry_index: u32, provider_id: &str| UpsertRequestCandidateRecord {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1126,7 +1140,8 @@ mod tests {
             candidate_index: 0,
             retry_index,
             provider_id: Some(provider_id.to_string()),
-            endpoint_id: Some(format!("endpoint-{retry_index}-{suffix}")),
+            // This test covers admission/provider scope; endpoint lookup is out of scope.
+            endpoint_id: None,
             key_id: None,
             status: RequestCandidateStatus::Pending,
             skip_reason: None,
@@ -1191,7 +1206,7 @@ mod tests {
 
         assert!(repository
             .upsert_with_billing_admission(
-                candidate(3, &format!("outside-{suffix}")),
+                candidate(3, &outside_provider),
                 stored_admission.to_input(),
             )
             .await
@@ -1221,5 +1236,11 @@ mod tests {
             .execute(&pool)
             .await
             .expect("billing admission should clean up");
+        sqlx::query("DELETE FROM providers WHERE id = $1 OR id = $2")
+            .bind(&provider_one)
+            .bind(&provider_two)
+            .execute(&pool)
+            .await
+            .expect("provider fixtures should clean up");
     }
 }

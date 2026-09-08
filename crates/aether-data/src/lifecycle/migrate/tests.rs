@@ -1941,11 +1941,15 @@ INSERT INTO public.provider_api_keys (
   id,
   name,
   provider_id,
+  total_tokens,
+  total_cost_usd,
   status_snapshot
 ) VALUES (
   'provider-key-retry-test',
   'Retry key',
   'provider-retry-test',
+  0,
+  0,
   '{"quota":{"windows":[]}}'::jsonb
 )
 "#,
@@ -1974,7 +1978,7 @@ WHERE id = 'provider-key-retry-test'
                 {
                     "code": "weekly",
                     "scope": "account",
-                    "window_minutes": "9999999999999999",
+                    "window_seconds": "9999999999999999999",
                     "reset_at": 2_000
                 }
             ]
@@ -2534,6 +2538,7 @@ fn embedded_postgres_manifest_contains_latest_production_migrations() {
     assert!(versions.contains(&20260723122000));
     assert!(versions.contains(&20260810180000));
     assert!(versions.contains(&20260824120000));
+    assert!(versions.contains(&20260903120000));
     assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
@@ -2619,6 +2624,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260809130000,
             20260810180000,
             20260824120000,
+            20260903120000,
         ]
     );
 }
@@ -2666,6 +2672,7 @@ fn pending_migrations_from_applied_after_empty_database_snapshot_stamp_returns_p
             20260809130000,
             20260810180000,
             20260824120000,
+            20260903120000,
         ],
         "empty database snapshot-stamped databases should run only post-snapshot incrementals on first startup"
     );

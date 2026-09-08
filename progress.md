@@ -1,5 +1,12 @@
 # Progress Log
 
+## 2026-09-05：修复号池“全部/已失效”计数不一致
+
+- 已确认问题来自 PostgreSQL 账号摘要查询把 `expires_at` 置空，导致 `[REFRESH_FAILED]` OAuth 账号在“全部”摘要中与完整筛选路径得到不同状态。
+- 已先更新 `docs/architecture/provider-key-scheduling-state-refactor.md`，明确摘要统计与筛选必须保留并使用 OAuth 过期时间。
+- 已将摘要 SQL 改为选择 `EXTRACT(EPOCH FROM expires_at)::bigint`，并增加查询字段回归断言。
+- `cargo fmt --all --check`、摘要 SQL 回归测试、`cargo test -p aether-admin refresh_failed_oauth --lib`（2/2）和管理接口定向测试（1/1）均通过；未启动临时服务，无残留进程。
+
 ## 2026-08-19：ColoCrossing 主库切换与 rn-hybrid 从库重建
 
 - rn-hybrid 已从 ColoCrossing 重新拉取物理基础备份，`pg_verifybackup` 通过；旧主数据目录以只读方式封存，新实例为只读从库，连续三轮确认 `streaming`、`async` 和重放延迟 0。
@@ -1696,3 +1703,32 @@
 | 生产状态核对初次把 `usage_billing_snapshots` 当作表名 | 实际账务快照表为 `usage_settlement_snapshots`；错误查询只读失败，没有写入，随后按真实 schema 重跑。 |
 | 用错误列 `billing_status` 查询 `provider_api_key_usage_contributions` | 该表没有此列；查询只读失败，改按其真实字段重跑并保留结算快照作为用户金额依据。 |
 | 第一次看见 74 条 pending 误以为发布后仍持续漏记 | 对齐部署时间后确认它们全部在 08:07:03 UTC 发布前；Redis 消费组正常，补批后清零，部署后新请求无同类记录。 |
+# 2026-09-04 Rust CI 修复
+
+- 已确认附件只是 CI 失败摘要，不是额外指令。
+- 已从远端 run 33730493025 和本地定向测试确认迁移断言失败、Postgres 测试夹具长度错误及 sccache DNS 故障。
+- 已先更新 `docs/architecture/ci-build-strategy.md`，记录测试夹具约束和 sccache 远端缓存不可阻断编译的目标。
+- 已更新迁移期望版本；Postgres 测试改用 UUID provider、创建外键父记录并取消无关 endpoint 引用；Rust CI 的 sccache 改为本地缓存模式。
+- 迁移定向测试 3/3 通过；临时 PostgreSQL 16 实例上的候选准入重试测试 1/1 通过；临时实例已停止且无残留监听。
+- 已补齐 provider API key 测试的非空统计字段，并将异常窗口改成可稳定触发 BIGINT 溢出的值，确保失败重试断言真实覆盖错误路径。
+- `cargo fmt --all --check`、`git diff --check`、`cargo test -p aether-data --lib`（428/428）和 `cargo clippy -p aether-data --all-targets -- -D warnings` 均已通过。
+
+## 2026-09-05 hd0526 前台连续检查异常告警
+
+- 已建立本次排查的目标和边界：只读核验 hd0526 前台、容器、反向代理、资源和告警时间窗口日志，未经授权不做生产变更。
+
+- 已完成告警时间对齐和日志聚合：异常集中在 14:15–14:23 UTC，14:22 UTC 仍有 104 个 503；主要原因为 Frontdoor 本地并发过载，不是内核 OOM。
+- 第一版 Docker 事件流读取命令因事件流未结束而卡住，已中止；改用带 20 秒超时的独立日志读取，成功获得 Frontdoor/Caddy 聚合结果。
+
+- 代码和生产配置已核对：Frontdoor 并发上限为 32，请求许可耗尽时直接返回 503 `local_overloaded`。
+- 当前公开健康入口均返回 200；14:24–14:40 UTC 仅有 34 个 503，全部为 `local_execution_runtime_miss`，没有继续出现 `local_overloaded`；Background 同窗口无 5xx。
+- 一次监控采样的 awk 嵌套引号解析失败，未影响业务；后续改用 Python 采样。
+
+- 已完成当前恢复采样：14:32:23–14:32:55 UTC 连续四次检查，Frontdoor 503 和 `local_overloaded` 均为 0；四个公网健康入口为 200。
+- 已完成根因判断：告警直接由 32 并发许可耗尽触发的本地过载保护造成；未发现 OOM、容器重启、Caddy 上游超时、Background 或数据库故障。
+
+- 已完成并发容量采样：4 vCPU、5.8 GiB 主机内存、Frontdoor 4 GiB 容器上限；当前 CPU/内存均有余量，但请求耗时存在长尾。
+- 近 3 小时成功请求估算并发峰值约 26，含拒绝尝试约 59；据此给出 48 的受控起点和 64 的暂定上限，未修改生产参数。
+
+- 用户确认执行后，已将 hd0526 Frontdoor `AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS` 从 32 改为 64；先更新运维记录和部署源配置，再备份生产 Compose。
+- 仅重建 Frontdoor；10 分钟观察稳定，limit=64、无 local_overloaded、无 Caddy 中断、无 OOM/重启，公开健康入口保持 200。

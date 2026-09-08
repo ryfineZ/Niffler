@@ -1,5 +1,30 @@
 # Findings
 
+## 2026-09-05 号池状态计数不一致
+
+- 号池接口在 `status=all` 且无其他筛选时走 `list_provider_catalog_key_summaries_by_provider_ids` 的摘要路径；`status=invalid` 会走完整账号加载和内存筛选路径。
+- PostgreSQL 的 `LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX` 原本把 `expires_at_unix_secs` 固定为 `NULL`，而完整账号记录保留真实过期时间。
+- `crates/aether-admin/src/provider/pool.rs` 中 `admin_pool_is_oauth_invalid` 对 `[REFRESH_FAILED]` 的判断依赖访问令牌过期时间：过期时间在未来时保持可用；缺失过期时间时按失效处理。
+- 因此同一账号在“全部”摘要里可被计入“已失效”，点击“已失效”后完整记录又被归入其他状态（截图中表现为已失效 1→0、额度耗尽 2→3）。
+- 最小修复是让摘要 SQL 选择真实 `expires_at`（该字段非敏感），使汇总与筛选使用同一状态输入；现有 `refresh_failed_oauth` 单元测试已验证状态优先级语义。
+
+## 2026-09-04 Rust CI 失败根因
+
+- Rust CI run 33730493025 的 `Test (Data)` 有两个迁移版本断言失败：实际包含 `20260903120000`，测试期望仍停在 `20260824120000`；本地定向测试可复现。
+- `Data DB Smoke (Postgres)` 在候选准入重试测试首次写入时报告 `value too long for type character varying(36)`；测试生成的 provider/endpoint 字符串超过 `request_candidates` 的 36 字符字段，且 provider/endpoint 字段受外键约束。
+- `Test (Gateway)` 同一 run 的失败来自 sccache 访问 GitHub Actions 缓存服务时 DNS 失败，不是 Rust 测试断言。
+- `Test`、`Data DB Smoke`、`check` 是依赖汇总 Job，会把上游失败继续标红。
+
+## 2026-09-04 Rust CI 修复结果
+
+- 两个迁移版本断言已补上 `20260903120000`，并增加最新迁移清单断言。
+- PostgreSQL 准入重试测试已改用 UUID provider，插入并清理对应 provider 父记录；endpoint 字段置空，因为该用例不测试 endpoint 外键。
+- Rust CI 的 sccache 已关闭 GitHub Actions 远端缓存，仅保留 runner 本地缓存，避免缓存服务 DNS/临时网络故障阻断编译。
+- 迁移定向测试、临时 PostgreSQL 16 集成测试和 `cargo fmt --all --check` 均通过。
+- 完整数据层测试还暴露出重试夹具的异常值不足以触发数据库溢出；已改用超出 BIGINT 范围的 `window_seconds`，验证延迟重试路径确实被覆盖。
+- 修复后 `cargo test -p aether-data --lib` 428/428 通过，`cargo clippy -p aether-data --all-targets -- -D warnings` 通过。
+
+
 ## 2026-08-19 ColoCrossing 主库切换与 rn-hybrid 从库重建
 
 - rn-hybrid 已从 ColoCrossing 时间线 3 重新完成约 63 GB 物理基础备份，`pg_verifybackup` 校验通过；当前为只读异步从库，连续三轮 `streaming` 且重放延迟为 0，主从 system identifier 一致。
@@ -2403,3 +2428,49 @@
 - 线上 8259 提交运行 healthy；Redis usage 消费组 pending=0、lag=0；发布后的 4,200 条新 usage 无 pending、无 0 token/0 成本 pending，说明修复后的实时路径没有继续制造同类挂账。
 - 仍有 160 条事故前旧 pending，全部没有 billing admission；155 条连旧 token/cost 都没有，5 条只有旧 usage 字段但没有准入/钱包依据。已写入 `legacy-pending-manual-review-v1-20260903T082900Z`，全部 `manual_review`，没有伪造金额，也没有扣款。
 - 这类“无可靠数据”记录的处理边界是：保留原始 usage、进入可审计人工复核、排除自动 retry；只有找到本地准入/快照/钱包审计证据才允许调账，证据不存在时不能用 0 元或任意均值冒充真实账单。
+
+## 2026-09-05 hd0526 前台连续检查异常告警（初始记录）
+
+- 告警时间：`2026-09-05 22:22:11 CST`。
+- 用户提供信息：应用服务器为 `hd0526`，网站前台连续 3 次检查异常，可能影响正常使用。
+- 已确认本轮先保留告警并做只读检查，暂不重启、不改配置。
+
+### 告警窗口已对齐（服务器时区 UTC）
+
+- `hd0526` 当前时区为 UTC；告警标注的 `2026-09-05 22:22:11 CST` 对应服务器日志窗口约 `2026-09-05 14:22:11 UTC`。
+- 14:15–14:30 UTC Frontdoor 日志共统计到 267 个 200、3 个 429、1086 个 503。
+- 503 按分钟：14:15=76、14:16=80、14:17=131、14:18=133、14:19=163、14:20=145、14:21=141、14:22=104、14:23=109、14:24=2、14:25=1、14:26=1。
+- 503 路径：`/v1/responses` 1069、`/health` 15、`/v1/chat/completions` 2；执行路径：`local_overloaded` 1005、`local_execution_runtime_miss` 81。
+- 同窗口 Caddy 日志有 123 条 `aborting with incomplete response`，均伴随 `context canceled`；没有 `upstream timed out`，只有少量包含 502/503/504 的错误行。
+- 同窗口内核日志没有 OOM 指标；当前三个容器均 running，Frontdoor/Background healthy，重启次数为 0。
+- 当前本机 `/_gateway/health` 返回 200，但并发统计为 limit=32、in_flight=24、available=8，累计 rejected=6479，说明近期反复触发过本地并发保护。
+
+### 当前恢复状态
+
+- 14:30 UTC 复核时 `us2.niffler.org`、`cn.niffler.org`、`api.niffler.org`、`niffler.org` 的 `/_gateway/health` 均为 HTTP 200。
+- 14:32:23–14:32:55 UTC 连续四次采样中，Frontdoor `in_flight` 为 4、4、6、5，最近 10 秒 503 均为 0，`local_overloaded` 均为 0。
+- 当前仍可见少量 `candidate_list_empty` runtime miss，但与告警窗口的 `local_overloaded` 不同，且不影响健康接口返回 200。
+
+### 判断
+
+- 本次连续检查异常的直接原因是 Frontdoor 本地并发闸门被打满：32 个并发许可耗尽后，大量请求被代码按 503 `local_overloaded` 拒绝。
+- 14:22 UTC 对应告警时刻，单分钟有 104 个 503；健康路径 `/health` 也有 15 个 503，因此外部前台检查连续失败是可解释的。
+- 没有证据表明是容器崩溃、OOM、Caddy upstream timeout、Background 容器异常或数据库不可达。
+- 目前服务已自行恢复，未执行重启、配置修改或流量切换。
+
+## 2026-09-05 hd0526 并发容量采样
+
+- 宿主机：4 vCPU、总内存约 5.8 GiB、无 Swap；采样时 MemAvailable 约 4.3 GiB，load average 约 0.1–0.2。
+- Frontdoor：Docker 内存上限 4 GiB、无 CPU 配额；采样时 CPU 约 19%、内存约 275 MiB、10 个线程。
+- Frontdoor 配置：`AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS=32`，`AETHER_MAX_REQUEST_BODY_MB=256`；健康接口显示 `distributed_request_concurrency=null`，本节点本地闸门是当前硬限制。
+- 近 3 小时 AI 成功请求耗时：P50 约 1.78 秒、P90 约 3.38 秒、P95 约 4.30 秒、P99 约 9.52 秒，最大约 82.5 秒；请求存在长尾，不能按 CPU 核数简单换算并发。
+- 从完成日志反推，成功 AI 请求的估算重叠峰值约 26；包含被拒请求在内的请求尝试重叠峰值约 59，说明当前 32 闸门正在截断突发流量。
+- 结论：没有仅由机器硬件决定的准确“最多并发”；实际安全上限取决于请求体大小、上游耗时、长尾和连接/数据库压力。基于当前观测，建议先把 48 作为受控试运行值，64 作为未经压测不宜突破的暂定上限；不把 64 视为保证容量。
+
+## 2026-09-05 hd0526 并发上限调整结果
+
+- 用户授权将 Frontdoor 并发从 32 提高到 64；仓库 `deploy/hd0526/docker-compose.yml` 与服务器 `/opt/niffler-app/docker-compose.yml` 均已设为 64。
+- 服务器原 Compose 已备份为 `docker-compose.yml.pre-concurrency-64-20260905T152954Z`；只执行 `docker compose up -d --no-deps --force-recreate frontdoor`。
+- Frontdoor 重建后 healthy、restart=0、OOM=false；Background/Caddy 容器 ID 和重启次数未变化；4 GiB memory/memswap 上限保持不变。
+- 立即和 10 分钟观察期间，`/_gateway/health` 均显示 `limit=64`；四个公开健康入口均返回 200；没有 `local_overloaded`、Caddy 中断、OOM 或重启。
+- 观察期间有少量 `local_execution_runtime_miss`（`candidate_list_empty`）503，属于候选池问题，不是并发上限打满。
