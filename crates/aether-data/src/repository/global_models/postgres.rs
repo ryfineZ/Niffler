@@ -749,13 +749,45 @@ WHERE global_model_id = $1
             r#"
 DELETE FROM global_models
 WHERE id = $1
-RETURNING id
+RETURNING name
             "#,
         )
         .bind(global_model_id)
         .fetch_optional(&mut *tx)
         .await
         .map_postgres_err()?;
+
+        if let Some(deleted_name) = deleted
+            .as_ref()
+            .map(|row| row.get::<String, _>("name"))
+            .filter(|name| !name.trim().is_empty())
+        {
+            // 删除模型后同步清理号池密钥可用列表中的残留项，避免调度器
+            // 通过 allowed_models 把已删除模型名的请求路由到其他绑定上。
+            sqlx::query(
+                r#"
+UPDATE provider_api_keys
+SET allowed_models = COALESCE(
+    (
+        SELECT json_agg(entry)
+        FROM json_array_elements(allowed_models) AS entry
+        WHERE entry #>> '{}' IS DISTINCT FROM $1
+    ),
+    '[]'::json
+)
+WHERE json_typeof(allowed_models) = 'array'
+  AND EXISTS (
+    SELECT 1
+    FROM json_array_elements_text(allowed_models) AS entry(value)
+    WHERE entry.value = $1
+  )
+                "#,
+            )
+            .bind(deleted_name)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
+        }
 
         tx.commit().await.map_postgres_err()?;
 
@@ -1296,6 +1328,26 @@ mod tests {
         assert!(
             delta_sql.contains("WHERE name = $1"),
             "global model usage_count delta should target models by canonical model name"
+        );
+    }
+
+    #[test]
+    fn global_model_delete_strips_model_name_from_provider_key_allowed_models() {
+        let source = include_str!("postgres.rs");
+
+        assert!(
+            source.contains("RETURNING name"),
+            "global model delete should capture the deleted model name for cleanup"
+        );
+        assert!(
+            source.contains("UPDATE provider_api_keys") && source.contains("IS DISTINCT FROM $1"),
+            "global model delete should strip the deleted model name from provider key allowed_models"
+        );
+        assert!(
+            source.contains("DELETE FROM models")
+                && source.rfind("DELETE FROM global_models").unwrap()
+                    < source.rfind("UPDATE provider_api_keys").unwrap(),
+            "allowed_models cleanup should run inside the same delete transaction"
         );
     }
 
