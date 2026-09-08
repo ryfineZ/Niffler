@@ -1331,7 +1331,9 @@ VALUES (
             .expect("postgres migrations should run");
 
         let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let key = &suffix[..20];
+        // Derive order ids as `order-ent-single-{key}` which must stay within the
+        // varchar(36) limit of payment_orders.id / user_plan_entitlements.payment_order_id.
+        let key = &suffix[..18];
         let user_id = format!("u-mult-{key}");
         let wallet_id = format!("w-mult-{key}");
         let provider_id = format!("p-mult-{key}");
