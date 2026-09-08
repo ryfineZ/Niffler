@@ -6,7 +6,7 @@ services:
       - .env
     environment:
       AETHER_MAX_REQUEST_BODY_MB: "256"
-      AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS: "4"
+      AETHER_GATEWAY_MAX_IN_FLIGHT_REQUESTS: "64"
       APP_PORT: ${APP_PORT:-8084}
       AETHER_GATEWAY_NODE_ROLE: frontdoor
       AETHER_GATEWAY_STATIC_DIR: /srv/frontend
