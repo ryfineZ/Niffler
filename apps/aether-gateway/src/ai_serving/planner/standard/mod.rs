@@ -402,3 +402,5 @@ mod tests {
         assert!(converted.get("store").is_none());
     }
 }
+
+pub(crate) use openai::openai_request_is_image_generation_intent;

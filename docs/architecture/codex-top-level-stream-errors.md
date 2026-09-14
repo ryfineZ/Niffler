@@ -15,7 +15,7 @@
 - `data.details` 作为优先错误原因；无论上下游是否同为 OpenAI 格式，顶层 Codex 错误都会转换为 OpenAI 兼容的错误体。上下文超限返回 `context_length_exceeded` 和 HTTP 400。
 - OpenAI Responses 流在尚未输出正文时返回 `response.failed`，网关会先解析错误，而不是直接把失败事件发送给调用方。
 - `Selected model is at capacity`、`server_is_overloaded` 和 `slow_down` 按临时上游过载处理；即使上游使用 HTTP 400，网关也会尝试下一个账号。
-- 发生上述临时过载后，当前账号进入短暂冷却，避免后续请求立即再次选中同一账号。
+- 发生上述临时过载后，已知模型的失败账号按“账号 + 模型”进入短暂冷却，避免其他模型一同被暂停；普通限流仍遵循账号级规则。全局开关与号池展示见 [全局失败换号与号池容量异常](global-capacity-failover.md)。
 - 上下文超限属于用户请求不可重试错误，不会在多个上游账号之间重复发送。
 
 ## 影响范围

@@ -570,6 +570,33 @@ WHERE created_at >= TO_TIMESTAMP($1::double precision / 1000.0)
 
 #[async_trait]
 impl RequestCandidateReadRepository for SqlxRequestCandidateReadRepository {
+    async fn summarize_capacity_errors(
+        &self,
+        provider_ids: &[String],
+        since_ms: u64,
+        until_ms: u64,
+    ) -> Result<
+        Vec<aether_data_contracts::repository::candidates::CapacityModelSummary>,
+        DataLayerError,
+    > {
+        if provider_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(include_str!("capacity.sql"))
+            .bind(provider_ids)
+            .bind(since_ms as i64)
+            .bind(until_ms as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_postgres_err()?;
+        rows.into_iter()
+            .map(|row| {
+                serde_json::from_value(row.get::<serde_json::Value, _>("summary"))
+                    .map_err(|err| DataLayerError::UnexpectedValue(err.to_string()))
+            })
+            .collect()
+    }
+
     async fn find_billing_admission(
         &self,
         request_id: &str,

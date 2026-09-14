@@ -175,3 +175,5 @@ pub(crate) async fn maybe_build_stream_plan_payload(
     )
     .await
 }
+
+pub(crate) use standard::openai_request_is_image_generation_intent;

@@ -46,6 +46,8 @@
             @file-select="handleDataFileSelect"
           />
 
+          <RequestFailoverSection v-show="activeTab === 'network'" />
+
           <!-- 网络代理 -->
           <ProxyConfigSection
             v-show="activeTab === 'network'"
@@ -254,6 +256,8 @@
 </template>
 
 <script setup lang="ts">
+import { useRoute } from 'vue-router'
+import RequestFailoverSection from './system-settings/RequestFailoverSection.vue'
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PageHeader, PageContainer } from '@/components/layout'
@@ -293,7 +297,8 @@ const settingsTabs = [
   { value: 'data', label: t('systemSettings.data') },
   { value: 'diagnostics', label: t('systemSettings.diagnostics') },
 ]
-const activeTab = ref('site')
+const settingsRoute = useRoute()
+const activeTab = ref(settingsRoute.query.tab === 'network' ? 'network' : 'site')
 
 // System config composable
 const {

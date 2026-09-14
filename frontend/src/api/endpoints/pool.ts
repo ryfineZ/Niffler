@@ -119,7 +119,23 @@ export interface PoolPresetMeta {
   evidence_hint?: string | null
 }
 
+export interface PoolCapacityModel {
+  model: string
+  count_24h: number
+  last_occurred_at_ms: number
+  last_success_at_ms: number | null
+  state: 'cooldown' | 'pending' | 'recovered'
+  cooldown_ttl_seconds: number
+  cooldown_expires_at_ms: number
+  recent: Array<{ candidate_id: string; request_id: string; occurred_at_ms: number }>
+}
+export interface PoolCapacity { count_24h: number; models: PoolCapacityModel[] }
+
 export interface PoolKeyDetail {
+  provider_id?: string
+  provider_name?: string
+  capacity?: PoolCapacity
+
   key_id: string
   key_name: string
   provider_type?: string | null
@@ -229,6 +245,9 @@ export interface PoolKeysSummaryBucket {
 }
 
 export interface PoolKeysSummary {
+  capacity_available?: boolean
+  capacity_accounts?: number
+  capacity_count_24h?: number
   total: number
   plans: PoolKeysSummaryBucket[]
   statuses: PoolKeysSummaryBucket[]
@@ -305,7 +324,8 @@ export interface PoolKeysQuery {
   plan_type?: string
   quick_selectors?: string[]
   search_scope?: 'name' | 'full'
-  sort_by?: 'imported_at' | 'last_used_at' | 'score'
+  sort_by?: 'imported_at' | 'last_used_at' | 'score' | 'capacity'
+  capacity?: 'all' | 'recent' | 'unresolved'
   sort_order?: 'asc' | 'desc'
 }
 

@@ -1058,6 +1058,25 @@ async fn gateway_sorts_admin_pool_keys_by_imported_and_last_used_time() {
         .collect::<Vec<_>>();
     assert_eq!(last_used_names, vec!["active", "old", "fresh"]);
 
+    for (sort_by, direction, page, expected_name) in [
+        ("imported_at", "desc", 1, "fresh"),
+        ("imported_at", "asc", 1, "old"),
+        ("imported_at", "asc", 2, "active"),
+        ("last_used_at", "asc", 1, "fresh"),
+        ("last_used_at", "desc", 2, "old"),
+    ] {
+        let response = local_admin_pool_response(
+            &state, http::Method::GET,
+            &format!("/api/admin/pool/provider-openai/keys?page={page}&page_size=1&sort_by={sort_by}&sort_order={direction}"),
+            None,
+        ).await;
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["total"], 3);
+        assert_eq!(payload["keys"][0]["key_name"], expected_name);
+    }
+
     let score_response = local_admin_pool_response(
         &state,
         http::Method::GET,
@@ -3907,4 +3926,176 @@ async fn gateway_rejects_admin_pool_cleanup_banned_with_empty_provider_id() {
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_pool_capacity_degrades_when_redis_ttl_fails() {
+    use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
+    use aether_data_contracts::repository::candidates::RequestCandidateStatus;
+    let Ok(redis_url) = std::env::var("AETHER_TEST_REDIS_NO_TTL_URL") else {
+        eprintln!("skipping capacity degradation test; requires isolated Redis with TTL disabled");
+        return;
+    };
+    let runtime = Arc::new(
+        RuntimeState::redis(
+            aether_runtime_state::RedisClientConfig {
+                url: redis_url,
+                key_prefix: Some("capacity-degradation-test".into()),
+            },
+            Some(100),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(runtime
+        .kv_ttl_seconds("capacity-failure-check")
+        .await
+        .is_err());
+    let now = crate::clock::current_unix_secs() as i64;
+    let mut candidate = super::super::sample_request_candidate(
+        "capacity-redis-error",
+        "req-capacity-redis-error",
+        "ep",
+        RequestCandidateStatus::Failed,
+        now - 10,
+        Some(now - 10),
+    );
+    candidate.provider_id = Some("provider-a".into());
+    candidate.key_id = Some("key-a".into());
+    candidate.error_message = Some("Selected model is at capacity".into());
+    candidate.extra_data = Some(json!({"upstream_model":"model-a"}));
+    let state = AppState::new()
+        .unwrap()
+        .with_runtime_state(runtime)
+        .with_data_state_for_tests(
+            GatewayDataState::with_provider_catalog_reader_for_tests(Arc::new(
+                InMemoryProviderCatalogReadRepository::seed(
+                    vec![sample_provider("provider-a", "codex", 10)],
+                    Vec::new(),
+                    vec![sample_key(
+                        "key-a",
+                        "provider-a",
+                        "openai:responses",
+                        "secret",
+                    )],
+                ),
+            ))
+            .with_request_candidate_reader(Arc::new(
+                InMemoryRequestCandidateRepository::seed(vec![candidate]),
+            )),
+        );
+    let response = local_admin_pool_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/pool/provider-a/keys",
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["keys"][0]["key_id"], "key-a");
+    assert_eq!(body["summary"]["capacity_available"], false);
+    assert!(body["keys"][0].get("capacity").is_none());
+    for query in ["capacity=recent", "capacity=unresolved", "sort_by=capacity"] {
+        let response = local_admin_pool_response(
+            &state,
+            http::Method::GET,
+            &format!("/api/admin/pool/provider-a/keys?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
+
+#[tokio::test]
+async fn gateway_pool_capacity_provider_filter_sort_and_pagination() {
+    use aether_data::repository::candidates::InMemoryRequestCandidateRepository;
+    use aether_data_contracts::repository::candidates::RequestCandidateStatus;
+    let providers = ["provider-a", "provider-b"]
+        .into_iter()
+        .map(|id| {
+            sample_provider(id, "codex", 10).with_transport_fields(
+                true,
+                false,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(json!({"pool_advanced":{"enabled":true}})),
+            )
+        })
+        .collect::<Vec<_>>();
+    let keys = vec![
+        sample_key("key-a", "provider-a", "openai:responses", "secret-a"),
+        sample_key("key-b", "provider-a", "openai:responses", "secret-b"),
+        sample_key("key-c", "provider-b", "openai:responses", "secret-c"),
+    ];
+    let now = crate::clock::current_unix_secs() as i64;
+    let mut candidates = Vec::new();
+    for (id, provider, key, offset) in [
+        ("a", "provider-a", "key-a", 10),
+        ("b1", "provider-a", "key-b", 20),
+        ("b2", "provider-a", "key-b", 5),
+        ("c", "provider-b", "key-c", 2),
+    ] {
+        let mut candidate = super::super::sample_request_candidate(
+            id,
+            "req-capacity",
+            "ep",
+            RequestCandidateStatus::Failed,
+            now - offset,
+            Some(now - offset),
+        );
+        candidate.provider_id = Some(provider.into());
+        candidate.key_id = Some(key.into());
+        candidate.error_message =
+            Some("Selected model is at capacity. Please try a different model.".into());
+        candidate.extra_data = Some(json!({"upstream_model":"model-a"}));
+        candidates.push(candidate);
+    }
+    let state = AppState::new().unwrap().with_data_state_for_tests(
+        GatewayDataState::with_provider_catalog_reader_for_tests(Arc::new(
+            InMemoryProviderCatalogReadRepository::seed(providers, Vec::new(), keys),
+        ))
+        .with_request_candidate_reader(Arc::new(
+            InMemoryRequestCandidateRepository::seed(candidates),
+        )),
+    );
+    let response = local_admin_pool_response(&state, http::Method::GET,
+        "/api/admin/pool/provider-a/keys?page=1&page_size=1&capacity=recent&sort_by=capacity&sort_order=desc", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["summary"]["capacity_accounts"], 2);
+    assert_eq!(body["summary"]["capacity_count_24h"], 3);
+    assert_eq!(body["keys"][0]["key_id"], "key-b");
+    assert_eq!(body["keys"][0]["provider_id"], "provider-a");
+    assert_eq!(body["keys"][0]["capacity"]["count_24h"], 2);
+    let response = local_admin_pool_response(&state, http::Method::GET,
+        "/api/admin/pool/provider-a/keys?page=2&page_size=1&capacity=recent&sort_by=capacity&sort_order=desc", None).await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["keys"][0]["key_id"], "key-a");
+    let response = local_admin_pool_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/pool/provider-b/keys?capacity=recent",
+        None,
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["summary"]["capacity_count_24h"], 1);
+    assert_eq!(body["keys"][0]["key_id"], "key-c");
+    let response =
+        local_admin_pool_response(&state, http::Method::GET, "/api/admin/pool/all/keys", None)
+            .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

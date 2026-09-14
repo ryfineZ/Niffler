@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, nextTick, type App } from '@/test/vue'
+import { createApp, h, nextTick, type App } from '@/test/vue'
 
 import PoolManagement from '@/views/admin/PoolManagement.vue'
 import type { PoolKeyDetail, PoolOverviewItem, PoolKeysPageResponse } from '@/api/endpoints/pool'
@@ -396,6 +396,11 @@ vi.mock('@/features/pool/components/ProviderProxyPopover.vue', async () => {
     }),
   }
 })
+vi.mock('@/features/pool/components/PoolCapacityDetails.vue', async () => {
+  const { defineComponent } = await import('vue')
+  return { default: defineComponent({ setup: () => () => null }) }
+})
+
 vi.mock('@/features/providers/components/EndpointFormDialog.vue', async () => {
   const { defineComponent } = await import('vue')
   return {
@@ -569,6 +574,7 @@ function mountPoolManagement() {
   const root = document.createElement('div')
   document.body.appendChild(root)
   const app = createApp(PoolManagement)
+  app.component('RouterLink', { props: ['to'], setup: (props, { slots }) => () => h('a', { href: props.to }, slots.default?.()) })
   app.mount(root)
   mountedApps.push({ app, root })
   return root
@@ -1334,5 +1340,133 @@ describe('PoolManagement Codex cycle stats mode', () => {
     await settle()
 
     expect(disabledRoot.querySelector('[data-testid="pool-demand-metrics-button"]')).toBeNull()
+  })
+})
+
+
+describe('PoolManagement capacity status filter', () => {
+  it.each(['recent', 'all'])('can clear failed capacity filters and sorting from the error view (%s)', async (capacity) => {
+    Object.assign(routeMocks.query, { providerId: 'codex-provider', capacity, sortBy: 'capacity' })
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+    endpointMocks.listPoolKeys.mockImplementation(async (_provider, params) => {
+      if (params.capacity !== 'all' || params.sort_by === 'capacity') {
+        throw new Error('容量统计暂不可用，请稍后重试')
+      }
+      return createKeyPage(createPoolKey())
+    })
+    const root = mountPoolManagement()
+    await settle()
+    expect(root.querySelector('[role="alert"]')).not.toBeNull()
+    const clear = root.querySelector<HTMLButtonElement>('[data-testid="pool-error-clear-filters"]')
+    expect(clear).not.toBeNull()
+    clear!.click()
+    await settle()
+    expect(root.querySelector('[role="alert"]')).toBeNull()
+    expect(root.querySelector('[data-testid="pool-accounts-desktop-table"]')).not.toBeNull()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'all', sort_by: 'imported_at', page: 1 }), expect.anything())
+    expect(routeMocks.query.capacity).toBeUndefined()
+    expect(routeMocks.query.sortBy).toBeUndefined()
+    expect(window.sessionStorage.getItem(POOL_MANAGEMENT_VIEW_STORAGE_KEY)).toContain('"capacity":"all"')
+  })
+
+  it('keeps the stored provider as the default and opens the existing account table', async () => {
+    window.sessionStorage.setItem(POOL_MANAGEMENT_VIEW_STORAGE_KEY, JSON.stringify({ providerId: 'grok-provider' }))
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex'), createOverview('grok')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('grok'))
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(createPoolKey('grok')))
+    const root = mountPoolManagement()
+    await settle()
+    expect(root.querySelector('[role="tablist"]')).toBeNull()
+    expect(root.querySelector('[data-testid="pool-status-all"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(root.querySelector('[data-testid="pool-accounts-desktop-table"]')).not.toBeNull()
+    expect(root.textContent).not.toContain('全部提供商')
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('grok-provider', expect.objectContaining({ capacity: 'all' }), expect.anything())
+  })
+
+  it('filters in the existing account status row and clears cross-page selection', async () => {
+    routeMocks.query.providerId = 'codex-provider'
+    routeMocks.query.page = '2'
+    const key = createPoolKey('codex')
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+    endpointMocks.listPoolKeys.mockImplementation(async (_provider, params) => ({
+      ...createKeyPage(key), page: params.page, total: 120,
+      summary: { total: 120, plans: [], statuses: [{code:'available',label:'可用',count:120}], capacity_available: true, capacity_accounts: 3, capacity_count_24h: 7 },
+    }))
+    const root = mountPoolManagement()
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-select-filtered-results"]')?.click()
+    await settle()
+    expect(root.querySelector('[data-testid="pool-bulk-delete-selected"]')?.textContent).toContain('120')
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-status-capacity"]')?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'recent', page: 1 }), expect.anything())
+    expect(routeMocks.query.capacity).toBe('recent')
+    expect(window.sessionStorage.getItem(POOL_MANAGEMENT_VIEW_STORAGE_KEY)).toContain('"capacity":"recent"')
+    expect(root.querySelector('[data-testid="pool-status-capacity"]')?.getAttribute('aria-pressed')).toBe('true')
+    const statusRow = root.querySelector('[data-testid="pool-status-all"]')?.parentElement
+    expect(statusRow?.contains(root.querySelector('[data-testid="pool-status-capacity"]'))).toBe(true)
+    expect(root.querySelector('[data-testid="pool-status-all"]')?.getAttribute('aria-pressed')).toBe('false')
+    expect(root.querySelector('[data-testid="pool-accounts-desktop-table"]')).not.toBeNull()
+    expect(root.querySelector('[data-testid="pool-select-filtered-results"]')).toBeNull()
+    expect(root.querySelector<HTMLButtonElement>('[data-testid="pool-bulk-delete-selected"]')?.disabled).toBe(true)
+    expect(root.textContent).toContain('7 次容量错误')
+    const unresolved = Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('尚未恢复'))
+    unresolved?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'unresolved' }), expect.anything())
+    expect(routeMocks.query.capacity).toBe('unresolved')
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-status-all"]')?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'all' }), expect.anything())
+    expect(routeMocks.query.capacity).toBeUndefined()
+    expect(window.sessionStorage.getItem(POOL_MANAGEMENT_VIEW_STORAGE_KEY)).toContain('"capacity":"all"')
+    expect(root.querySelector('[data-testid="pool-select-filtered-results"]')).not.toBeNull()
+    expect(endpointMocks.resolvePoolKeySelection).not.toHaveBeenCalled()
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-status-available"]')?.click()
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-status-capacity"]')?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'recent', status: 'all' }), expect.anything())
+    root.querySelector<HTMLButtonElement>('[data-testid="pool-status-available"]')?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'all', status: 'available' }), expect.anything())
+    expect(root.querySelector('[data-testid="pool-status-capacity"]')?.getAttribute('aria-pressed')).toBe('false')
+    expect(root.querySelector('[data-testid="pool-status-available"]')?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it.each(['query', 'storage'])('restores unresolved capacity selection from %s on reopening the page', async (source) => {
+    const state = { providerId: 'codex-provider', capacity: 'unresolved', sortBy: 'capacity' }
+    if (source === 'query') Object.assign(routeMocks.query, state)
+    else window.sessionStorage.setItem(POOL_MANAGEMENT_VIEW_STORAGE_KEY, JSON.stringify(state))
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+    endpointMocks.listPoolKeys.mockResolvedValue({
+      ...createKeyPage(createPoolKey()),
+      summary: { total: 1, plans: [], statuses: [], capacity_available: true, capacity_accounts: 1, capacity_count_24h: 2 },
+    })
+    const root = mountPoolManagement()
+    await settle()
+
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'unresolved', status: 'all' }), expect.anything())
+    expect(root.querySelector('[data-testid="pool-status-capacity"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('尚未恢复'))?.getAttribute('aria-pressed')).toBe('true')
+    expect(routeMocks.query.capacity).toBe('unresolved')
+  })
+
+  it('shows unavailable capacity statistics without reporting zero errors', async () => {
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+    endpointMocks.listPoolKeys.mockResolvedValue({ ...createKeyPage(createPoolKey()), summary: { total: 1, plans: [], statuses: [], capacity_available: false } })
+    const root = mountPoolManagement()
+    await settle()
+    const capacity = root.querySelector<HTMLButtonElement>('[data-testid="pool-status-capacity"]')
+    expect(capacity?.disabled).toBe(true)
+    expect(capacity?.textContent).toContain('—')
+    expect(capacity?.title).toBe('容量统计暂不可用')
+    capacity?.click()
+    await settle()
+    expect(endpointMocks.listPoolKeys).toHaveBeenLastCalledWith('codex-provider', expect.objectContaining({ capacity: 'all' }), expect.anything())
   })
 })

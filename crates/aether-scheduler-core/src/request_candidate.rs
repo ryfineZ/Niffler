@@ -491,6 +491,19 @@ pub fn build_local_request_candidate_status_record(
         routing_trace: metadata.routing_trace.clone(),
     });
     let extra_data = mark_request_candidate_stream_completed_if_success(status, extra_data);
+    let mut extra_data = extra_data.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(model) = plan.model_name.as_deref() {
+        extra_data["upstream_model"] = serde_json::json!(model);
+    }
+    if status == RequestCandidateStatus::Failed
+        && aether_data_contracts::repository::candidates::is_model_capacity_error(
+            error_type.as_deref(),
+            error_message.as_deref(),
+        )
+    {
+        extra_data["capacity_error"] = serde_json::json!(true);
+    }
+    let extra_data = Some(extra_data);
     let created_at_unix_ms = started_at_unix_ms.or(finished_at_unix_ms);
 
     Some(UpsertRequestCandidateRecord {
@@ -1163,6 +1176,44 @@ mod tests {
             finalized.get("candidate_id").and_then(Value::as_str),
             Some("cand-final")
         );
+    }
+
+    #[test]
+    fn capacity_candidate_records_actual_model_and_only_marks_capacity_failures() {
+        let mut plan = sample_plan();
+        plan.candidate_id = Some("capacity-attempt".into());
+        plan.model_name = Some("actual-upstream-model".into());
+        for (message, marked) in [
+            (
+                "Selected model is at capacity. Please try a different model.",
+                true,
+            ),
+            ("Rate limit exceeded", false),
+        ] {
+            let record = build_local_request_candidate_status_record(
+                LocalRequestCandidateStatusRecordInput {
+                    plan: &plan,
+                    report_context: Some(
+                        &json!({"candidate_index": 0, "mapped_model": "requested-alias"}),
+                    ),
+                    status_update: SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: Some(503),
+                        error_type: None,
+                        error_message: Some(message.into()),
+                        latency_ms: Some(42),
+                        started_at_unix_ms: Some(100),
+                        finished_at_unix_ms: Some(142),
+                    },
+                },
+            )
+            .unwrap();
+            let extra = record.extra_data.unwrap();
+            assert_eq!(record.id, "capacity-attempt");
+            assert_eq!(extra["upstream_model"], "actual-upstream-model");
+            assert_eq!(extra["mapped_model"], "requested-alias");
+            assert_eq!(extra["capacity_error"].as_bool().unwrap_or(false), marked);
+        }
     }
 
     #[test]

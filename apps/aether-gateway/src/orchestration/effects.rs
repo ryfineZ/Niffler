@@ -581,6 +581,16 @@ async fn record_health_failure_effect(
         return;
     }
 
+    if effect.status_code != 429
+        && context.plan.model_name.is_some()
+        && aether_data_contracts::repository::candidates::is_model_capacity_error(
+            None,
+            effect.error_body,
+        )
+    {
+        return;
+    }
+
     let api_format = context.plan.provider_api_format.trim();
     if api_format.is_empty() {
         return;
@@ -734,6 +744,26 @@ async fn record_pool_error_effect(
         return;
     };
 
+    let capacity_error = effect.status_code != 429
+        && aether_data_contracts::repository::candidates::is_model_capacity_error(
+            None,
+            effect.error_body,
+        );
+    if capacity_error {
+        if let Some(model) = context.plan.model_name.as_deref() {
+            let policy = super::read_global_stream_failover_policy(state).await;
+            crate::handlers::shared::provider_pool::record_admin_provider_pool_model_cooldown(
+                state.runtime_state.as_ref(),
+                &context.plan.provider_id,
+                &context.plan.key_id,
+                model,
+                "openai_transient_model_capacity",
+                policy.cooldown_seconds,
+            )
+            .await;
+            return;
+        }
+    }
     record_admin_provider_pool_error(
         state.runtime_state.as_ref(),
         &context.plan.provider_id,
@@ -2107,6 +2137,34 @@ mod tests {
             .expect("stored key should exist");
         assert_eq!(stored_key.oauth_invalid_at_unix_secs, None);
         assert_eq!(stored_key.oauth_invalid_reason, None);
+    }
+
+    #[tokio::test]
+    async fn capacity_failure_does_not_lower_account_health() {
+        let state = health_state();
+        let plan = sample_plan();
+        let original = state
+            .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
+            .await
+            .unwrap();
+        apply_local_execution_effect(
+            &state,
+            LocalExecutionEffectContext {
+                plan: &plan,
+                report_context: None,
+            },
+            LocalExecutionEffect::HealthFailure(LocalHealthFailureEffect {
+                status_code: 503,
+                classification: LocalFailoverClassification::RetryUpstreamFailure,
+                error_body: Some("Selected model is at capacity. Please try a different model."),
+            }),
+        )
+        .await;
+        let stored = state
+            .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
+            .await
+            .unwrap();
+        assert_eq!(stored[0].health_by_format, original[0].health_by_format);
     }
 
     #[tokio::test]

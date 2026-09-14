@@ -248,3 +248,7 @@ fn trace_header_is_sensitive(name: &str) -> bool {
     .iter()
     .any(|candidate| name.trim().eq_ignore_ascii_case(candidate))
 }
+
+pub(crate) use policy::{
+    local_stream_failover_policy_to_value, read_global_stream_failover_policy,
+};

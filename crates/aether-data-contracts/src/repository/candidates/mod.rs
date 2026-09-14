@@ -7,3 +7,9 @@ pub use types::{
     RequestCandidateStatus, RequestCandidateTrace, RequestCandidateWriteRepository,
     StoredRequestCandidate, UpsertRequestCandidateRecord,
 };
+
+mod capacity;
+pub use capacity::{
+    candidate_upstream_model, is_model_capacity_error, summarize_capacity_candidates,
+    CapacityErrorEvent, CapacityModelSummary,
+};

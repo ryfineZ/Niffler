@@ -20,3 +20,18 @@ pub(crate) use self::writes::{
     record_admin_provider_pool_model_cooldown, record_admin_provider_pool_stream_timeout,
     record_admin_provider_pool_success,
 };
+
+pub(crate) async fn read_capacity_model_cooldown_seconds(
+    runtime: &aether_runtime_state::RuntimeState,
+    provider: &str,
+    key: &str,
+    model: &str,
+) -> Result<u64, crate::GatewayError> {
+    runtime
+        .kv_ttl_seconds(&keys::pool_model_cooldown_key(provider, key, model))
+        .await
+        .map(|ttl| ttl.unwrap_or(0).max(0) as u64)
+        .map_err(|error| {
+            crate::GatewayError::Internal(format!("capacity cooldown read failed: {error}"))
+        })
+}

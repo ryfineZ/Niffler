@@ -431,6 +431,13 @@ pub struct PublicHealthTimelineBucket {
 
 #[async_trait]
 pub trait RequestCandidateReadRepository: Send + Sync {
+    async fn summarize_capacity_errors(
+        &self,
+        provider_ids: &[String],
+        since_ms: u64,
+        until_ms: u64,
+    ) -> Result<Vec<super::CapacityModelSummary>, crate::DataLayerError>;
+
     async fn find_billing_admission(
         &self,
         _request_id: &str,

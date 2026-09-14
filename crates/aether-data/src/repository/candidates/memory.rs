@@ -54,6 +54,32 @@ impl InMemoryRequestCandidateRepository {
 
 #[async_trait]
 impl RequestCandidateReadRepository for InMemoryRequestCandidateRepository {
+    async fn summarize_capacity_errors(
+        &self,
+        provider_ids: &[String],
+        since_ms: u64,
+        until_ms: u64,
+    ) -> Result<
+        Vec<aether_data_contracts::repository::candidates::CapacityModelSummary>,
+        DataLayerError,
+    > {
+        let rows = self
+            .by_id
+            .read()
+            .expect("candidate repository lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(
+            aether_data_contracts::repository::candidates::summarize_capacity_candidates(
+                &rows,
+                provider_ids,
+                since_ms,
+                until_ms,
+            ),
+        )
+    }
+
     async fn find_billing_admission(
         &self,
         request_id: &str,

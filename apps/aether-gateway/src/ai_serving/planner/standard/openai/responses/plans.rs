@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use tracing::warn;
@@ -26,7 +26,10 @@ pub(crate) use crate::ai_serving::{
     resolve_openai_responses_stream_spec as resolve_stream_spec,
     resolve_openai_responses_sync_spec as resolve_sync_spec,
 };
-use crate::orchestration::local_stream_failover_policy_from_transport;
+use crate::orchestration::{
+    local_stream_failover_policy_to_value, read_global_stream_failover_policy,
+    LocalStreamFailoverPolicy,
+};
 use crate::{AppState, GatewayError};
 
 pub(crate) struct LocalOpenAiResponsesSyncAttemptSource<'a> {
@@ -49,6 +52,7 @@ pub(crate) struct LocalOpenAiResponsesStreamAttemptSource<'a> {
     candidates: LocalOpenAiResponsesCandidateAttemptSource<'a>,
     stream_failover_attempt_budget_enabled: bool,
     stream_failover_attempt_budget: StreamFailoverAttemptBudget,
+    global_policy: LocalStreamFailoverPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,29 +64,24 @@ enum StreamFailoverAttemptAdmission {
 
 #[derive(Default)]
 struct StreamFailoverAttemptBudget {
-    seen_accounts: HashSet<(String, String, String)>,
-    attempts_by_endpoint: HashMap<(String, String), u64>,
+    seen_accounts: HashSet<(String, String)>,
+    attempts: u64,
 }
 
 impl StreamFailoverAttemptBudget {
     fn admit(
         &mut self,
         provider_id: &str,
-        endpoint_id: &str,
+        _endpoint_id: &str,
         key_id: &str,
         max_account_switches: u64,
     ) -> StreamFailoverAttemptAdmission {
-        let account = (
-            provider_id.to_string(),
-            endpoint_id.to_string(),
-            key_id.to_string(),
-        );
+        let account = (provider_id.to_string(), key_id.to_string());
         if !self.seen_accounts.insert(account) {
             return StreamFailoverAttemptAdmission::DuplicateAccount;
         }
 
-        let endpoint = (provider_id.to_string(), endpoint_id.to_string());
-        let attempts = self.attempts_by_endpoint.entry(endpoint).or_default();
+        let attempts = &mut self.attempts;
         let max_attempts = max_account_switches.saturating_add(1);
         if *attempts >= max_attempts {
             return StreamFailoverAttemptAdmission::BudgetExhausted;
@@ -94,8 +93,8 @@ impl StreamFailoverAttemptBudget {
     fn admit_attempt(
         &mut self,
         attempt: &LocalOpenAiResponsesCandidateAttempt,
+        policy: &LocalStreamFailoverPolicy,
     ) -> StreamFailoverAttemptAdmission {
-        let policy = local_stream_failover_policy_from_transport(&attempt.eligible.transport);
         if !policy.enabled {
             return StreamFailoverAttemptAdmission::Allowed;
         }
@@ -222,6 +221,7 @@ pub(super) async fn build_local_stream_attempt_source<'a>(
             candidates,
             stream_failover_attempt_budget_enabled,
             stream_failover_attempt_budget: StreamFailoverAttemptBudget::default(),
+            global_policy: read_global_stream_failover_policy(state).await,
         },
         candidate_count,
     )))
@@ -260,10 +260,19 @@ impl LocalExecutionAttemptSource<AiStreamAttempt> for LocalOpenAiResponsesStream
     async fn next_execution_attempt(&mut self) -> Result<Option<AiStreamAttempt>, GatewayError> {
         while let Some(attempt) = self.candidates.next_attempt().await {
             if self.stream_failover_attempt_budget_enabled {
-                match self.stream_failover_attempt_budget.admit_attempt(&attempt) {
-                    StreamFailoverAttemptAdmission::Allowed => {}
-                    StreamFailoverAttemptAdmission::DuplicateAccount
-                    | StreamFailoverAttemptAdmission::BudgetExhausted => continue,
+                let admission = self
+                    .stream_failover_attempt_budget
+                    .admit_attempt(&attempt, &self.global_policy);
+                if admission != StreamFailoverAttemptAdmission::Allowed {
+                    if let Some(lease) = attempt.eligible.orchestration.pool_key_lease.as_ref() {
+                        crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(
+                            self.state.runtime_state.as_ref(), lease,
+                        ).await.map_err(|err| GatewayError::Internal(format!("failed to release unused pool key lease: {err:?}")))?;
+                    }
+                    if admission == StreamFailoverAttemptAdmission::BudgetExhausted {
+                        break;
+                    }
+                    continue;
                 }
             }
             match self.build_stream_attempt(attempt).await? {
@@ -353,7 +362,16 @@ impl LocalOpenAiResponsesStreamAttemptSource<'_> {
             payload,
             self.spec.compact,
         ) {
-            Ok(value) => Ok(value),
+            Ok(mut value) => {
+                if let Some(attempt) = value.as_mut() {
+                    let context = attempt
+                        .report_context
+                        .get_or_insert_with(|| serde_json::json!({}));
+                    context["global_stream_failover_policy"] =
+                        local_stream_failover_policy_to_value(&self.global_policy);
+                }
+                Ok(value)
+            }
             Err(err) => {
                 warn!(
                     trace_id = %self.trace_id,
@@ -513,6 +531,27 @@ pub(super) async fn build_local_stream_plan_and_reports(
 #[cfg(test)]
 mod tests {
     use super::{StreamFailoverAttemptAdmission, StreamFailoverAttemptBudget};
+
+    #[test]
+    fn stream_failover_budget_spans_providers_and_endpoints() {
+        let mut budget = StreamFailoverAttemptBudget::default();
+        assert_eq!(
+            budget.admit("p1", "e1", "k1", 1),
+            StreamFailoverAttemptAdmission::Allowed
+        );
+        assert_eq!(
+            budget.admit("p1", "e2", "k1", 1),
+            StreamFailoverAttemptAdmission::DuplicateAccount
+        );
+        assert_eq!(
+            budget.admit("p2", "e2", "k2", 1),
+            StreamFailoverAttemptAdmission::Allowed
+        );
+        assert_eq!(
+            budget.admit("p3", "e3", "k3", 1),
+            StreamFailoverAttemptAdmission::BudgetExhausted
+        );
+    }
 
     #[test]
     fn stream_failover_budget_rejects_duplicate_accounts() {

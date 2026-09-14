@@ -230,3 +230,5 @@ pub(crate) fn maybe_build_local_sync_finalize_response(
 ) -> Result<Option<Response<Body>>, GatewayError> {
     crate::execution_runtime::maybe_build_local_sync_finalize_response(trace_id, decision, payload)
 }
+
+pub(crate) use planner::openai_request_is_image_generation_intent;

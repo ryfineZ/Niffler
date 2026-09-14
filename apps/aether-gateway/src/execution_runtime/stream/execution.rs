@@ -4269,7 +4269,7 @@ mod tests {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
             "local_failover_policy": {},
-            "stream_failover_policy": {
+            "global_stream_failover_policy": {
                 "enabled": true,
                 "max_wait_ms": 5000,
                 "max_buffer_bytes": 65536,
