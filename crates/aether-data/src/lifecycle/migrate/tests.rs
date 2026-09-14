@@ -2539,6 +2539,8 @@ fn embedded_postgres_manifest_contains_latest_production_migrations() {
     assert!(versions.contains(&20260810180000));
     assert!(versions.contains(&20260824120000));
     assert!(versions.contains(&20260903120000));
+    assert!(versions.contains(&20260914000000));
+    assert!(versions.contains(&20260914000100));
     assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
@@ -2625,6 +2627,8 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260810180000,
             20260824120000,
             20260903120000,
+            20260914000000,
+            20260914000100,
         ]
     );
 }
@@ -2673,6 +2677,8 @@ fn pending_migrations_from_applied_after_empty_database_snapshot_stamp_returns_p
             20260810180000,
             20260824120000,
             20260903120000,
+            20260914000000,
+            20260914000100,
         ],
         "empty database snapshot-stamped databases should run only post-snapshot incrementals on first startup"
     );
