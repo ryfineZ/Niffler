@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use async_trait::async_trait;
 use tracing::warn;
 
@@ -28,7 +26,7 @@ pub(crate) use crate::ai_serving::{
 };
 use crate::orchestration::{
     local_stream_failover_policy_to_value, read_global_stream_failover_policy,
-    LocalStreamFailoverPolicy,
+    LocalStreamFailoverPolicy, StreamFailoverAttemptAdmission, StreamFailoverAttemptBudget,
 };
 use crate::{AppState, GatewayError};
 
@@ -53,59 +51,6 @@ pub(crate) struct LocalOpenAiResponsesStreamAttemptSource<'a> {
     stream_failover_attempt_budget_enabled: bool,
     stream_failover_attempt_budget: StreamFailoverAttemptBudget,
     global_policy: LocalStreamFailoverPolicy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamFailoverAttemptAdmission {
-    Allowed,
-    DuplicateAccount,
-    BudgetExhausted,
-}
-
-#[derive(Default)]
-struct StreamFailoverAttemptBudget {
-    seen_accounts: HashSet<(String, String)>,
-    attempts: u64,
-}
-
-impl StreamFailoverAttemptBudget {
-    fn admit(
-        &mut self,
-        provider_id: &str,
-        _endpoint_id: &str,
-        key_id: &str,
-        max_account_switches: u64,
-    ) -> StreamFailoverAttemptAdmission {
-        let account = (provider_id.to_string(), key_id.to_string());
-        if !self.seen_accounts.insert(account) {
-            return StreamFailoverAttemptAdmission::DuplicateAccount;
-        }
-
-        let attempts = &mut self.attempts;
-        let max_attempts = max_account_switches.saturating_add(1);
-        if *attempts >= max_attempts {
-            return StreamFailoverAttemptAdmission::BudgetExhausted;
-        }
-        *attempts = attempts.saturating_add(1);
-        StreamFailoverAttemptAdmission::Allowed
-    }
-
-    fn admit_attempt(
-        &mut self,
-        attempt: &LocalOpenAiResponsesCandidateAttempt,
-        policy: &LocalStreamFailoverPolicy,
-    ) -> StreamFailoverAttemptAdmission {
-        if !policy.enabled {
-            return StreamFailoverAttemptAdmission::Allowed;
-        }
-        let candidate = &attempt.eligible.candidate;
-        self.admit(
-            &candidate.provider_id,
-            &candidate.endpoint_id,
-            &candidate.key_id,
-            policy.max_account_switches,
-        )
-    }
 }
 
 pub(super) async fn build_local_sync_attempt_source<'a>(
@@ -260,9 +205,13 @@ impl LocalExecutionAttemptSource<AiStreamAttempt> for LocalOpenAiResponsesStream
     async fn next_execution_attempt(&mut self) -> Result<Option<AiStreamAttempt>, GatewayError> {
         while let Some(attempt) = self.candidates.next_attempt().await {
             if self.stream_failover_attempt_budget_enabled {
-                let admission = self
-                    .stream_failover_attempt_budget
-                    .admit_attempt(&attempt, &self.global_policy);
+                let candidate = &attempt.eligible.candidate;
+                let admission = self.stream_failover_attempt_budget.admit_with_policy(
+                    &candidate.provider_id,
+                    &candidate.endpoint_id,
+                    &candidate.key_id,
+                    &self.global_policy,
+                );
                 if admission != StreamFailoverAttemptAdmission::Allowed {
                     if let Some(lease) = attempt.eligible.orchestration.pool_key_lease.as_ref() {
                         crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(

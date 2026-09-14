@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use aether_contracts::ExecutionPlan;
 use serde_json::{json, Value};
@@ -26,6 +26,58 @@ pub(crate) struct LocalStreamFailoverPolicy {
     pub(crate) max_wait_ms: u64,
     pub(crate) max_buffer_bytes: usize,
     pub(crate) cooldown_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamFailoverAttemptAdmission {
+    Allowed,
+    DuplicateAccount,
+    BudgetExhausted,
+}
+
+#[derive(Default)]
+pub(crate) struct StreamFailoverAttemptBudget {
+    seen_accounts: HashSet<(String, String)>,
+    attempts: u64,
+}
+
+impl StreamFailoverAttemptBudget {
+    pub(crate) fn admit(
+        &mut self,
+        provider_id: &str,
+        _endpoint_id: &str,
+        key_id: &str,
+        max_account_switches: u64,
+    ) -> StreamFailoverAttemptAdmission {
+        let account = (provider_id.to_string(), key_id.to_string());
+        if !self.seen_accounts.insert(account) {
+            return StreamFailoverAttemptAdmission::DuplicateAccount;
+        }
+        let max_attempts = max_account_switches.saturating_add(1);
+        if self.attempts >= max_attempts {
+            return StreamFailoverAttemptAdmission::BudgetExhausted;
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        StreamFailoverAttemptAdmission::Allowed
+    }
+
+    pub(crate) fn admit_with_policy(
+        &mut self,
+        provider_id: &str,
+        endpoint_id: &str,
+        key_id: &str,
+        policy: &LocalStreamFailoverPolicy,
+    ) -> StreamFailoverAttemptAdmission {
+        if !policy.enabled {
+            return StreamFailoverAttemptAdmission::Allowed;
+        }
+        self.admit(
+            provider_id,
+            endpoint_id,
+            key_id,
+            policy.max_account_switches,
+        )
+    }
 }
 
 impl Default for LocalStreamFailoverPolicy {

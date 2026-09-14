@@ -174,6 +174,7 @@ fn stream_failure_body_field<'a>(
     let fields = match field {
         "message" => &["details", "message", "detail", "reason"][..],
         "type" => &["type", "category"][..],
+        "code" => &["code"][..],
         _ => std::slice::from_ref(&field),
     };
     for field in fields {
@@ -199,6 +200,12 @@ pub(super) async fn record_stream_sync_failure(
     started_at_unix_ms: Option<u64>,
 ) -> LocalFailoverAnalysis {
     let error_type = stream_failure_body_field(payload, "type").unwrap_or("internal");
+    let error_code = stream_failure_body_field(payload, "code");
+    let persisted_error_type = error_code
+        .filter(|code| {
+            aether_data_contracts::repository::candidates::is_model_capacity_error(Some(code), None)
+        })
+        .unwrap_or(error_type);
     let error_message = stream_failure_body_field(payload, "message").unwrap_or_default();
     let error_body = payload
         .body_json
@@ -300,7 +307,7 @@ pub(super) async fn record_stream_sync_failure(
         SchedulerRequestCandidateStatusUpdate {
             status: RequestCandidateStatus::Failed,
             status_code: Some(payload.status_code),
-            error_type: Some(error_type.to_string()),
+            error_type: Some(persisted_error_type.to_string()),
             error_message: Some(error_message.to_string()),
             latency_ms: payload
                 .telemetry
@@ -397,6 +404,42 @@ pub(super) async fn submit_midstream_stream_failure(
             report_scope = "stream_failure",
             error = ?err,
             "gateway failed to submit sync execution report for terminal stream failure"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+
+    use super::stream_failure_body_field;
+    use crate::usage::GatewaySyncReportRequest;
+
+    #[test]
+    fn stream_failure_extracts_structured_capacity_code() {
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-capacity".to_string(),
+            report_kind: "openai_responses_stream_finalize".to_string(),
+            report_context: None,
+            status_code: 503,
+            headers: BTreeMap::new(),
+            body_json: Some(json!({
+                "error": {
+                    "code": "server_is_overloaded",
+                    "message": "Please retry later."
+                }
+            })),
+            client_body_json: None,
+            body_base64: None,
+            telemetry: None,
+        };
+
+        assert_eq!(stream_failure_body_field(&payload, "type"), None);
+        assert_eq!(
+            stream_failure_body_field(&payload, "code"),
+            Some("server_is_overloaded")
         );
     }
 }

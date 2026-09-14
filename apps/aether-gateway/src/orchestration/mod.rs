@@ -43,6 +43,7 @@ pub(crate) use self::policy::{
     local_stream_failover_policy_from_transport, resolve_local_failover_policy,
     resolve_local_stream_failover_policy, validate_endpoint_stream_failover_config,
     LocalFailoverPolicy, LocalFailoverRegexRule, LocalStreamFailoverPolicy,
+    StreamFailoverAttemptAdmission, StreamFailoverAttemptBudget,
 };
 pub(crate) use self::recovery::{
     analyze_local_failover, recover_local_failover_decision, LocalFailoverAnalysis,
