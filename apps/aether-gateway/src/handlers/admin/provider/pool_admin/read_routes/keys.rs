@@ -15,7 +15,9 @@ use aether_admin::provider::pool as admin_provider_pool_pure;
 use aether_data_contracts::repository::pool_scores::{
     GetPoolMemberScoresByIdsQuery, PoolMemberIdentity, StoredPoolMemberScore,
 };
-use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
+use aether_data_contracts::repository::provider_catalog::{
+    ProviderCatalogKeyListOrder, ProviderCatalogKeyListQuery, StoredProviderCatalogKey,
+};
 use aether_data_contracts::repository::usage::StoredProviderApiKeyWindowUsageSummary;
 use axum::{
     body::Body,
@@ -299,6 +301,52 @@ fn admin_pool_sort_keys_by_score(
     });
 }
 
+fn admin_pool_repository_key_order(sort: AdminPoolKeySort) -> ProviderCatalogKeyListOrder {
+    match (sort.field, sort.direction) {
+        (AdminPoolKeySortField::Default, _) => ProviderCatalogKeyListOrder::Name,
+        (AdminPoolKeySortField::ImportedAt, AdminPoolKeySortDirection::Asc) => {
+            ProviderCatalogKeyListOrder::CreatedAtAsc
+        }
+        (AdminPoolKeySortField::ImportedAt, AdminPoolKeySortDirection::Desc) => {
+            ProviderCatalogKeyListOrder::CreatedAtDesc
+        }
+        (AdminPoolKeySortField::LastUsedAt, AdminPoolKeySortDirection::Asc) => {
+            ProviderCatalogKeyListOrder::LastUsedAtAsc
+        }
+        (AdminPoolKeySortField::LastUsedAt, AdminPoolKeySortDirection::Desc) => {
+            ProviderCatalogKeyListOrder::LastUsedAtDesc
+        }
+        (AdminPoolKeySortField::Score | AdminPoolKeySortField::Capacity, _) => {
+            ProviderCatalogKeyListOrder::Name
+        }
+    }
+}
+
+fn admin_pool_repository_key_is_active_filter(status: &str) -> Option<bool> {
+    match status {
+        "active" => Some(true),
+        "inactive" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn admin_pool_can_use_repository_page(
+    search: Option<&str>,
+    quick_selectors: &[String],
+    plan_filter: &str,
+    status: &str,
+    sort: AdminPoolKeySort,
+) -> bool {
+    search.is_none()
+        && quick_selectors.is_empty()
+        && plan_filter == "all"
+        && matches!(status, "all" | "active" | "inactive" | "disabled")
+        && !matches!(
+            sort.field,
+            AdminPoolKeySortField::Score | AdminPoolKeySortField::Capacity
+        )
+}
+
 pub(super) async fn build_admin_pool_list_keys_response(
     state: &AdminAppState<'_>,
     request_context: &AdminRequestContext<'_>,
@@ -565,29 +613,57 @@ pub(super) async fn build_admin_pool_list_keys_response(
             all_scores.extend(read_admin_pool_scores_by_key_id(state, &provider.id, &ids).await?);
         }
     }
-    if matches!(sort.field, AdminPoolKeySortField::Capacity) {
-        keys.sort_by(|a, b| {
-            let cmp = capacity_count(&a.id).cmp(&capacity_count(&b.id));
-            (if sort.direction == AdminPoolKeySortDirection::Desc {
-                cmp.reverse()
-            } else {
-                cmp
+    let use_repository_page = matches!(capacity_filter.as_deref(), None | Some("all"))
+        && admin_pool_can_use_repository_page(
+            search.as_deref(),
+            &quick_selectors,
+            &plan_filter,
+            &status,
+            sort,
+        );
+    let (total, ids, page_keys) = if use_repository_page {
+        let key_page = state
+            .list_provider_catalog_key_page(&ProviderCatalogKeyListQuery {
+                provider_id: provider_id.clone(),
+                search: None,
+                is_active: admin_pool_repository_key_is_active_filter(&status),
+                offset: page.saturating_sub(1).saturating_mul(page_size),
+                limit: page_size,
+                order: admin_pool_repository_key_order(sort),
             })
-            .then(a.id.cmp(&b.id))
-        });
-    } else if matches!(sort.field, AdminPoolKeySortField::Score) {
-        admin_pool_sort_keys_by_score(&mut keys, &all_scores, sort.direction);
+            .await?;
+        let ids = key_page
+            .items
+            .iter()
+            .map(|key| key.id.clone())
+            .collect::<Vec<_>>();
+        (key_page.total, ids, key_page.items)
     } else {
-        admin_pool_sort_keys_for_request(&mut keys, sort);
-    }
-    let total = keys.len();
-    let ids = keys
-        .into_iter()
-        .skip(page.saturating_sub(1).saturating_mul(page_size))
-        .take(page_size)
-        .map(|k| k.id)
-        .collect::<Vec<_>>();
-    let page_keys = state.read_provider_catalog_keys_by_ids(&ids).await?;
+        if matches!(sort.field, AdminPoolKeySortField::Capacity) {
+            keys.sort_by(|a, b| {
+                let cmp = capacity_count(&a.id).cmp(&capacity_count(&b.id));
+                (if sort.direction == AdminPoolKeySortDirection::Desc {
+                    cmp.reverse()
+                } else {
+                    cmp
+                })
+                .then(a.id.cmp(&b.id))
+            });
+        } else if matches!(sort.field, AdminPoolKeySortField::Score) {
+            admin_pool_sort_keys_by_score(&mut keys, &all_scores, sort.direction);
+        } else {
+            admin_pool_sort_keys_for_request(&mut keys, sort);
+        }
+        let total = keys.len();
+        let ids = keys
+            .into_iter()
+            .skip(page.saturating_sub(1).saturating_mul(page_size))
+            .take(page_size)
+            .map(|k| k.id)
+            .collect::<Vec<_>>();
+        let page_keys = state.read_provider_catalog_keys_by_ids(&ids).await?;
+        (total, ids, page_keys)
+    };
     let mut payloads = BTreeMap::<String, serde_json::Value>::new();
     for provider in &providers {
         let keys = page_keys
