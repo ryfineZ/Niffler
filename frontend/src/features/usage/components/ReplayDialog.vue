@@ -4,6 +4,9 @@
       <div
         v-if="isOpen"
         class="fixed inset-0 z-[60] flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="replay-dialog-title"
         @click.self="handleClose"
       >
         <div
@@ -13,7 +16,10 @@
         <Card class="relative w-full max-w-6xl max-h-[85vh] min-h-[60vh] mx-4 shadow-2xl flex flex-col">
           <!-- 头部：标题 + 提供商/Key 选择 + 发送 -->
           <div class="px-4 py-2.5 border-b flex items-center gap-3 shrink-0 flex-wrap">
-            <h3 class="text-sm font-semibold shrink-0">
+            <h3
+              id="replay-dialog-title"
+              class="text-sm font-semibold shrink-0"
+            >
               {{ t('replayDialog.title') }}
             </h3>
             <Separator
@@ -68,7 +74,7 @@
             <div class="flex items-center gap-1 ml-auto shrink-0">
               <Button
                 size="sm"
-                :disabled="replaying"
+                :disabled="!canReplay"
                 class="gap-1.5 h-7 text-xs"
                 @click="doReplay"
               >
@@ -86,6 +92,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-7 w-7"
+                :aria-label="t('common.close')"
                 @click="handleClose"
               >
                 <X class="w-4 h-4" />
@@ -93,6 +100,16 @@
             </div>
           </div>
 
+          <p class="px-4 py-2 text-xs text-muted-foreground border-b">
+            {{ t('replayDialog.billingNote') }}
+          </p>
+          <p
+            v-if="optionsError"
+            role="alert"
+            class="px-4 py-2 text-xs text-destructive border-b"
+          >
+            {{ optionsError }}
+          </p>
           <!-- 双栏内容区 -->
           <div class="flex-1 min-h-0 flex">
             <!-- ===== 左栏：请求 ===== -->
@@ -108,6 +125,7 @@
                 </div>
                 <button
                   class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted shrink-0"
+                  :disabled="bodyLoading || Boolean(bodyProblem)"
                   :title="requestCopied ? t('replayDialog.copied') : t('replayDialog.copyRequestBody')"
                   @click="copyRequestBody"
                 >
@@ -160,14 +178,30 @@
                 </div>
                 <div class="px-4 py-3">
                   <pre
-                    v-if="formattedRequestBody"
+                    v-if="formattedRequestBody && !bodyProblem && !bodyLoading"
                     class="text-xs font-mono whitespace-pre-wrap break-all leading-relaxed"
                   >{{ formattedRequestBody }}</pre>
                   <div
                     v-else
-                    class="text-xs text-muted-foreground/50 italic"
+                    class="text-xs text-muted-foreground"
                   >
-                    {{ t('replayDialog.noRequestBody') }}
+                    <span
+                      v-if="bodyLoading"
+                      role="status"
+                    >{{ t('replayDialog.loadingBody') }}</span>
+                    <span
+                      v-else
+                      role="alert"
+                    >{{ bodyProblem }}</span>
+                    <Button
+                      v-if="bodyLoadError"
+                      variant="outline"
+                      size="sm"
+                      class="mt-2 block"
+                      @click="loadRequestBody"
+                    >
+                      {{ t('replayDialog.retryLoad') }}
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -181,11 +215,15 @@
                   <span class="text-xs font-medium text-muted-foreground">{{ t('replayDialog.response') }}</span>
                   <template v-if="replayResult">
                     <Badge
-                      :variant="replayResult.status_code < 400 ? 'success' : 'destructive'"
+                      :variant="replayResult.status === 'success' ? 'success' : 'destructive'"
                       class="text-[10px] px-1.5 py-0 h-4"
                     >
-                      {{ replayResult.status_code }}
+                      {{ t(replayResult.status === 'success' ? 'replayDialog.succeeded' : 'replayDialog.failed') }}
                     </Badge>
+                    <span
+                      v-if="replayResult.status_code != null"
+                      class="text-[11px] text-muted-foreground"
+                    >HTTP {{ replayResult.status_code }}</span>
                     <span class="text-[11px] text-muted-foreground/60">{{ replayResult.response_time_ms }}ms</span>
                     <span class="text-[11px] text-muted-foreground/60 font-mono truncate">{{ replayResult.provider }}</span>
                   </template>
@@ -220,9 +258,17 @@
                 <!-- Loading -->
                 <div
                   v-else-if="replaying && !replayResult"
-                  class="flex items-center justify-center h-full"
+                  class="flex flex-col gap-3 items-center justify-center h-full p-4 text-center"
+                  role="status"
+                  aria-live="polite"
                 >
                   <Loader2 class="w-6 h-6 animate-spin text-muted-foreground" />
+                  <p class="text-sm">
+                    {{ t('replayDialog.waiting', { seconds: elapsedSeconds }) }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ t('replayDialog.waitingHint') }}
+                  </p>
                 </div>
 
                 <!-- 错误 -->
@@ -230,8 +276,11 @@
                   v-else-if="replayError"
                   class="px-4 py-4"
                 >
-                  <div class="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3">
-                    <p class="text-sm text-red-600 dark:text-red-400">
+                  <div
+                    class="rounded-lg bg-destructive/10 border border-destructive/30 p-3"
+                    role="alert"
+                  >
+                    <p class="text-sm text-destructive">
                       {{ replayError }}
                     </p>
                   </div>
@@ -239,6 +288,28 @@
 
                 <!-- 响应结果 -->
                 <template v-if="replayResult">
+                  <div
+                    class="px-4 py-3 border-b space-y-2"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <p
+                      v-if="replayResult.error_message"
+                      class="text-xs font-medium text-destructive"
+                    >
+                      {{ replayResult.error_message }}
+                    </p>
+                    <p
+                      v-if="replayResult.record_warning"
+                      role="alert"
+                      class="text-xs text-destructive"
+                    >
+                      {{ replayResult.record_warning }}
+                    </p>
+                    <p class="text-xs text-muted-foreground break-all">
+                      {{ t('replayDialog.replayId') }}：{{ replayResult.replay_id }}
+                    </p>
+                  </div>
                   <div
                     v-if="replayResult.mapping"
                     class="border-b"
@@ -308,7 +379,16 @@
                     </div>
                   </div>
                   <div class="px-4 py-3">
-                    <pre class="text-xs font-mono whitespace-pre-wrap break-all leading-relaxed">{{ formattedResponseBody }}</pre>
+                    <pre
+                      v-if="formattedResponseBody"
+                      class="text-xs font-mono whitespace-pre-wrap break-all leading-relaxed"
+                    >{{ formattedResponseBody }}</pre>
+                    <p
+                      v-else
+                      class="text-xs text-muted-foreground"
+                    >
+                      {{ t('replayDialog.emptyResponse') }}
+                    </p>
                   </div>
                 </template>
               </div>
@@ -321,7 +401,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { dashboardApi, type ReplayResponse, type RequestDetail } from '@/api/dashboard'
 import { getProvidersSummary } from '@/api/endpoints/providers'
@@ -346,11 +426,11 @@ const props = defineProps<{
   requestId: string | null
   detail: RequestDetail | null
 }>()
-const { t } = useI18n()
-
 const emit = defineEmits<{
   close: []
 }>()
+
+const { t } = useI18n()
 
 const selectedProviderId = ref('')
 const selectedKeyId = ref('')
@@ -365,13 +445,36 @@ const showResponseHeaders = ref(false)
 const requestCopied = ref(false)
 const responseCopied = ref(false)
 const { copyToClipboard } = useClipboard()
+const loadedDetail = ref<RequestDetail | null>(null)
+const bodyLoading = ref(false)
+const bodyLoadError = ref<string | null>(null)
+const optionsError = ref<string | null>(null)
+const elapsedSeconds = ref(0)
+let generation = 0
+let bodyGeneration = 0
+let keyGeneration = 0
+let elapsedTimer: ReturnType<typeof setInterval> | undefined
+const copyTimers = new Set<ReturnType<typeof setTimeout>>()
+
+function stopElapsedTimer() {
+  if (elapsedTimer) clearInterval(elapsedTimer)
+  elapsedTimer = undefined
+}
+const bodyProblem = computed(() => {
+  if (bodyLoadError.value) return bodyLoadError.value
+  const body = loadedDetail.value?.request_body
+  const capture = loadedDetail.value?.body_capture?.request as { storage?: string, state?: string } | undefined
+  if (body?.truncated === true || capture?.storage === 'truncated' || capture?.state === 'truncated') return t('replayDialog.incompleteBody')
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length === 0) return t('replayDialog.missingBody')
+  return null
+})
+const canReplay = computed(() => Boolean(props.requestId) && !bodyLoading.value && !bodyProblem.value && !replaying.value && !loadingKeys.value)
+
 
 // ---- 请求侧数据 ----
 
 const displayRequestHeaders = computed(() => {
-  if (!props.detail) return {}
-  // 优先显示发送给提供商的请求头，否则显示客户端请求头
-  return props.detail.provider_request_headers || props.detail.request_headers || {}
+  return loadedDetail.value?.request_headers || props.detail?.request_headers || {}
 })
 
 const hasRequestHeaders = computed(() => {
@@ -383,23 +486,13 @@ const requestHeaderCount = computed(() => {
 })
 
 const formattedRequestBody = computed(() => {
-  if (!props.detail?.request_body) return ''
-  try {
-    return JSON.stringify(props.detail.request_body, null, 2)
-  } catch {
-    return String(props.detail.request_body)
-  }
+  return formatBody(loadedDetail.value?.request_body)
 })
 
 // ---- 响应侧数据 ----
 
 const formattedResponseBody = computed(() => {
-  if (!replayResult.value?.response_body) return ''
-  try {
-    return JSON.stringify(replayResult.value.response_body, null, 2)
-  } catch {
-    return String(replayResult.value.response_body)
-  }
+  return formatBody(replayResult.value?.response_body)
 })
 
 const responseHeaderCount = computed(() => {
@@ -435,47 +528,95 @@ function formatMappingSource(source?: string) {
 
 // ---- 生命周期 ----
 
-watch(() => props.isOpen, async (isOpen) => {
-  if (isOpen) {
-    replayResult.value = null
-    replayError.value = null
-    selectedProviderId.value = ''
-    selectedKeyId.value = ''
-    keys.value = []
-    showRequestHeaders.value = false
-    showResponseHeaders.value = false
-    try {
-      const response = await getProvidersSummary({ page_size: 9999 })
-      providers.value = response.items
-        .filter(p => p.is_active && p.active_endpoints > 0)
-        .map(p => ({ id: p.id, name: p.name }))
-    } catch (e) {
-      log.error('Failed to load providers:', e)
-    }
+function formatBody(body: unknown): string {
+  if (body === undefined || body === null) return ''
+  return typeof body === 'string' ? body : JSON.stringify(body, null, 2)
+}
+
+async function loadRequestBody() {
+  if (!props.requestId) return
+  const current = ++bodyGeneration
+  const id = props.requestId
+  bodyLoading.value = true
+  bodyLoadError.value = null
+  loadedDetail.value = null
+  try {
+    const detail = await dashboardApi.getRequestDetail(id, { includeBodies: true, cacheTtlMs: 0 })
+    if (current !== bodyGeneration) return
+    loadedDetail.value = detail
+  } catch (error) {
+    if (current !== bodyGeneration) return
+    bodyLoadError.value = t('replayDialog.bodyLoadFailed')
+    log.error('Failed to load replay body:', error)
+  } finally {
+    if (current === bodyGeneration) bodyLoading.value = false
   }
-})
+}
+
+watch(() => [props.isOpen, props.requestId] as const, async ([isOpen]) => {
+  const current = ++generation
+  ++bodyGeneration
+  ++keyGeneration
+  stopElapsedTimer()
+  replaying.value = false
+  bodyLoading.value = false
+  loadingKeys.value = false
+  if (!isOpen) return
+  loadedDetail.value = null
+  replayResult.value = null
+  replayError.value = null
+  optionsError.value = null
+  selectedProviderId.value = ''
+  selectedKeyId.value = ''
+  providers.value = []
+  keys.value = []
+  showRequestHeaders.value = false
+  showResponseHeaders.value = false
+  requestCopied.value = false
+  responseCopied.value = false
+  void loadRequestBody()
+  try {
+    const response = await getProvidersSummary({ page_size: 9999 })
+    if (current !== generation) return
+    providers.value = response.items.filter(p => p.is_active && p.active_endpoints > 0)
+      .map(p => ({ id: p.id, name: p.name }))
+  } catch (error) {
+    if (current !== generation) return
+    optionsError.value = t('replayDialog.providersLoadFailed')
+    log.error('Failed to load providers:', error)
+  }
+}, { immediate: true })
 
 async function onProviderChange() {
+  const current = ++keyGeneration
   selectedKeyId.value = ''
   keys.value = []
+  loadingKeys.value = false
+  optionsError.value = null
   if (!selectedProviderId.value) return
-
   loadingKeys.value = true
   try {
     const allKeys = await getProviderKeys(selectedProviderId.value)
-    keys.value = allKeys.filter(k => k.health_score > 0 || allKeys.length <= 3)
-    if (keys.value.length === 0) keys.value = allKeys
-  } catch (e) {
-    log.error('Failed to load keys:', e)
+    if (current !== keyGeneration) return
+    keys.value = allKeys.filter(k => k.is_active)
+  } catch (error) {
+    if (current !== keyGeneration) return
+    optionsError.value = t('replayDialog.keysLoadFailed')
+    log.error('Failed to load keys:', error)
   } finally {
-    loadingKeys.value = false
+    if (current === keyGeneration) loadingKeys.value = false
   }
 }
 
 async function doReplay() {
-  if (!props.requestId || replaying.value) return
+  if (!props.requestId || !canReplay.value) return
 
+  const current = generation
   replaying.value = true
+  elapsedSeconds.value = 0
+  const start = Date.now()
+  stopElapsedTimer()
+  elapsedTimer = setInterval(() => { elapsedSeconds.value = Math.floor((Date.now() - start) / 1000) }, 1000)
   replayError.value = null
   replayResult.value = null
 
@@ -484,32 +625,49 @@ async function doReplay() {
     if (selectedProviderId.value) params.provider_id = selectedProviderId.value
     if (selectedKeyId.value) params.api_key_id = selectedKeyId.value
 
-    replayResult.value = await dashboardApi.replayRequest(
+    const result = await dashboardApi.replayRequest(
       props.requestId,
       Object.keys(params).length > 0 ? params : undefined,
     )
+    if (current !== generation) return
+    if (!result || typeof result !== 'object') {
+      replayError.value = t('replayDialog.invalidResult')
+    } else if (result.dry_run) {
+      replayError.value = t('replayDialog.dryRun')
+    } else if (!result.replay_id || !['success', 'failed'].includes(result.status)) {
+      replayError.value = t('replayDialog.invalidResult')
+    } else {
+      replayResult.value = result
+    }
   } catch (e: unknown) {
+    if (current !== generation) return
     const err = e as { response?: { data?: { detail?: string } }; message?: string }
-    replayError.value = err?.response?.data?.detail || err?.message || t('replayDialog.requestFailed')
+    replayError.value = err.response?.data?.detail || t('replayDialog.connectionLost')
     log.error('Replay failed:', e)
   } finally {
-    replaying.value = false
+    if (current === generation) {
+      replaying.value = false
+      stopElapsedTimer()
+    }
   }
 }
 
-function copyRequestBody() {
-  if (!formattedRequestBody.value) return
-  copyToClipboard(formattedRequestBody.value, false)
-  requestCopied.value = true
-  setTimeout(() => { requestCopied.value = false }, 2000)
+async function copyBody(value: string, target: typeof requestCopied) {
+  if (!value || !await copyToClipboard(value, false)) return
+  target.value = true
+  const timer = setTimeout(() => { target.value = false; copyTimers.delete(timer) }, 2000)
+  copyTimers.add(timer)
 }
+function copyRequestBody() { void copyBody(formattedRequestBody.value, requestCopied) }
+function copyResponseBody() { void copyBody(formattedResponseBody.value, responseCopied) }
 
-function copyResponseBody() {
-  if (!replayResult.value) return
-  copyToClipboard(formattedResponseBody.value, false)
-  responseCopied.value = true
-  setTimeout(() => { responseCopied.value = false }, 2000)
-}
+onUnmounted(() => {
+  ++generation
+  ++bodyGeneration
+  ++keyGeneration
+  stopElapsedTimer()
+  copyTimers.forEach(clearTimeout)
+})
 
 function handleClose() {
   emit('close')

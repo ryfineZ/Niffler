@@ -101,10 +101,8 @@ use self::capabilities::{
     provider_query_openai_image_normalize_failure_message,
     provider_query_openai_image_normalize_options,
 };
-use self::model_mapping::{
-    provider_query_resolve_explicit_mapped_effective_model,
-    provider_query_resolve_global_effective_model,
-};
+use self::model_mapping::provider_query_resolve_explicit_mapped_effective_model;
+pub(crate) use self::model_mapping::provider_query_resolve_global_effective_model;
 use self::summary::{
     provider_query_candidate_summary_payload, provider_query_test_attempt_payload,
 };

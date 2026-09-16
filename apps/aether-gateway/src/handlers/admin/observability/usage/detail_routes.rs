@@ -123,8 +123,8 @@ pub(super) async fn maybe_build_local_admin_usage_detail_response(
                 {
                     response = attach_admin_audit_response(
                         response,
-                        "admin_usage_replay_plan_generated",
-                        "generate_usage_replay_plan",
+                        "admin_usage_replay_executed",
+                        "execute_usage_replay",
                         "usage_record",
                         &usage_id,
                     );

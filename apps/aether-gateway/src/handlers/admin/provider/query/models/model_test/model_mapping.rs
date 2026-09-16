@@ -9,7 +9,7 @@ use aether_data_contracts::repository::global_models::{
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogEndpoint;
 use serde_json::Value;
 
-pub(super) async fn provider_query_resolve_global_effective_model(
+pub(crate) async fn provider_query_resolve_global_effective_model(
     state: &AdminAppState<'_>,
     provider_id: &str,
     requested_model: &str,
