@@ -244,7 +244,7 @@ impl Observation {
                     self.dropping = false;
                 } else if !self.dropping {
                     if let Some(payload) = line.strip_prefix(b"data:") {
-                        if self.event.len() + payload.len() + 1 <= MAX_EVENT_BYTES {
+                        if self.event.len() + payload.len() < MAX_EVENT_BYTES {
                             self.event.extend_from_slice(payload);
                             self.event.push(b'\n');
                         } else {

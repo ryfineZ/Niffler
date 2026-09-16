@@ -285,7 +285,7 @@ fn codex_telemetry_batches_keep_resources_separate_and_cleanup_on_drop() {
 #[test]
 fn codex_telemetry_accepts_bridged_text_but_excludes_explicit_images() {
     let mut input = plan();
-    aether_ai_formats::api::apply_openai_responses_image_generation_bridge_body_edits(
+    crate::ai_serving::api::apply_openai_responses_image_generation_bridge_body_edits(
         input.body.json_body.as_mut().unwrap(),
         "openai:responses",
         None,
