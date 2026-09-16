@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub(crate) use aether_ai_formats::api::apply_openai_responses_image_generation_bridge_body_edits;
+
 use crate::ai_serving::{is_json_request, GatewayControlDecision};
 
 pub(crate) use crate::ai_serving::{
