@@ -310,11 +310,17 @@ export interface ReplayRequest {
 }
 
 export interface ReplayResponse {
+  replay_id: string
+  original_request_id: string
+  status: 'success' | 'failed'
+  error_message?: string | null
+  record_warning?: string | null
+  dry_run?: boolean
   url: string
   provider: string
-  status_code: number
+  status_code: number | null
   response_headers: Record<string, string>
-  response_body: Record<string, unknown>
+  response_body: unknown
   response_time_ms: number
   mapping?: {
     source_model: string
@@ -472,7 +478,8 @@ export const dashboardApi = {
   async replayRequest(requestId: string, params?: ReplayRequest): Promise<ReplayResponse> {
     const response = await apiClient.post<ReplayResponse>(
       `/api/admin/usage/${requestId}/replay`,
-      params || {}
+      params || {},
+      { timeout: 180_000 }
     )
     return response.data
   }
