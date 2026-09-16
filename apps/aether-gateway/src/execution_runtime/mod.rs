@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 mod chatgpt_web_image;
+pub(crate) mod codex_telemetry;
 mod constants;
 mod fallback;
 mod grok;

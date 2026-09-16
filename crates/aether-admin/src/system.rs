@@ -1511,7 +1511,9 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "email_suffix_list" => Some(json!([])),
         "enable_format_conversion" => Some(json!(false)),
         "enable_model_directives" => Some(json!(false)),
-        "codex_oauth_identity_convergence_enabled" => Some(json!(false)),
+        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
+            Some(json!(false))
+        }
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1811,16 +1813,18 @@ pub fn parse_admin_system_config_update(
     }
 
     match normalized_key.as_str() {
-        "codex_oauth_identity_convergence_enabled" => match value.as_bool() {
-            Some(enabled) => value = json!(enabled),
-            None if value.is_null() => value = json!(false),
-            None => {
-                return Err((
-                    http::StatusCode::BAD_REQUEST,
-                    json!({ "detail": "请求数据验证失败" }),
-                ));
+        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
+            match value.as_bool() {
+                Some(enabled) => value = json!(enabled),
+                None if value.is_null() => value = json!(false),
+                None => {
+                    return Err((
+                        http::StatusCode::BAD_REQUEST,
+                        json!({ "detail": "请求数据验证失败" }),
+                    ));
+                }
             }
-        },
+        }
         "module.chat_pii_redaction.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
@@ -2728,6 +2732,25 @@ mod tests {
             admin_system_config_default_value("codex_oauth_identity_convergence_enabled"),
             Some(json!(false))
         );
+    }
+
+    #[test]
+    fn codex_telemetry_config_is_opt_in_and_boolean() {
+        assert_eq!(
+            admin_system_config_default_value("codex_telemetry_enabled"),
+            Some(json!(false))
+        );
+        for raw in [
+            br#"{"value":true}"#.as_slice(),
+            br#"{"value":false}"#.as_slice(),
+        ] {
+            assert!(parse_admin_system_config_update("codex_telemetry_enabled", raw).is_ok());
+        }
+        assert!(parse_admin_system_config_update(
+            "codex_telemetry_enabled",
+            br#"{"value":"true"}"#
+        )
+        .is_err());
     }
 
     #[test]

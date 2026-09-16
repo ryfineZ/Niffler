@@ -208,6 +208,7 @@ pub(crate) struct DirectUpstreamStreamExecution {
     pub(crate) stream_summary_report_context: Value,
     pub(crate) response: DirectUpstreamResponse,
     pub(crate) started_at: Instant,
+    pub(crate) codex_telemetry: Option<super::codex_telemetry::Observation>,
 }
 
 impl DirectSyncExecutionRuntime {
@@ -294,6 +295,7 @@ impl DirectSyncExecutionRuntime {
             stream_summary_report_context,
             response: response.into_direct_upstream_response(),
             started_at,
+            codex_telemetry: None,
         })
     }
 }
@@ -328,10 +330,18 @@ pub(crate) async fn execute_sync_plan_with_report_context(
         }
     }
 
+    let mut codex_telemetry = super::codex_telemetry::Observation::begin(state, plan).await;
     if resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).is_some() {
-        return execute_sync_plan_via_local_tunnel(state, plan)
-            .await
-            .map_err(|err| GatewayError::Internal(err.to_string()));
+        let result = execute_sync_plan_via_local_tunnel(state, plan).await;
+        if let (Some(observation), Ok(result)) = (codex_telemetry.as_mut(), &result) {
+            observation.sync_result(result);
+        }
+        if result.is_err() {
+            if let Some(observation) = codex_telemetry.as_mut() {
+                observation.fail();
+            }
+        }
+        return result.map_err(|err| GatewayError::Internal(err.to_string()));
     }
 
     match super::grok::maybe_execute_grok_sync(plan, report_context).await {
@@ -341,6 +351,9 @@ pub(crate) async fn execute_sync_plan_with_report_context(
         }
         Ok(None) => {}
         Err(err) => {
+            if let Some(observation) = codex_telemetry.as_mut() {
+                observation.fail();
+            }
             record_manual_proxy_request_failure(state, plan).await;
             return Err(GatewayError::Internal(err.to_string()));
         }
@@ -349,10 +362,16 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     let _ = trace_id;
     match DirectSyncExecutionRuntime::new().execute_sync(plan).await {
         Ok(result) => {
+            if let Some(observation) = codex_telemetry.as_mut() {
+                observation.sync_result(&result);
+            }
             record_manual_proxy_request_outcome(state, plan, result.status_code).await;
             Ok(result)
         }
         Err(err) => {
+            if let Some(observation) = codex_telemetry.as_mut() {
+                observation.fail();
+            }
             record_manual_proxy_request_failure(state, plan).await;
             Err(GatewayError::Internal(err.to_string()))
         }
@@ -400,6 +419,7 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
         stream_summary_report_context: build_stream_summary_report_context(plan),
         response: DirectUpstreamResponse::LocalTunnel(response),
         started_at,
+        codex_telemetry: None,
     }))
 }
 
@@ -485,7 +505,7 @@ fn manual_proxy_node_id(proxy: Option<&ProxySnapshot>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-async fn execute_sync_plan_via_local_tunnel(
+pub(super) async fn execute_sync_plan_via_local_tunnel(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
@@ -1047,7 +1067,10 @@ fn resolve_tunnel_node_id(proxy: Option<&ProxySnapshot>) -> Option<String> {
     None
 }
 
-fn resolve_local_tunnel_node_id(state: &AppState, proxy: Option<&ProxySnapshot>) -> Option<String> {
+pub(super) fn resolve_local_tunnel_node_id(
+    state: &AppState,
+    proxy: Option<&ProxySnapshot>,
+) -> Option<String> {
     let node_id = resolve_tunnel_node_id(proxy)?;
     state.tunnel.has_local_proxy(&node_id).then_some(node_id)
 }

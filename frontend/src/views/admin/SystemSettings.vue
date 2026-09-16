@@ -145,12 +145,14 @@
             v-show="activeTab === 'provider'"
             id="section-provider-advanced"
             :enabled="systemConfig.codex_oauth_identity_convergence_enabled"
+            :telemetry-enabled="systemConfig.codex_telemetry_enabled"
             :loading="systemConfigLoading"
             :saving="providerAdvancedConfigLoading"
             :load-error="!systemConfigLoading && !providerAdvancedConfigReady"
             :has-changes="hasProviderAdvancedConfigChanges"
             @save="saveProviderAdvancedConfig"
             @update:enabled="systemConfig.codex_oauth_identity_convergence_enabled = $event"
+            @update:telemetry-enabled="systemConfig.codex_telemetry_enabled = $event"
           />
 
           <!-- 请求记录清理策略 -->

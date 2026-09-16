@@ -1005,16 +1005,30 @@ async fn execute_in_process_stream(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
-    if let Some(execution) = execute_stream_plan_via_local_tunnel(state, plan).await? {
-        return Ok(execution);
-    }
-
-    match DirectSyncExecutionRuntime::new().execute_stream(plan).await {
-        Ok(execution) => {
-            record_manual_proxy_request_success(state, plan).await;
+    let mut observation =
+        crate::execution_runtime::codex_telemetry::Observation::begin(state, plan).await;
+    let tunnel_result = execute_stream_plan_via_local_tunnel(state, plan).await;
+    let is_local_tunnel = matches!(&tunnel_result, Ok(Some(_)));
+    let result = match tunnel_result {
+        Ok(Some(execution)) => Ok(execution),
+        Ok(None) => DirectSyncExecutionRuntime::new().execute_stream(plan).await,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(mut execution) => {
+            if let Some(observation) = observation.as_mut() {
+                observation.http_status(execution.status_code);
+            }
+            execution.codex_telemetry = observation;
+            if !is_local_tunnel {
+                record_manual_proxy_request_success(state, plan).await;
+            }
             Ok(execution)
         }
         Err(error) => {
+            if let Some(observation) = observation.as_mut() {
+                observation.fail();
+            }
             record_manual_proxy_request_failure(state, plan).await;
             Err(error)
         }
