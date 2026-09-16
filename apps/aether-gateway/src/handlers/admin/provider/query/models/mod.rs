@@ -299,7 +299,7 @@ pub(crate) use self::model_test::{
     build_admin_provider_query_test_model_failover_local_response,
     build_admin_provider_query_test_model_failover_response,
     build_admin_provider_query_test_model_local_response,
-    build_admin_provider_query_test_model_response,
+    build_admin_provider_query_test_model_response, provider_query_resolve_global_effective_model,
 };
 
 fn provider_query_provider_payload(provider: &StoredProviderCatalogProvider) -> Value {
