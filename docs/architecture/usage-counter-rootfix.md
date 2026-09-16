@@ -90,14 +90,12 @@ This branch should land the fix in phases, but the direction must not change:
 
 1. Postgres gets the durable outbox and counter flush path first, because the
    reported production lock wait is on Postgres row locks.
-2. MySQL and SQLite keep their current usage write behavior until their smaller
-   deployment paths are moved to the same contract.
-3. Request-path Postgres writes may still write `usage`, audit blobs, routing
+2. Request-path Postgres writes may still write `usage`, audit blobs, routing
    snapshots, and settlement pricing snapshots. They must not directly update
    shared aggregate rows.
-4. Compatibility mirror columns may be updated by the flush worker only, never
+3. Compatibility mirror columns may be updated by the flush worker only, never
    by the request transaction.
-5. Dashboard/statistics read paths should be migrated after the write pressure
+4. Dashboard/statistics read paths should be migrated after the write pressure
    is removed, otherwise we risk mixing a large read refactor with the lock fix.
 
 The first executable migration creates the outbox. The first code patch makes

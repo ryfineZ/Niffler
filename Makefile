@@ -29,15 +29,6 @@ lowercase() {
 	printf '%s' "$$1" | tr '[:upper:]' '[:lower:]'
 }
 
-dev_uses_sqlite_database() {
-	local driver
-	local url
-	driver="$$(lowercase "$${AETHER_DATABASE_DRIVER:-}")"
-	url="$${AETHER_DATABASE_URL:-$${DATABASE_URL:-}}"
-
-	[[ "$${driver}" == "sqlite" || "$${url}" == sqlite:* ]]
-}
-
 dev_uses_postgres_database() {
 	local driver
 	local url
@@ -61,10 +52,6 @@ dev_uses_redis_runtime() {
 	if [[ "$${backend}" == "redis" ]]; then
 		return 0
 	fi
-	if dev_uses_sqlite_database; then
-		return 1
-	fi
-
 	return 0
 }
 

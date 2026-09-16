@@ -20,7 +20,7 @@
             </p>
           </div>
           <div
-            class="grid grid-cols-3 items-center gap-2"
+            class="grid grid-cols-2 items-center gap-2"
           >
             <Select
               v-model="selectedProviderIdProxy"
@@ -47,7 +47,7 @@
                 </SelectItem>
               </SelectContent>
             </Select>
-            <Select v-model="statusFilter">
+            <Select v-model="poolStatusFilterValue">
               <SelectTrigger class="h-9 w-full text-xs border-border/60">
                 <SelectValue :placeholder="t('poolManagement.status')" />
               </SelectTrigger>
@@ -59,12 +59,13 @@
                   v-for="option in poolKeyStatusFilterOptions.filter((item) => item.value !== 'all')"
                   :key="option.value"
                   :value="option.value"
+                  :disabled="option.disabled"
                 >
                   {{ option.label }}
                 </SelectItem>
               </SelectContent>
             </Select>
-            <div class="relative min-w-0">
+            <div class="relative min-w-0 col-span-2">
               <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
               <Input
                 v-model="searchQuery"
@@ -395,6 +396,33 @@
         </p>
       </div>
 
+      <div
+        v-else-if="keysLoadError"
+        class="p-6 space-y-3"
+      >
+        <p
+          role="alert"
+          class="text-sm text-destructive"
+        >
+          {{ keysLoadError }}
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            @click="loadKeys()"
+          >
+            重试
+          </Button>
+          <Button
+            v-if="hasPoolKeyFilters || sortBy === 'capacity'"
+            variant="ghost"
+            data-testid="pool-error-clear-filters"
+            @click="clearPoolKeyFilters"
+          >
+            {{ t('poolManagement.clearFilters') }}
+          </Button>
+        </div>
+      </div>
       <!-- Loading keys -->
       <div
         v-else-if="keysLoading && keyPage.keys.length === 0"
@@ -438,8 +466,10 @@
                 variant="outline"
                 size="sm"
                 class="h-7 rounded-full px-3 text-xs"
-                :class="statusFilter === 'all' ? 'border-primary/60 bg-primary/10 text-primary' : ''"
-                @click="statusFilter = 'all'"
+                data-testid="pool-status-all"
+                :aria-pressed="poolStatusFilterValue === 'all'"
+                :class="poolStatusFilterValue === 'all' ? 'border-primary/60 bg-primary/10 text-primary' : ''"
+                @click="poolStatusFilterValue = 'all'"
               >
                 {{ t('poolManagement.allCount', { count: poolSummaryTotal }) }}
               </Button>
@@ -449,11 +479,32 @@
                 variant="outline"
                 size="sm"
                 class="h-7 rounded-full px-3 text-xs"
-                :class="statusFilter === item.code ? 'border-primary/60 bg-primary/10 text-primary' : ''"
+                :data-testid="`pool-status-${item.code}`"
+                :aria-pressed="poolStatusFilterValue === item.code"
+                :class="poolStatusFilterValue === item.code ? 'border-primary/60 bg-primary/10 text-primary' : ''"
                 @click="selectPoolStatusFilter(item.code)"
               >
                 {{ item.label }} {{ item.count }}
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="h-7 rounded-full px-3 text-xs"
+                data-testid="pool-status-capacity"
+                :class="isCapacityFilterActive ? 'border-primary/60 bg-primary/10 text-primary' : ''"
+                :aria-pressed="isCapacityFilterActive"
+                :disabled="keyPage.summary?.capacity_available === false"
+                :title="keyPage.summary?.capacity_available === false ? '容量统计暂不可用' : '近24小时发生过容量错误的账号'"
+                @click="selectPoolStatusFilter('capacity')"
+              >
+                容量异常 {{ keyPage.summary?.capacity_available === false ? '—' : keyPage.summary?.capacity_accounts ?? 0 }}
+              </Button>
+              <RouterLink
+                to="/admin/system?tab=network"
+                class="ml-auto text-xs text-primary hover:underline"
+              >
+                失败自动换号设置
+              </RouterLink>
             </div>
           </div>
         </div>
@@ -474,7 +525,7 @@
           </label>
           <div class="flex flex-wrap items-center gap-2">
             <Button
-              v-if="keyPage.total > keyPage.keys.length && !allFilteredPoolKeysSelected"
+              v-if="!isCapacityFilterActive && keyPage.total > keyPage.keys.length && !allFilteredPoolKeysSelected"
               variant="outline"
               size="sm"
               class="h-7 px-2 text-xs"
@@ -538,17 +589,50 @@
           </div>
         </div>
 
+        <div
+          v-if="isCapacityFilterActive"
+          class="flex flex-wrap items-center gap-3 border-b border-border/50 px-4 py-3 sm:px-6"
+        >
+          <span
+            v-if="keyPage.summary?.capacity_available === false"
+            role="status"
+            class="text-sm text-muted-foreground"
+          >容量统计暂不可用</span>
+          <span
+            v-else
+            class="text-sm text-muted-foreground"
+          >近24小时 {{ keyPage.summary?.capacity_accounts ?? 0 }} 个账号 · {{ keyPage.summary?.capacity_count_24h ?? 0 }} 次容量错误</span>
+          <Button
+            :disabled="keyPage.summary?.capacity_available === false"
+            variant="ghost"
+            size="sm"
+            :aria-pressed="capacityFilter === 'unresolved'"
+            @click="capacityFilter = capacityFilter === 'unresolved' ? 'recent' : 'unresolved'"
+          >
+            {{ capacityFilter === 'unresolved' ? '✓ ' : '' }}尚未恢复
+          </Button>
+          <Button
+            :disabled="keyPage.summary?.capacity_available === false"
+            variant="ghost"
+            size="sm"
+            @click="toggleCapacitySort"
+          >
+            按容量次数{{ sortBy === 'capacity' && sortOrder === 'asc' ? '升序' : '降序' }}
+          </Button>
+        </div>
         <!-- Desktop table -->
         <div
-          v-if="keyPage.keys.length > 0 || hasPoolKeyFilters"
+          v-if="(keyPage.keys.length > 0 || hasPoolKeyFilters)"
           class="hidden xl:block overflow-x-auto"
         >
-          <Table class="w-full table-fixed">
+          <Table
+            data-testid="pool-accounts-desktop-table"
+            class="w-full table-auto"
+          >
             <TableHeader>
               <TableRow class="border-b border-border/60 hover:bg-transparent">
                 <TableHead
-                  class="px-3 text-center"
-                  :style="{ width: desktopColumnWidths.select }"
+                  class="w-px px-3 text-center whitespace-nowrap"
                 >
                   <Checkbox
                     :checked="isCurrentPageFullySelected"
@@ -559,33 +643,22 @@
                   />
                 </TableHead>
                 <SortableTableHead
-                  class="font-semibold whitespace-nowrap"
+                  class="min-w-56 font-semibold whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="name"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.name }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.account') }}
                 </SortableTableHead>
                 <SortableTableHead
                   v-if="showAccountQuotaColumn"
-                  class="font-semibold whitespace-nowrap"
+                  data-testid="pool-account-quota-heading"
+                  class="w-px min-w-44 font-semibold whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="quota"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.quota }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.quota') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="px-2 font-semibold text-center whitespace-nowrap"
+                  class="w-px px-2 font-semibold text-center whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="stats"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.stats }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   <div class="flex items-center justify-center gap-1.5">
                     <button
@@ -604,82 +677,62 @@
                   </div>
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="imported_at"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="imported"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.imported }"
                   :title="t('poolManagement.sortImported')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.importedAt') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="last_used_at"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="lastUsed"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.lastUsed }"
                   :title="t('poolManagement.sortLastUsed')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.lastUsed') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="score"
                   :active-key="sortBy"
                   :direction="sortOrder"
                   default-direction="desc"
                   align="center"
-                  resize-column-key="score"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.score }"
                   :title="t('poolManagement.sortScore')"
-                  @resize-start="handlePoolColumnResizeStart"
                   @sort="handleTableSort"
                 >
                   {{ t('poolManagement.score') }}
                 </SortableTableHead>
                 <SortableTableHead
-                  class="font-semibold text-center whitespace-nowrap"
+                  class="w-px font-semibold text-center whitespace-nowrap"
                   column-key="status"
                   :sortable="false"
                   align="center"
-                  :filter-active="statusFilter !== 'all'"
+                  :filter-active="poolStatusFilterValue !== 'all'"
                   :filter-title="t('poolManagement.filterStatus')"
                   filter-content-class="w-44 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
-                  resize-column-key="status"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.status }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.status') }}
                   <template #filter="{ close }">
                     <TableFilterMenu
-                      v-model="statusFilter"
+                      v-model="poolStatusFilterValue"
                       :options="poolKeyStatusFilterOptions"
                       @select="close"
                     />
                   </template>
                 </SortableTableHead>
                 <SortableTableHead
-                  class="px-2 font-semibold text-center whitespace-nowrap"
+                  class="w-px px-2 font-semibold text-center whitespace-nowrap"
                   :sortable="false"
-                  resize-column-key="actions"
-                  :resizable="true"
-                  :style="{ width: desktopColumnWidths.actions }"
-                  @resize-start="handlePoolColumnResizeStart"
                 >
                   {{ t('poolManagement.actions') }}
                 </SortableTableHead>
@@ -692,7 +745,7 @@
                 class="border-b border-border/40 last:border-b-0 hover:bg-muted/30 transition-colors"
                 :class="keyUiStateMap[key.key_id]?.rowClass || ''"
               >
-                <TableCell class="px-3 py-3 text-center align-middle">
+                <TableCell class="w-px px-3 py-3 text-center align-middle whitespace-nowrap">
                   <Checkbox
                     :checked="isPoolKeySelected(key.key_id)"
                     :disabled="poolSelectionActionBusy || allFilteredPoolKeysSelected"
@@ -702,14 +755,14 @@
                   />
                 </TableCell>
                 <TableCell
-                  class="py-3"
+                  class="min-w-56 py-3"
                 >
                   <div class="min-w-0">
                     <div class="flex items-center gap-1.5 min-w-0">
                       <button
                         type="button"
                         class="min-w-0 truncate text-left text-sm transition-colors hover:text-primary"
-                    :title="t('poolManagement.copyAccount', { name: getPoolAccountDisplayName(key) })"
+                        :title="t('poolManagement.copyAccount', { name: getPoolAccountDisplayName(key) })"
                         @click.stop="copyPoolAccountDisplay(key)"
                       >
                         {{ getPoolAccountDisplayName(key) }}
@@ -809,7 +862,7 @@
                 </TableCell>
                 <TableCell
                   v-if="showAccountQuotaColumn"
-                  class="py-3 align-middle"
+                  class="w-px min-w-44 py-3 align-middle"
                 >
                   <div
                     v-if="quotaProgressMap[key.key_id]?.length"
@@ -892,7 +945,7 @@
                     </Button>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="w-px py-3 px-2 align-middle whitespace-nowrap">
                   <div
                     v-if="isPoolKeyCycleStatsDisplay(key)"
                     class="mx-auto w-[188px] overflow-x-auto text-[10px] leading-4"
@@ -960,17 +1013,17 @@
                     </div>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.importedAtRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
                     {{ keyUiStateMap[key.key_id]?.lastUsedRelative || '-' }}
                   </span>
                 </TableCell>
-                <TableCell class="py-3 text-center align-middle">
+                <TableCell class="w-px py-3 text-center align-middle whitespace-nowrap">
                   <div class="inline-flex items-center justify-center gap-1">
                     <span class="font-mono text-xs tabular-nums text-foreground/90">
                       {{ formatPoolScore(key.pool_score?.score) }}
@@ -985,8 +1038,8 @@
                           variant="ghost"
                           size="icon"
                           class="h-5 w-5 rounded-full border border-transparent text-muted-foreground/80 hover:border-border/60 hover:bg-muted/60 hover:text-foreground"
-                    :title="t('poolManagement.scoreDetails')"
-                    :aria-label="t('poolManagement.scoreDetails')"
+                          :title="t('poolManagement.scoreDetails')"
+                          :aria-label="t('poolManagement.scoreDetails')"
                           @click.stop
                         >
                           <CircleHelp class="h-3.5 w-3.5" />
@@ -1031,7 +1084,7 @@
                     </Popover>
                   </div>
                 </TableCell>
-                <TableCell class="py-3 text-center">
+                <TableCell class="w-px py-3 text-center whitespace-nowrap">
                   <Badge
                     :variant="keyUiStateMap[key.key_id]?.schedulingBadgeVariant || 'default'"
                     class="text-[10px]"
@@ -1039,8 +1092,13 @@
                   >
                     {{ keyUiStateMap[key.key_id]?.schedulingBadgeLabel }}
                   </Badge>
+                  <PoolCapacityBadge
+                    class="mt-2"
+                    :capacity="key.capacity"
+                    @details="capacityDetailsAccount = key"
+                  />
                 </TableCell>
-                <TableCell class="py-3 px-2 align-middle">
+                <TableCell class="w-px py-3 px-2 align-middle whitespace-nowrap">
                   <div class="flex justify-center gap-0.5">
                     <Button
                       variant="ghost"
@@ -1105,7 +1163,7 @@
                           class="h-7 w-7"
                           :class="key.proxy?.node_id ? 'text-blue-500' : ''"
                           :disabled="savingProxyKeyId === key.key_id"
-                    :title="key.proxy?.node_id ? t('poolManagement.proxyValue', { name: getKeyProxyNodeName(key) }) : t('poolManagement.setProxy')"
+                          :title="key.proxy?.node_id ? t('poolManagement.proxyValue', { name: getKeyProxyNodeName(key) }) : t('poolManagement.setProxy')"
                           @click.stop
                         >
                           <Globe class="w-3.5 h-3.5" />
@@ -1194,20 +1252,24 @@
                   :checked="isPoolKeySelected(key.key_id)"
                   :disabled="poolSelectionActionBusy || allFilteredPoolKeysSelected"
                   :data-testid="`pool-key-select-mobile-${key.key_id}`"
-                    :aria-label="t('poolManagement.selectAccount', { name: getPoolAccountDisplayName(key) })"
+                  :aria-label="t('poolManagement.selectAccount', { name: getPoolAccountDisplayName(key) })"
                   class="mt-0.5 shrink-0"
                   @update:checked="(checked: boolean) => togglePoolKeySelection(key.key_id, checked)"
                 />
                 <button
                   type="button"
                   class="min-w-0 flex-1 truncate text-left text-sm font-medium transition-colors hover:text-primary"
-                    :title="t('poolManagement.copyAccount', { name: getPoolAccountDisplayName(key) })"
+                  :title="t('poolManagement.copyAccount', { name: getPoolAccountDisplayName(key) })"
                   @click.stop="copyPoolAccountDisplay(key)"
                 >
                   {{ getPoolAccountDisplayName(key) }}
                 </button>
               </div>
 
+              <PoolCapacityBadge
+                :capacity="key.capacity"
+                @details="capacityDetailsAccount = key"
+              />
               <div class="flex flex-wrap items-center gap-1.5">
                 <Badge
                   :variant="keyUiStateMap[key.key_id]?.schedulingBadgeVariant || 'default'"
@@ -1220,7 +1282,7 @@
                   v-if="key.cooldown_ttl_seconds"
                   class="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium leading-4 text-red-700 dark:text-red-300"
                 >
-                    {{ t('poolManagement.cooldownValue', { value: formatTTL(key.cooldown_ttl_seconds) }) }}
+                  {{ t('poolManagement.cooldownValue', { value: formatTTL(key.cooldown_ttl_seconds) }) }}
                 </span>
                 <template
                   v-for="item in keyUiStateMap[key.key_id]?.mobileTagItems || []"
@@ -1344,8 +1406,8 @@
                             variant="ghost"
                             size="icon"
                             class="h-5 w-5 rounded-full border border-transparent text-muted-foreground/80 hover:border-border/60 hover:bg-muted/60 hover:text-foreground"
-                    :title="t('poolManagement.scoreDetails')"
-                    :aria-label="t('poolManagement.scoreDetails')"
+                            :title="t('poolManagement.scoreDetails')"
+                            :aria-label="t('poolManagement.scoreDetails')"
                             @click.stop
                           >
                             <CircleHelp class="h-3.5 w-3.5" />
@@ -1394,7 +1456,7 @@
               </div>
 
               <div
-                v-if="showAccountQuotaColumn"
+                v-if="providerSupportsAccountQuota"
                 class="rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-xs"
               >
                 <div class="text-muted-foreground mb-1">
@@ -1709,6 +1771,10 @@
       </template>
     </Card>
 
+    <PoolCapacityDetails
+      :account="capacityDetailsAccount"
+      @close="capacityDetailsAccount = null"
+    />
     <!-- Dialogs -->
     <OAuthAccountDialog
       v-if="selectedProviderId"
@@ -1796,6 +1862,9 @@
 </template>
 
 <script setup lang="ts">
+import PoolCapacityBadge from '@/features/pool/components/PoolCapacityBadge.vue'
+import PoolCapacityDetails from '@/features/pool/components/PoolCapacityDetails.vue'
+
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -1855,7 +1924,6 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useCountdownTimer, getCodexResetCountdown } from '@/composables/useCountdownTimer'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRouteQuery } from '@/composables/useRouteQuery'
-import { useResizableTableColumns, type ResizableTableColumn } from '@/composables/useResizableTableColumns'
 import { parseApiError } from '@/utils/errorParser'
 import { getAccountCopyText, getAccountDisplayName } from '@/features/providers/utils/accountDisplay'
 import {
@@ -1917,6 +1985,7 @@ import {
 } from '@/features/pool/utils/poolMobilePresentation'
 import {
   buildPoolManagementQueryPatch,
+  DEFAULT_POOL_MANAGEMENT_VIEW_STATE,
   readPoolManagementViewState,
   resolvePoolManagementPageAfterLoad,
   type PoolManagementSortBy,
@@ -1992,6 +2061,7 @@ const restoredViewState = readPoolManagementViewState(
     providerId: getQueryValue('providerId'),
     search: getQueryValue('search'),
     status: getQueryValue('status'),
+    capacity: getQueryValue('capacity'),
     page: getQueryValue('page'),
     pageSize: getQueryValue('pageSize'),
     sortBy: getQueryValue('sortBy'),
@@ -2036,7 +2106,7 @@ interface PoolDemandMetricSample {
 
 const showDemandMetricsDialog = ref(false)
 const providerDemandMetricSamples = ref<PoolDemandMetricSample[]>([])
-const poolKeyStatusFilterOptions = computed<Array<{ value: PoolManagementViewState['status'], label: string }>>(() => [
+const poolKeyStatusFilterOptions = computed<Array<{ value: PoolManagementViewState['status'] | 'capacity', label: string, disabled?: boolean }>>(() => [
   { value: 'all', label: t('poolManagement.statusAll') },
   { value: 'available', label: t('poolManagement.available') },
   { value: 'invalid', label: t('poolManagement.invalid') },
@@ -2044,6 +2114,7 @@ const poolKeyStatusFilterOptions = computed<Array<{ value: PoolManagementViewSta
   { value: 'quota_exhausted', label: t('poolManagement.quotaExhausted') },
   { value: 'temporary_unavailable', label: t('poolManagement.temporaryUnavailable') },
   { value: 'blocked', label: t('poolManagement.abnormal') },
+  { value: 'capacity', label: '容量异常', disabled: keyPage.value.summary?.capacity_available === false },
 ])
 const poolScoreHardStateOptions = computed(() => [
   { value: 'all', label: t('poolManagement.statusAll') },
@@ -2149,6 +2220,15 @@ async function handleSchedulingSaved(updatedProvider: ProviderWithEndpointsSumma
 
 // --- Provider Selection ---
 const selectedProviderId = ref<string | null>(restoredViewState.providerId)
+const capacityFilter = ref(restoredViewState.capacity)
+const capacityDetailsAccount = ref<PoolKeyDetail | null>(null)
+function toggleCapacitySort() {
+  sortOrder.value = sortBy.value === 'capacity' && sortOrder.value === 'desc' ? 'asc' : 'desc'
+  sortBy.value = 'capacity'
+}
+const isCapacityFilterActive = computed(() => capacityFilter.value !== 'all')
+
+
 const selectedProviderData = ref<ProviderWithEndpointsSummary | null>(null)
 
 // Proxy for Select v-model (string, not string|null)
@@ -2432,49 +2512,41 @@ watch(showAdaptiveHotPoolMetricsButton, (enabled) => {
   }
 })
 
-const showAccountQuotaColumn = computed(() => {
-  return selectedProviderType.value === 'codex'
-    || selectedProviderType.value === 'gemini_cli'
-    || selectedProviderType.value === 'kiro'
-    || selectedProviderType.value === 'antigravity'
-    || selectedProviderType.value === 'grok'
-    || selectedProviderType.value === 'grok_oauth'
-    || selectedProviderType.value === 'chatgpt_web'
+const ACCOUNT_QUOTA_PROVIDER_TYPES = new Set([
+  'codex',
+  'gemini_cli',
+  'kiro',
+  'antigravity',
+  'grok',
+  'grok_oauth',
+  'chatgpt_web',
+])
+
+function hasMeaningfulPoolKeyQuota(key: PoolKeyDetail): boolean {
+  if (getLegacyAccountQuotaText(key)) return true
+
+  const quota = key.status_snapshot?.quota
+  if (!quota) return false
+  if (parseQuotaProgressItems(key).length > 0) return true
+  if (getGrokOAuthQuotaFreshness(key, selectedProviderType.value)) return true
+
+  const code = String(quota.code || '').trim().toLowerCase()
+  if (code && code !== 'ok' && code !== 'unknown') return true
+  if (String(quota.label || '').trim() || String(quota.reason || '').trim()) return true
+
+  const credits = quota.credits
+  if (credits && (credits.has_credits != null || credits.balance != null || credits.unlimited != null)) {
+    return true
+  }
+  return quota.reset_credits?.available_count != null
+}
+
+const providerSupportsAccountQuota = computed(() => {
+  return ACCOUNT_QUOTA_PROVIDER_TYPES.has(selectedProviderType.value)
 })
 
-type PoolDesktopColumnKey = 'select' | 'name' | 'quota' | 'stats' | 'imported' | 'lastUsed' | 'score' | 'status' | 'actions'
-const poolDesktopColumns = computed<ResizableTableColumn<PoolDesktopColumnKey>[]>(() => {
-  if (showAccountQuotaColumn.value) {
-    return [
-      { key: 'select', width: '3rem', minWidth: 44 },
-      { key: 'name', width: '21%', minWidth: 180 },
-      { key: 'quota', width: '18%', minWidth: 180 },
-      { key: 'stats', width: '13%', minWidth: 160 },
-      { key: 'imported', width: '10%', minWidth: 120 },
-      { key: 'lastUsed', width: '8%', minWidth: 120 },
-      { key: 'score', width: '9%', minWidth: 96 },
-      { key: 'status', width: '7%', minWidth: 96 },
-      { key: 'actions', width: '14%', minWidth: 150 },
-    ]
-  }
-  return [
-    { key: 'select', width: '3rem', minWidth: 44 },
-    { key: 'name', width: '31%', minWidth: 220 },
-    { key: 'stats', width: '15%', minWidth: 160 },
-    { key: 'imported', width: '11%', minWidth: 120 },
-    { key: 'lastUsed', width: '11%', minWidth: 120 },
-    { key: 'score', width: '9%', minWidth: 96 },
-    { key: 'status', width: '8%', minWidth: 96 },
-    { key: 'actions', width: '15%', minWidth: 150 },
-  ]
-})
-const {
-  columnWidths: desktopColumnWidths,
-  startResize: handlePoolColumnResizeStart,
-} = useResizableTableColumns<PoolDesktopColumnKey>({
-  storageKey: 'pool-management-table-column-widths',
-  columns: poolDesktopColumns,
-  defaultMinWidth: 64,
+const showAccountQuotaColumn = computed(() => {
+  return providerSupportsAccountQuota.value && keyPage.value.keys.some(hasMeaningfulPoolKeyQuota)
 })
 
 async function selectProvider(
@@ -2511,6 +2583,7 @@ async function selectProvider(
     searchQuery.value = ''
   }
   if (!options.preserveStatus) {
+    capacityFilter.value = 'all'
     statusFilter.value = 'all'
     planTypeFilter.value = 'all'
   }
@@ -2558,9 +2631,17 @@ function createEmptyKeyPage(page = 1, pageSizeValue = 50): PoolKeysPageResponse 
 const keyPage = ref<PoolKeysPageResponse>(createEmptyKeyPage())
 const keysLoading = ref(false)
 const keysLoadedOnce = ref(false)
+const keysLoadError = ref('')
 const refreshingCurrentPageQuota = ref(false)
 const searchQuery = ref(restoredViewState.search)
 const statusFilter = ref(restoredViewState.status)
+const poolStatusFilterValue = computed({
+  get: () => isCapacityFilterActive.value ? 'capacity' : statusFilter.value,
+  set: (value: string) => {
+    capacityFilter.value = value === 'capacity' ? 'recent' : 'all'
+    statusFilter.value = value === 'capacity' ? 'all' : value as PoolManagementViewState['status']
+  },
+})
 const planTypeFilter = ref(restoredViewState.planType)
 const currentPage = ref(restoredViewState.page)
 const pageSize = ref(restoredViewState.pageSize)
@@ -2568,6 +2649,7 @@ const sortBy = ref<PoolManagementSortBy | null>(restoredViewState.sortBy)
 const sortOrder = ref<PoolManagementSortOrder>(restoredViewState.sortOrder)
 const poolStatsMode = ref<PoolManagementStatsMode>(restoredViewState.statsMode)
 const hasPoolKeyFilters = computed(() =>
+  isCapacityFilterActive.value ||
   searchQuery.value.trim().length > 0 || statusFilter.value !== 'all' || planTypeFilter.value !== 'all'
 )
 const poolPlanSummaryItems = computed(() => keyPage.value.summary?.plans || [])
@@ -2610,9 +2692,14 @@ function togglePoolStatsMode() {
 }
 
 function clearPoolKeyFilters() {
-  if (!hasPoolKeyFilters.value) return
+  if (!hasPoolKeyFilters.value && sortBy.value !== 'capacity') return
   clearPoolKeySelection()
   suppressFiltersWatch = true
+  capacityFilter.value = 'all'
+  if (sortBy.value === 'capacity') {
+    sortBy.value = DEFAULT_POOL_MANAGEMENT_VIEW_STATE.sortBy
+    sortOrder.value = DEFAULT_POOL_MANAGEMENT_VIEW_STATE.sortOrder
+  }
   searchQuery.value = ''
   statusFilter.value = 'all'
   planTypeFilter.value = 'all'
@@ -2629,8 +2716,7 @@ function selectPoolPlanFilter(planCode: string): void {
 }
 
 function selectPoolStatusFilter(statusCode: string): void {
-  const normalized = statusCode as PoolManagementViewState['status']
-  statusFilter.value = statusFilter.value === normalized ? 'all' : normalized
+  poolStatusFilterValue.value = poolStatusFilterValue.value === statusCode ? 'all' : statusCode
 }
 
 watch(
@@ -2643,14 +2729,17 @@ watch(
 )
 
 watch(
-  () => readPoolManagementViewState({ status: getQueryValue('status') }).status,
+  () => readPoolManagementViewState({
+    status: getQueryValue('status'),
+    capacity: getQueryValue('capacity'),
+  }),
   (value) => {
-    if (statusFilter.value === value) return
+    if (statusFilter.value === value.status && capacityFilter.value === value.capacity) return
     suppressFiltersWatch = true
-    statusFilter.value = value
+    statusFilter.value = value.status
+    capacityFilter.value = value.capacity
     suppressFiltersWatch = false
   },
-  { immediate: true },
 )
 
 watch(
@@ -2723,12 +2812,13 @@ watch(
 )
 
 watch(
-  [selectedProviderId, searchQuery, statusFilter, planTypeFilter, currentPage, pageSize, sortBy, sortOrder, poolStatsMode],
-  ([providerId, search, status, planType, page, pageSizeValue, sortByValue, sortOrderValue, statsMode]) => {
+  [selectedProviderId, searchQuery, statusFilter, capacityFilter, planTypeFilter, currentPage, pageSize, sortBy, sortOrder, poolStatsMode],
+  ([providerId, search, status, capacity, planType, page, pageSizeValue, sortByValue, sortOrderValue, statsMode]) => {
     const nextState: PoolManagementViewState = {
       providerId,
       search,
       status: status as PoolManagementViewState['status'],
+      capacity,
       planType: String(planType || 'all'),
       page,
       pageSize: pageSizeValue,
@@ -3161,10 +3251,12 @@ async function loadKeys(options: { cacheTtlMs?: number } = {}) {
   const planType = planTypeFilter.value === 'all' ? undefined : planTypeFilter.value
   const sortByValue = sortBy.value || undefined
   keysLoading.value = true
+  keysLoadError.value = ''
   try {
     const nextPage = await listPoolKeys(providerId, {
       page,
       page_size: pageSizeValue,
+      capacity: capacityFilter.value,
       search,
       status,
       plan_type: planType,
@@ -3202,8 +3294,9 @@ async function loadKeys(options: { cacheTtlMs?: number } = {}) {
   } catch (err) {
     if (requestId !== keysRequestId || selectedProviderId.value !== providerId) return
     resetKeyPage(page, pageSizeValue)
-    keysLoadedOnce.value = true
-    showError(parseApiError(err))
+    keysLoadedOnce.value = false
+    keysLoadError.value = parseApiError(err)
+    showError(keysLoadError.value)
   } finally {
     if (requestId === keysRequestId) {
       keysLoading.value = false
@@ -3215,10 +3308,13 @@ watch([currentPage, pageSize], () => {
   void loadKeys({ cacheTtlMs: POOL_KEYS_CACHE_TTL_MS })
 })
 
-watch(statusFilter, () => {
+watch([statusFilter, capacityFilter], () => {
   if (suppressFiltersWatch) return
   clearPoolKeySelection()
-  currentPage.value = 1
+  if (currentPage.value !== 1) {
+    currentPage.value = 1
+    return
+  }
   void loadKeys({ cacheTtlMs: POOL_KEYS_CACHE_TTL_MS })
 })
 
@@ -3369,6 +3465,7 @@ function clearPoolKeySelection(): void {
 }
 
 function selectAllFilteredPoolKeys(): void {
+  if (isCapacityFilterActive.value) return
   allFilteredPoolKeysSelected.value = true
   selectedPoolKeyIds.value = []
 }
@@ -3394,7 +3491,7 @@ function sortCurrentPageKeysByPriority() {
 }
 
 function handleTableSort(payload: { key: string, direction: PoolManagementSortOrder }) {
-  if (payload.key !== 'imported_at' && payload.key !== 'last_used_at' && payload.key !== 'score') return
+  if (payload.key !== 'imported_at' && payload.key !== 'last_used_at' && payload.key !== 'score' && payload.key !== 'capacity') return
   sortBy.value = payload.key
   sortOrder.value = payload.direction
 }

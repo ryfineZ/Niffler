@@ -63,12 +63,14 @@ pub(in super::super) async fn build_admin_list_users_response(
         usage_totals_result,
         memberships_result,
         groups_result,
+        plan_summaries_result,
     ) = tokio::join!(
         state.list_user_auth_by_ids(&user_ids),
         state.list_wallet_snapshots_by_user_ids(&user_ids),
         state.summarize_usage_totals_by_user_ids(&user_ids),
         state.list_user_group_memberships_by_user_ids(&user_ids),
         state.list_user_groups(),
+        state.list_active_user_plan_quota_summaries(&user_ids),
     );
     let auth_by_user_id = auth_rows_result?
         .into_iter()
@@ -86,6 +88,20 @@ pub(in super::super) async fn build_admin_list_users_response(
         .into_iter()
         .map(|group| (group.id.clone(), group))
         .collect::<BTreeMap<_, _>>();
+    let (plan_summaries, plan_summary_status) = match plan_summaries_result {
+        Ok(Some(value)) => (value, "ok"),
+        Ok(None) => (Vec::new(), "unavailable"),
+        Err(err) => {
+            tracing::error!(user_ids = ?user_ids, error = ?err, "admin user plan summary lookup failed");
+            (Vec::new(), "unavailable")
+        }
+    };
+    let mut plan_by_user_id = BTreeMap::new();
+    for summary in plan_summaries {
+        plan_by_user_id
+            .entry(summary.user_id.clone())
+            .or_insert(summary);
+    }
     let mut group_ids_by_user_id = BTreeMap::<String, Vec<String>>::new();
     for membership in memberships_result? {
         group_ids_by_user_id
@@ -161,6 +177,32 @@ pub(in super::super) async fn build_admin_list_users_response(
                 })
             })
             .unwrap_or(serde_json::Value::Null);
+        user_payload["plan"] = plan_by_user_id
+            .get(&row.id)
+            .map(|summary| {
+                json!({
+                    "user_id": summary.user_id,
+                    "entitlement_id": summary.entitlement_id,
+                    "plan_id": summary.plan_id,
+                    "plan_title": summary.plan_title,
+                    "starts_at": unix_secs_to_rfc3339(summary.starts_at_unix_secs),
+                    "expires_at": unix_secs_to_rfc3339(summary.expires_at_unix_secs),
+                    "quota_total_usd": summary.quota_total_usd,
+                    "quota_used_usd": summary.quota_used_usd,
+                    "quota_remaining_usd": summary.quota_remaining_usd,
+                    "daily_total_usd": summary.daily_total_usd,
+                    "daily_used_usd": summary.daily_used_usd,
+                    "daily_remaining_usd": summary.daily_remaining_usd,
+                    "daily_window_started_at": summary
+                        .daily_window_started_at_unix_secs
+                        .and_then(unix_secs_to_rfc3339),
+                    "daily_window_ends_at": summary
+                        .daily_window_ends_at_unix_secs
+                        .and_then(unix_secs_to_rfc3339),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+        user_payload["plan_summary_status"] = json!(plan_summary_status);
         payload.push(user_payload);
     }
 

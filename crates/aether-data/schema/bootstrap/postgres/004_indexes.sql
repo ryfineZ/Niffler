@@ -849,6 +849,8 @@ CREATE INDEX IF NOT EXISTS ix_announcements_id ON public.announcements USING btr
 
 CREATE INDEX IF NOT EXISTS ix_announcements_is_active ON public.announcements USING btree (is_active);
 
+CREATE INDEX IF NOT EXISTS announcements_portal_active_created_idx ON public.announcements USING btree (portal_id, is_active, created_at);
+
 
 
 --

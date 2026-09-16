@@ -40,6 +40,8 @@ jobs:
           bash -n scripts/tests/test-test-deploy-ci.sh
           bash -n scripts/tests/test-production-workflow.sh
           bash -n scripts/tests/test-verify-ssh-host-key.sh
+          bash -n scripts/tests/test-install.sh
+          bash -n scripts/tests/test-release-workflow.sh
 
       - name: Test deployment ancestry guard
         run: |
@@ -56,4 +58,6 @@ jobs:
           bash scripts/tests/test-deploy-ci-restricted.sh
           bash scripts/tests/test-test-deploy-ci.sh
           bash scripts/tests/test-production-workflow.sh
+          bash scripts/tests/test-install.sh
+          bash scripts/tests/test-release-workflow.sh
           bash scripts/tests/test-verify-ssh-host-key.sh

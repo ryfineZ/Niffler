@@ -114,7 +114,7 @@ evaluate_binary_check() {
     local detail="$4"
     local next_count
 
-    SUMMARY_LINES+=("$label：$detail")
+    SUMMARY_LINES+=("${label}：$detail")
     if [ "$is_healthy" != "1" ]; then
         SUMMARY_ISSUE_COUNT=$((SUMMARY_ISSUE_COUNT + 1))
     fi
@@ -135,7 +135,7 @@ evaluate_binary_check() {
     if [ "$next_count" -ge "$MONITOR_FAILURE_THRESHOLD" ]; then
         if [ "$PREVIOUS_STATE" != "failed" ]; then
             ALERT_LINES+=(
-                "$label连续 $MONITOR_FAILURE_THRESHOLD 次检查异常，可能已经影响正常使用。"
+                "${label}连续 $MONITOR_FAILURE_THRESHOLD 次检查异常，可能已经影响正常使用。"
             )
         fi
         queue_state_update "$check_name" failed "$MONITOR_FAILURE_THRESHOLD"
@@ -173,7 +173,7 @@ evaluate_disk_check() {
         current_state="ok"
         detail="正常，已使用 ${usage_percent}%，剩余 $available_size"
     fi
-    SUMMARY_LINES+=("$MONITOR_DISK_LABEL：$detail")
+    SUMMARY_LINES+=("${MONITOR_DISK_LABEL}：$detail")
     if [ "$current_state" != "ok" ]; then
         SUMMARY_ISSUE_COUNT=$((SUMMARY_ISSUE_COUNT + 1))
     fi
@@ -186,24 +186,24 @@ evaluate_disk_check() {
         case "$current_state" in
             critical)
                 ALERT_LINES+=(
-                    "$MONITOR_DISK_LABEL空间严重不足：已使用 ${usage_percent}%，剩余 $available_size。严重值为 ${MONITOR_DISK_CRITICAL_PERCENT}%，请立即清理文件或扩容。"
+                    "${MONITOR_DISK_LABEL}空间严重不足：已使用 ${usage_percent}%，剩余 $available_size。严重值为 ${MONITOR_DISK_CRITICAL_PERCENT}%，请立即清理文件或扩容。"
                 )
                 ;;
             warning)
                 if [ "$PREVIOUS_STATE" = "critical" ]; then
                     ALERT_LINES+=(
-                        "$MONITOR_DISK_LABEL已脱离严重状态，但空间仍然偏少：已使用 ${usage_percent}%，剩余 $available_size。"
+                        "${MONITOR_DISK_LABEL}已脱离严重状态，但空间仍然偏少：已使用 ${usage_percent}%，剩余 $available_size。"
                     )
                 else
                     ALERT_LINES+=(
-                        "$MONITOR_DISK_LABEL空间偏少：已使用 ${usage_percent}%，剩余 $available_size。预警值为 ${MONITOR_DISK_WARNING_PERCENT}%，建议尽快清理日志或扩容。"
+                        "${MONITOR_DISK_LABEL}空间偏少：已使用 ${usage_percent}%，剩余 $available_size。预警值为 ${MONITOR_DISK_WARNING_PERCENT}%，建议尽快清理日志或扩容。"
                     )
                 fi
                 ;;
             ok)
                 if [ "$PREVIOUS_STATE" != "unknown" ]; then
                     ALERT_LINES+=(
-                        "$MONITOR_DISK_LABEL空间已恢复正常：已使用 ${usage_percent}%，剩余 $available_size。"
+                        "${MONITOR_DISK_LABEL}空间已恢复正常：已使用 ${usage_percent}%，剩余 $available_size。"
                     )
                 fi
                 ;;
@@ -316,6 +316,12 @@ MONITOR_FAILURE_THRESHOLD="${MONITOR_FAILURE_THRESHOLD:-3}"
 MONITOR_HTTP_URL="${MONITOR_HTTP_URL:-}"
 MONITOR_HTTP_LABEL="${MONITOR_HTTP_LABEL:-网站访问}"
 MONITOR_REPORT_FILE="${MONITOR_REPORT_FILE:-$STATE_DIR/status.txt}"
+MONITOR_POSTGRES_CONTAINER="${MONITOR_POSTGRES_CONTAINER:-}"
+MONITOR_POSTGRES_ROLE="${MONITOR_POSTGRES_ROLE:-}"
+MONITOR_POSTGRES_LABEL="${MONITOR_POSTGRES_LABEL:-数据库角色}"
+MONITOR_POSTGRES_PORT="${MONITOR_POSTGRES_PORT:-5432}"
+MONITOR_POSTGRES_MAX_REPLAY_LAG_BYTES="${MONITOR_POSTGRES_MAX_REPLAY_LAG_BYTES:-16777216}"
+MONITOR_POSTGRES_LAG_IGNORE_SERVICE="${MONITOR_POSTGRES_LAG_IGNORE_SERVICE:-}"
 
 if [[ ! "$MONITOR_NODE_NAME" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     die "monitor node name is invalid"
@@ -330,6 +336,27 @@ for numeric_value in \
 done
 if [ "$MONITOR_DISK_WARNING_PERCENT" -ge "$MONITOR_DISK_CRITICAL_PERCENT" ]; then
     die "disk warning threshold must be lower than critical threshold"
+fi
+if [ -n "$MONITOR_POSTGRES_CONTAINER" ]; then
+    if [[ ! "$MONITOR_POSTGRES_CONTAINER" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        die "PostgreSQL container name is invalid"
+    fi
+    if [ "$MONITOR_POSTGRES_ROLE" != "primary" ] && [ "$MONITOR_POSTGRES_ROLE" != "standby" ]; then
+        die "PostgreSQL role must be primary or standby"
+    fi
+    if [[ ! "$MONITOR_POSTGRES_PORT" =~ ^[0-9]+$ ]] ||
+        [ "$MONITOR_POSTGRES_PORT" -lt 1 ] || [ "$MONITOR_POSTGRES_PORT" -gt 65535 ]; then
+        die "PostgreSQL port must be between 1 and 65535"
+    fi
+    if [[ ! "$MONITOR_POSTGRES_MAX_REPLAY_LAG_BYTES" =~ ^[0-9]+$ ]]; then
+        die "PostgreSQL replay lag threshold must be a non-negative integer"
+    fi
+    if [ -n "$MONITOR_POSTGRES_LAG_IGNORE_SERVICE" ]; then
+        if [[ ! "$MONITOR_POSTGRES_LAG_IGNORE_SERVICE" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
+            die "PostgreSQL lag ignore service name is invalid"
+        fi
+        require_command systemctl
+    fi
 fi
 
 if [ "$MODE" != "report" ]; then
@@ -405,6 +432,49 @@ for container_index in "${!container_names[@]}"; do
             "无法读取运行状态"
     fi
 done
+
+if [ -n "$MONITOR_POSTGRES_CONTAINER" ]; then
+    if [ "$MONITOR_POSTGRES_ROLE" = "primary" ]; then
+        if postgres_state="$(
+            docker exec "$MONITOR_POSTGRES_CONTAINER" \
+                psql -p "$MONITOR_POSTGRES_PORT" -U postgres -d postgres -X -Atqc \
+                'select pg_is_in_recovery()' 2>/dev/null
+        )" && [ "$postgres_state" = "f" ]; then
+            evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 1 "可正常写入，角色正确"
+        else
+            evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 0 "角色异常或暂时无法确认主库状态"
+        fi
+    else
+        postgres_lag_ignore_state="inactive"
+        if [ -n "$MONITOR_POSTGRES_LAG_IGNORE_SERVICE" ]; then
+            postgres_lag_ignore_state="$(
+                systemctl show "$MONITOR_POSTGRES_LAG_IGNORE_SERVICE" \
+                    --property ActiveState --value 2>/dev/null || printf 'unknown'
+            )"
+        fi
+        postgres_state="$(
+            docker exec "$MONITOR_POSTGRES_CONTAINER" \
+                psql -p "$MONITOR_POSTGRES_PORT" -U postgres -d postgres -X -Atqc \
+                "select pg_is_in_recovery(), coalesce((select status from pg_stat_wal_receiver limit 1), 'stopped'), coalesce((select pg_wal_lsn_diff(latest_end_lsn, pg_last_wal_replay_lsn())::bigint from pg_stat_wal_receiver limit 1), 0)" \
+                2>/dev/null
+        )" || postgres_state=""
+        IFS='|' read -r postgres_recovery postgres_receiver postgres_lag <<< "$postgres_state"
+        if [ "$postgres_recovery" = "t" ] && [ "$postgres_receiver" = "streaming" ] &&
+            [[ "$postgres_lag" =~ ^[0-9]+$ ]]; then
+            if [ "$postgres_lag" -le "$MONITOR_POSTGRES_MAX_REPLAY_LAG_BYTES" ]; then
+                evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 1 "只读同步正常，待重放 ${postgres_lag} 字节"
+            elif [ "$postgres_lag_ignore_state" = "active" ] ||
+                [ "$postgres_lag_ignore_state" = "activating" ] ||
+                [ "$postgres_lag_ignore_state" = "reloading" ]; then
+                evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 1 "备份进行中，复制连接正常，待重放 ${postgres_lag} 字节"
+            else
+                evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 0 "复制延迟过高，待重放 ${postgres_lag} 字节"
+            fi
+        else
+            evaluate_binary_check postgres_role "$MONITOR_POSTGRES_LABEL" 0 "复制中断、角色错误或暂时无法确认从库状态"
+        fi
+    fi
+fi
 
 if [ -n "$MONITOR_HTTP_URL" ]; then
     http_response_file="$(mktemp "$RUNTIME_DIR/http-response.XXXXXX")"

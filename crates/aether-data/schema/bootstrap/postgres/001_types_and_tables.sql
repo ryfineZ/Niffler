@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS public.announcement_reads (
 
 CREATE TABLE IF NOT EXISTS public.announcements (
     id character varying(36) NOT NULL,
+    portal_id character varying(32) DEFAULT 'default'::character varying NOT NULL,
     title character varying(200) NOT NULL,
     content text NOT NULL,
     type character varying(20) DEFAULT 'info'::character varying,

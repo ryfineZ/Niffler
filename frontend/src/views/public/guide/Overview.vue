@@ -46,7 +46,7 @@
           <code class="min-w-0 break-all text-sm text-primary">{{ item.value }}</code>
         </div>
       </div>
-      <p class="mt-3 text-xs">{{ t('guide.start.connectionHint') }}</p>
+      <p class="mt-3 text-xs">{{ t('guide.start.connectionHint', { baseUrl: apiBaseUrl }) }}</p>
     </section>
 
     <section>
@@ -88,9 +88,11 @@ import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { AlertTriangle, ArrowUpRight, CheckCircle2, CircleDollarSign, Clock3, Library, Terminal } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { usePortalBaseUrl } from '@/composables/usePortalBaseUrl'
 import CustomerCodeBlock from './components/CustomerCodeBlock.vue'
 
 const { t } = useI18n()
+const { apiBaseUrl } = usePortalBaseUrl()
 const readinessItems = computed(() => [
   { title: t('guide.start.readyAccount'), description: t('guide.start.readyAccountDesc') },
   { title: t('guide.start.readyBalance'), description: t('guide.start.readyBalanceDesc') },
@@ -104,7 +106,7 @@ const steps = computed(() => [
   { title: t('guide.start.stepModel'), description: t('guide.start.stepModelDesc'), action: t('guide.start.openModels'), to: '/models' },
 ])
 const connectionItems = computed(() => [
-  { label: t('guide.start.baseUrl'), value: 'https://niffler.org/v1' },
+  { label: t('guide.start.baseUrl'), value: apiBaseUrl.value },
   { label: t('guide.start.apiKey'), value: 'YOUR_NIFFLER_KEY' },
   { label: t('guide.start.modelId'), value: 'YOUR_MODEL_ID' },
 ])
@@ -112,14 +114,14 @@ const troubleshootItems = computed(() => [
   { title: t('guide.start.checkKey'), description: t('guide.start.checkKeyDesc') },
   { title: t('guide.start.checkBalance'), description: t('guide.start.checkBalanceDesc') },
   { title: t('guide.start.checkModel'), description: t('guide.start.checkModelDesc') },
-  { title: t('guide.start.checkUrl'), description: t('guide.start.checkUrlDesc') },
+  { title: t('guide.start.checkUrl'), description: t('guide.start.checkUrlDesc', { baseUrl: apiBaseUrl.value }) },
 ])
-const curlExample = `curl https://niffler.org/v1/chat/completions -H "Authorization: Bearer YOUR_NIFFLER_KEY" -H "Content-Type: application/json" -d '{"model":"YOUR_MODEL_ID","messages":[{"role":"user","content":"用一句话介绍 Niffler"}]}'`
-const pythonExample = `from openai import OpenAI
+const curlExample = computed(() => `curl ${apiBaseUrl.value}/chat/completions -H "Authorization: Bearer YOUR_NIFFLER_KEY" -H "Content-Type: application/json" -d '{"model":"YOUR_MODEL_ID","messages":[{"role":"user","content":"用一句话介绍 Niffler"}]}'`)
+const pythonExample = computed(() => `from openai import OpenAI
 
 client = OpenAI(
     api_key="YOUR_NIFFLER_KEY",
-    base_url="https://niffler.org/v1"
+    base_url="${apiBaseUrl.value}"
 )
 
 response = client.chat.completions.create(
@@ -127,7 +129,7 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "用一句话介绍 Niffler"}]
 )
 
-print(response.choices[0].message.content)`
+print(response.choices[0].message.content)`)
 </script>
 
 <style scoped>

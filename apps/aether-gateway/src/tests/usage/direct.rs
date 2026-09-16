@@ -2,12 +2,34 @@ use super::{
     any, build_router_with_state, build_state_with_execution_runtime_override, hash_api_key, json,
     sample_local_openai_auth_snapshot, sample_local_openai_candidate_row,
     sample_local_openai_endpoint, sample_local_openai_key, sample_local_openai_provider,
-    start_server, Arc, Body, GatewayDataState, HeaderValue, InMemoryAuthApiKeySnapshotRepository,
-    InMemoryMinimalCandidateSelectionReadRepository, InMemoryProviderCatalogReadRepository,
-    InMemoryRequestCandidateRepository, InMemoryUsageReadRepository, Json, Request, Response,
-    Router, StatusCode, UsageReadRepository, UsageRuntimeConfig, DEVELOPMENT_ENCRYPTION_KEY,
-    TRACE_ID_HEADER,
+    send_request, start_server, to_bytes, Arc, Body, Bytes, GatewayDataState, HeaderValue,
+    InMemoryAuthApiKeySnapshotRepository, InMemoryMinimalCandidateSelectionReadRepository,
+    InMemoryProviderCatalogReadRepository, InMemoryRequestCandidateRepository,
+    InMemoryUsageReadRepository, Json, Mutex, Request, Response, Router, StatusCode,
+    UsageReadRepository, UsageRuntimeConfig, DEVELOPMENT_ENCRYPTION_KEY, TRACE_ID_HEADER,
 };
+use crate::constants::{
+    CONTROL_REQUEST_ID_HEADER, EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_INVALID_REQUEST,
+};
+use crate::AppState;
+
+fn run_async_test_on_large_stack<F>(name: &'static str, future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime should build")
+                .block_on(future);
+        })
+        .expect("test thread should spawn");
+    handle.join().expect("test thread should finish");
+}
 
 fn large_request_body(stream: bool) -> String {
     let large_message = "x".repeat(128 * 1024);
@@ -19,39 +41,74 @@ fn large_request_body(stream: bool) -> String {
     .expect("request body should encode")
 }
 
-#[tokio::test]
-async fn gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled() {
+async fn execution_plan_request_id(request: Request) -> String {
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("execution request body should read");
+    serde_json::from_slice::<serde_json::Value>(&body)
+        .expect("execution plan should parse")
+        .get("request_id")
+        .and_then(|value| value.as_str())
+        .expect("execution plan should contain its server request id")
+        .to_string()
+}
+
+#[test]
+fn gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled() {
+    run_async_test_on_large_stack(
+        "gateway-sync-usage-record",
+        gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled_inner(),
+    );
+}
+
+async fn gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled_inner() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+    let pending_usage_seen_before_execution = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-sync",
         any(|_request: Request| async move { Json(json!({"ok": true})) }),
     );
 
+    let execution_usage_repository = Arc::clone(&usage_repository);
+    let execution_pending_usage_seen = Arc::clone(&pending_usage_seen_before_execution);
     let execution_runtime = Router::new().route(
         "/v1/execute/sync",
-        any(|_request: Request| async move {
-            Json(json!({
-                "request_id": "req-usage-sync-123",
-                "status_code": 200,
-                "headers": {
-                    "content-type": "application/json"
-                },
-                "body": {
-                    "json_body": {
-                        "id": "chatcmpl-usage-sync-123",
-                        "usage": {
-                            "input_tokens": 3,
-                            "output_tokens": 5,
-                            "total_tokens": 8
+        any(move |request: Request| {
+            let usage_repository = Arc::clone(&execution_usage_repository);
+            let pending_usage_seen = Arc::clone(&execution_pending_usage_seen);
+            async move {
+                let request_id = execution_plan_request_id(request).await;
+                let pending_usage = usage_repository
+                    .find_by_request_id(&request_id)
+                    .await
+                    .expect("pending usage lookup should succeed");
+                pending_usage_seen.store(
+                    pending_usage.is_some_and(|usage| usage.status == "pending"),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                Json(json!({
+                    "request_id": "req-usage-sync-123",
+                    "status_code": 200,
+                    "headers": {
+                        "content-type": "application/json"
+                    },
+                    "body": {
+                        "json_body": {
+                            "id": "chatcmpl-usage-sync-123",
+                            "usage": {
+                                "input_tokens": 3,
+                                "output_tokens": 5,
+                                "total_tokens": 8
+                            }
                         }
+                    },
+                    "telemetry": {
+                        "elapsed_ms": 45
                     }
-                },
-                "telemetry": {
-                    "elapsed_ms": 45
-                }
-            }))
+                }))
+            }
         }),
     );
 
@@ -104,11 +161,18 @@ async fn gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled()
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(pending_usage_seen_before_execution.load(std::sync::atomic::Ordering::SeqCst));
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string();
 
     let mut stored = None;
     for _ in 0..50 {
         stored = usage_repository
-            .find_by_request_id("req-usage-sync-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored
@@ -131,12 +195,69 @@ async fn gateway_records_usage_for_execution_runtime_sync_when_runtime_enabled()
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arrives() {
+#[test]
+fn gateway_internal_failure_still_returns_the_server_request_id() {
+    run_async_test_on_large_stack(
+        "gateway-internal-failure-request-id",
+        gateway_internal_failure_still_returns_the_server_request_id_inner(),
+    );
+}
+
+async fn gateway_internal_failure_still_returns_the_server_request_id_inner() {
+    let body = Body::from_stream(futures_util::stream::once(async {
+        Err::<Bytes, _>(std::io::Error::other("request body read failed"))
+    }));
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/v1/chat/completions")
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(TRACE_ID_HEADER, "trace-body-read-failure-1")
+        .body(body)
+        .expect("request should build");
+    let response = send_request(
+        build_router_with_state(AppState::new().expect("gateway state should build")),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("internal failure should expose the server request id");
+    assert!(!request_id.trim().is_empty());
+    assert_ne!(request_id, "trace-body-read-failure-1");
+    assert_eq!(
+        response
+            .headers()
+            .get(TRACE_ID_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("trace-body-read-failure-1")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(EXECUTION_PATH_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(EXECUTION_PATH_LOCAL_INVALID_REQUEST)
+    );
+}
+
+#[test]
+fn gateway_records_pending_usage_before_execution_runtime_sync_result_arrives() {
+    run_async_test_on_large_stack(
+        "gateway-pending-sync-usage-record",
+        gateway_records_pending_usage_before_execution_runtime_sync_result_arrives_inner(),
+    );
+}
+
+async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arrives_inner() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let execution_request_started = Arc::new(tokio::sync::Notify::new());
     let allow_execution_response = Arc::new(tokio::sync::Notify::new());
+    let execution_request_id = Arc::new(Mutex::new(None::<String>));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-sync",
@@ -148,14 +269,20 @@ async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arri
         any({
             let execution_request_started = Arc::clone(&execution_request_started);
             let allow_execution_response = Arc::clone(&allow_execution_response);
-            move |_request: Request| {
+            let execution_request_id = Arc::clone(&execution_request_id);
+            move |request: Request| {
                 let execution_request_started = Arc::clone(&execution_request_started);
                 let allow_execution_response = Arc::clone(&allow_execution_response);
+                let execution_request_id = Arc::clone(&execution_request_id);
                 async move {
+                    let request_id = execution_plan_request_id(request).await;
+                    *execution_request_id
+                        .lock()
+                        .expect("execution request id lock") = Some(request_id.clone());
                     execution_request_started.notify_one();
                     allow_execution_response.notified().await;
                     Json(json!({
-                        "request_id": "req-usage-sync-pending-123",
+                        "request_id": request_id,
                         "status_code": 200,
                         "headers": {
                             "content-type": "application/json"
@@ -239,11 +366,16 @@ async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arri
     });
 
     execution_request_started.notified().await;
+    let request_id = execution_request_id
+        .lock()
+        .expect("execution request id lock")
+        .clone()
+        .expect("execution request id should be captured");
 
     let mut pending = None;
     for _ in 0..50 {
         pending = usage_repository
-            .find_by_request_id("req-usage-sync-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if pending
@@ -267,7 +399,7 @@ async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arri
     let mut stored = None;
     for _ in 0..50 {
         stored = usage_repository
-            .find_by_request_id("req-usage-sync-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored.as_ref().is_some_and(|row| row.status == "completed") {
@@ -284,12 +416,20 @@ async fn gateway_records_pending_usage_before_execution_runtime_sync_result_arri
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn gateway_keeps_pending_sync_usage_lightweight_for_large_request_body() {
+#[test]
+fn gateway_keeps_pending_sync_usage_lightweight_for_large_request_body() {
+    run_async_test_on_large_stack(
+        "gateway-lightweight-pending-sync-usage",
+        gateway_keeps_pending_sync_usage_lightweight_for_large_request_body_inner(),
+    );
+}
+
+async fn gateway_keeps_pending_sync_usage_lightweight_for_large_request_body_inner() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let execution_request_started = Arc::new(tokio::sync::Notify::new());
     let allow_execution_response = Arc::new(tokio::sync::Notify::new());
+    let execution_request_id = Arc::new(Mutex::new(None::<String>));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-sync",
@@ -301,10 +441,16 @@ async fn gateway_keeps_pending_sync_usage_lightweight_for_large_request_body() {
         any({
             let execution_request_started = Arc::clone(&execution_request_started);
             let allow_execution_response = Arc::clone(&allow_execution_response);
-            move |_request: Request| {
+            let execution_request_id = Arc::clone(&execution_request_id);
+            move |request: Request| {
                 let execution_request_started = Arc::clone(&execution_request_started);
                 let allow_execution_response = Arc::clone(&allow_execution_response);
+                let execution_request_id = Arc::clone(&execution_request_id);
                 async move {
+                    let request_id = execution_plan_request_id(request).await;
+                    *execution_request_id
+                        .lock()
+                        .expect("execution request id lock") = Some(request_id);
                     execution_request_started.notify_one();
                     allow_execution_response.notified().await;
                     Json(json!({
@@ -391,11 +537,16 @@ async fn gateway_keeps_pending_sync_usage_lightweight_for_large_request_body() {
     });
 
     execution_request_started.notified().await;
+    let request_id = execution_request_id
+        .lock()
+        .expect("execution request id lock")
+        .clone()
+        .expect("execution request id should be captured");
 
     let mut pending = None;
     for _ in 0..50 {
         pending = usage_repository
-            .find_by_request_id("req-usage-sync-large-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if pending
@@ -522,12 +673,18 @@ async fn gateway_records_usage_for_execution_runtime_stream_when_runtime_enabled
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string();
     let _ = response.text().await.expect("stream body should read");
 
     let mut stored = None;
     for _ in 0..50 {
         stored = usage_repository
-            .find_by_request_id("req-usage-stream-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored.is_some() {
@@ -553,6 +710,7 @@ async fn gateway_records_pending_usage_before_execution_runtime_stream_headers_a
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let execution_request_started = Arc::new(tokio::sync::Notify::new());
     let allow_execution_response = Arc::new(tokio::sync::Notify::new());
+    let execution_request_id = Arc::new(Mutex::new(None::<String>));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-stream",
@@ -564,10 +722,16 @@ async fn gateway_records_pending_usage_before_execution_runtime_stream_headers_a
         any({
             let execution_request_started = Arc::clone(&execution_request_started);
             let allow_execution_response = Arc::clone(&allow_execution_response);
-            move |_request: Request| {
+            let execution_request_id = Arc::clone(&execution_request_id);
+            move |request: Request| {
                 let execution_request_started = Arc::clone(&execution_request_started);
                 let allow_execution_response = Arc::clone(&allow_execution_response);
+                let execution_request_id = Arc::clone(&execution_request_id);
                 async move {
+                    let request_id = execution_plan_request_id(request).await;
+                    *execution_request_id
+                        .lock()
+                        .expect("execution request id lock") = Some(request_id);
                     execution_request_started.notify_one();
                     allow_execution_response.notified().await;
                     let frames = concat!(
@@ -649,11 +813,16 @@ async fn gateway_records_pending_usage_before_execution_runtime_stream_headers_a
     });
 
     execution_request_started.notified().await;
+    let request_id = execution_request_id
+        .lock()
+        .expect("execution request id lock")
+        .clone()
+        .expect("execution request id should be captured");
 
     let mut pending = None;
     for _ in 0..50 {
         pending = usage_repository
-            .find_by_request_id("req-usage-stream-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if pending
@@ -678,7 +847,7 @@ async fn gateway_records_pending_usage_before_execution_runtime_stream_headers_a
     let mut stored = None;
     for _ in 0..50 {
         stored = usage_repository
-            .find_by_request_id("req-usage-stream-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if stored.as_ref().is_some_and(|row| row.status == "completed") {
@@ -701,6 +870,7 @@ async fn gateway_keeps_pending_stream_usage_lightweight_for_large_request_body()
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
     let execution_request_started = Arc::new(tokio::sync::Notify::new());
     let allow_execution_response = Arc::new(tokio::sync::Notify::new());
+    let execution_request_id = Arc::new(Mutex::new(None::<String>));
 
     let upstream = Router::new().route(
         "/api/internal/gateway/report-stream",
@@ -712,10 +882,16 @@ async fn gateway_keeps_pending_stream_usage_lightweight_for_large_request_body()
         any({
             let execution_request_started = Arc::clone(&execution_request_started);
             let allow_execution_response = Arc::clone(&allow_execution_response);
-            move |_request: Request| {
+            let execution_request_id = Arc::clone(&execution_request_id);
+            move |request: Request| {
                 let execution_request_started = Arc::clone(&execution_request_started);
                 let allow_execution_response = Arc::clone(&allow_execution_response);
+                let execution_request_id = Arc::clone(&execution_request_id);
                 async move {
+                    let request_id = execution_plan_request_id(request).await;
+                    *execution_request_id
+                        .lock()
+                        .expect("execution request id lock") = Some(request_id);
                     execution_request_started.notify_one();
                     allow_execution_response.notified().await;
                     let frames = concat!(
@@ -797,11 +973,16 @@ async fn gateway_keeps_pending_stream_usage_lightweight_for_large_request_body()
     });
 
     execution_request_started.notified().await;
+    let request_id = execution_request_id
+        .lock()
+        .expect("execution request id lock")
+        .clone()
+        .expect("execution request id should be captured");
 
     let mut pending = None;
     for _ in 0..50 {
         pending = usage_repository
-            .find_by_request_id("req-usage-stream-large-pending-123")
+            .find_by_request_id(&request_id)
             .await
             .expect("usage lookup should succeed");
         if pending

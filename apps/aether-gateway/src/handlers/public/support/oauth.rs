@@ -3,8 +3,8 @@ use super::support_auth::auth_session::{
 };
 use super::{
     build_auth_error_response, build_auth_json_response, extract_client_device_id, http, json,
-    query_param_value, resolve_authenticated_local_user, AppState, Body, Bytes,
-    GatewayPublicRequestContext, IntoResponse, Json, Response,
+    query_param_value, resolve_authenticated_local_user, resolve_request_portal, AppState, Body,
+    Bytes, GatewayPublicRequestContext, IntoResponse, Json, Response,
 };
 use aether_oauth::core::{generate_pkce_verifier, pkce_s256, OAuthError};
 use aether_oauth::identity::{
@@ -24,6 +24,30 @@ pub(super) async fn maybe_build_local_oauth_response(
     let decision = request_context.control_decision.as_ref()?;
     if decision.route_family.as_deref() != Some("oauth") {
         return None;
+    }
+
+    let portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return Some(build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("portal settings lookup failed: {err:?}"),
+                false,
+            ))
+        }
+    };
+    if portal.is_official_usd() {
+        return Some(
+            if decision.route_kind.as_deref() == Some("list_providers") {
+                Json(json!({ "providers": [] })).into_response()
+            } else {
+                build_auth_error_response(
+                    http::StatusCode::BAD_REQUEST,
+                    "专属门户不支持第三方登录或绑定",
+                    false,
+                )
+            },
+        );
     }
 
     match decision.route_kind.as_deref() {
@@ -453,7 +477,7 @@ async fn complete_oauth_login(
         Err(err) => return redirect_oauth_error(Some(frontend_callback_url), err.code()),
     };
     let login_response =
-        build_auth_login_success_response(state, headers, client_device_id, user).await;
+        build_auth_login_success_response(state, headers, None, client_device_id, user).await;
     if login_response.status() != http::StatusCode::OK {
         return redirect_oauth_error(Some(frontend_callback_url), "provider_unavailable");
     }

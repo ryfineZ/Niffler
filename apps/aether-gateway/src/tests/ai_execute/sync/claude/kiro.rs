@@ -516,6 +516,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_body = response.text().await.expect("body should read");
@@ -588,7 +589,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-kiro-cli-local-sync-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -1065,6 +1066,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -1081,10 +1083,7 @@ async fn gateway_executes_kiro_claude_cli_sync_via_local_provider_catalog_candid
         .expect("mutex should lock")
         .clone()
         .expect("execution runtime sync should be captured");
-    assert_eq!(
-        seen_execution_runtime_request.trace_id,
-        "trace-kiro-cli-local-refresh-123"
-    );
+    assert_eq!(seen_execution_runtime_request.trace_id, request_id);
     assert_eq!(
         seen_execution_runtime_request.authorization,
         "Bearer refreshed-kiro-access-token"

@@ -431,6 +431,24 @@ pub struct UserDailyQuotaAvailabilityRecord {
     pub provider_ids_by_entitlement: std::collections::BTreeMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UserPlanQuotaSummaryRecord {
+    pub user_id: String,
+    pub entitlement_id: String,
+    pub plan_id: String,
+    pub plan_title: String,
+    pub starts_at_unix_secs: u64,
+    pub expires_at_unix_secs: u64,
+    pub quota_total_usd: f64,
+    pub quota_used_usd: f64,
+    pub quota_remaining_usd: f64,
+    pub daily_total_usd: Option<f64>,
+    pub daily_used_usd: Option<f64>,
+    pub daily_remaining_usd: Option<f64>,
+    pub daily_window_started_at_unix_secs: Option<u64>,
+    pub daily_window_ends_at_unix_secs: Option<u64>,
+}
+
 impl UserDailyQuotaAvailabilityRecord {
     pub fn provider_scoped_entitlement_ids_for_provider(&self, provider_id: &str) -> Vec<String> {
         self.eligible_entitlement_ids
@@ -658,6 +676,14 @@ pub trait BillingReadRepository: Send + Sync {
         user_id: &str,
     ) -> Result<Option<Vec<UserPlanEntitlementRecord>>, crate::DataLayerError> {
         let _ = user_id;
+        Ok(None)
+    }
+
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, crate::DataLayerError> {
+        let _ = user_ids;
         Ok(None)
     }
 

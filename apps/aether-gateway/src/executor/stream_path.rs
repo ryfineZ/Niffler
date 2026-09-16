@@ -297,6 +297,7 @@ async fn maybe_execute_local_video_task_content_stream(
             let plan = *plan;
             execute_stream_plan_and_reports(
                 state,
+                parts,
                 trace_id,
                 decision,
                 plan_kind,

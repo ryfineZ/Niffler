@@ -83,6 +83,7 @@ export interface UsageChargeBreakdown {
   package_multiplier?: number | null
   wallet_debit?: number | null
   wallet_multiplier?: number | null
+  wallet_discount?: number | null
   user_debit?: number | null
 }
 
@@ -103,6 +104,7 @@ export interface UsageRecord {
   provider_key_account_label?: string | null
   rate_multiplier?: number | null
   sales_multiplier?: number | null
+  discount?: number | null
   model: string
   target_model?: string | null  // 映射后的目标模型名（若无映射则为空）
   model_version?: string | null  // Provider 返回的实际模型版本（列表轻量字段）

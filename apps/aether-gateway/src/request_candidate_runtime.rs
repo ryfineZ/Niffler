@@ -33,6 +33,30 @@ const REQUEST_CANDIDATE_STATUS_BACKGROUND_RUNTIME_STACK_BYTES: usize = 4 * 1024 
 const REQUEST_CANDIDATE_STATUS_BACKGROUND_RUNTIME_THREAD_NAME: &str =
     "aether-request-candidate-writer";
 
+pub(crate) fn bind_execution_plan_to_request_id(
+    plan: &mut ExecutionPlan,
+    report_context: &mut Option<Value>,
+    request_id: &str,
+) {
+    plan.request_id = request_id.to_string();
+    let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    context.insert(
+        "request_id".to_string(),
+        Value::String(request_id.to_string()),
+    );
+    if let Some(admission) = context
+        .get_mut("billing_admission")
+        .and_then(Value::as_object_mut)
+    {
+        admission.insert(
+            "request_id".to_string(),
+            Value::String(request_id.to_string()),
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalRequestCandidateStatusSnapshot {
     candidate_id: String,

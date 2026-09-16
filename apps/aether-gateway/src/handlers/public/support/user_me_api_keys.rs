@@ -20,8 +20,9 @@ use super::{
     build_auth_error_response, decrypt_catalog_secret_with_fallbacks,
     encrypt_catalog_secret_with_fallbacks, format_users_me_optional_unix_secs_iso8601,
     known_capability_names, normalize_user_model_capability_settings_input,
-    query_param_optional_bool, resolve_authenticated_local_user,
-    user_configurable_capability_names, AppState, GatewayPublicRequestContext,
+    query_param_optional_bool, resolve_authenticated_local_user, resolve_user_portal,
+    user_configurable_capability_names, validate_official_usd_registration_group, AppState,
+    GatewayPublicRequestContext,
 };
 
 const USERS_ME_API_KEY_WRITE_UNAVAILABLE_DETAIL: &str = "用户 API 密钥写入暂不可用";
@@ -205,6 +206,16 @@ pub(super) async fn handle_users_me_api_key_groups_get(
         Ok(value) => value,
         Err(response) => return response,
     };
+    let use_discount_terms = match resolve_user_portal(state, &auth.user.id).await {
+        Ok(portal) => portal.is_official_usd(),
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
     let groups = match users_me_accessible_api_key_groups(state, &auth.user.id).await {
         Ok(value) => value,
         Err(err) => {
@@ -215,16 +226,25 @@ pub(super) async fn handle_users_me_api_key_groups_get(
             )
         }
     };
-    Json(json!({
-        "groups": groups.into_iter().map(|group| json!({
-            "id": group.id,
-            "name": group.name,
-            "description": group.description,
-            "visibility": group.visibility,
-            "sales_multiplier": group.sales_multiplier,
-        })).collect::<Vec<_>>()
-    }))
-    .into_response()
+    let groups = groups
+        .into_iter()
+        .map(|group| {
+            let sales_multiplier = group.sales_multiplier;
+            let mut payload = json!({
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "visibility": group.visibility,
+            });
+            if use_discount_terms {
+                payload["discount"] = json!(sales_multiplier);
+            } else {
+                payload["sales_multiplier"] = json!(sales_multiplier);
+            }
+            payload
+        })
+        .collect::<Vec<_>>();
+    Json(json!({ "groups": groups })).into_response()
 }
 
 fn normalize_users_me_required_api_key_name(value: &str) -> Result<String, String> {
@@ -245,7 +265,15 @@ async fn users_me_accessible_api_key_groups(
     state: &AppState,
     user_id: &str,
 ) -> Result<Vec<aether_data::repository::users::StoredUserGroup>, GatewayError> {
+    let portal = resolve_user_portal(state, user_id).await?;
     let groups = state.list_user_groups().await?;
+    if portal.is_official_usd() {
+        let group_id = validate_official_usd_registration_group(state, &portal).await?;
+        return Ok(groups
+            .into_iter()
+            .filter(|group| group.id == group_id)
+            .collect());
+    }
     let user_group_ids = state
         .list_user_groups_for_user(user_id)
         .await?
@@ -266,8 +294,26 @@ async fn resolve_users_me_api_key_group_id(
     user_id: &str,
     requested_group_id: Option<String>,
 ) -> Result<Option<String>, Response<Body>> {
+    let portal = resolve_user_portal(state, user_id).await.map_err(|err| {
+        build_auth_error_response(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("user portal lookup failed: {err:?}"),
+            false,
+        )
+    })?;
     let group_id = match normalize_users_me_optional_group_id(requested_group_id) {
         Some(group_id) => Some(group_id),
+        None if portal.is_official_usd() => Some(
+            validate_official_usd_registration_group(state, &portal)
+                .await
+                .map_err(|err| {
+                    build_auth_error_response(
+                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("official USD portal group validation failed: {err:?}"),
+                        false,
+                    )
+                })?,
+        ),
         None => state
             .effective_default_user_group_id()
             .await

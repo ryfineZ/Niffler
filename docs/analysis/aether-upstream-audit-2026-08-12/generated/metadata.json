@@ -1,0 +1,22 @@
+{
+  "base": "ed75ae6d56ab03eb5e6e3cd87f2137880c99694d",
+  "niffler": "908443291a2826b57286f56f1555fd10e922c0b3",
+  "aether": "654c4f69789f02d08e926a77338f1b94f34f8658",
+  "niffler_unique_commits": 357,
+  "aether_unique_commits": 776,
+  "union_changed_paths": 3310,
+  "scope_counts": {
+    "aether_only": 1977,
+    "both_changed_diverged": 698,
+    "both_changed_same": 1,
+    "niffler_only": 634
+  },
+  "risk_counts": {
+    "aligned": 1,
+    "critical": 244,
+    "high": 1411,
+    "low": 1154,
+    "medium": 500
+  },
+  "rename_records": 1096
+}

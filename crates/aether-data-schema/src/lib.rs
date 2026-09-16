@@ -139,10 +139,6 @@ pub enum DefaultValue {
 pub struct DriverColumnOverrides {
     #[serde(default)]
     pub postgres: Option<DriverColumnOverride>,
-    #[serde(default)]
-    pub mysql: Option<DriverColumnOverride>,
-    #[serde(default)]
-    pub sqlite: Option<DriverColumnOverride>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
@@ -430,12 +426,6 @@ pub fn generate_sources_to_dir(
     write_driver_sources(output_root, "postgres", sources, |tables| {
         dialect::postgres::emit_named_schema(schema, tables)
     })?;
-    write_driver_sources(output_root, "mysql", sources, |tables| {
-        dialect::mysql::emit_named_schema(schema, tables)
-    })?;
-    write_driver_sources(output_root, "sqlite", sources, |tables| {
-        dialect::sqlite::emit_named_schema(schema, tables)
-    })?;
     Ok(())
 }
 
@@ -448,12 +438,6 @@ pub fn check_generated_dir(
     assert_generated_root_files(output_root)?;
     check_driver_sources(output_root, "postgres", &loaded.sources, |tables| {
         dialect::postgres::emit_named_schema(&loaded.schema, tables)
-    })?;
-    check_driver_sources(output_root, "mysql", &loaded.sources, |tables| {
-        dialect::mysql::emit_named_schema(&loaded.schema, tables)
-    })?;
-    check_driver_sources(output_root, "sqlite", &loaded.sources, |tables| {
-        dialect::sqlite::emit_named_schema(&loaded.schema, tables)
     })?;
     Ok(())
 }
@@ -687,12 +671,7 @@ fn write_generated_readme(output_root: &Path) -> Result<(), SchemaError> {
 }
 
 fn assert_generated_root_files(output_root: &Path) -> Result<(), SchemaError> {
-    let expected = BTreeSet::from([
-        "README.md".to_string(),
-        "mysql".to_string(),
-        "postgres".to_string(),
-        "sqlite".to_string(),
-    ]);
+    let expected = BTreeSet::from(["README.md".to_string(), "postgres".to_string()]);
     let actual = fs::read_dir(output_root)
         .map_err(|source| SchemaError::Read {
             path: output_root.to_path_buf(),
@@ -780,7 +759,7 @@ fn generated_readme() -> String {
      bash crates/aether-data/schema/compose_schema.sh generate\n\
      ```\n\n\
      Runtime migrations are not loaded from this directory. The executable SQL remains under \
-     `crates/aether-data/migrations/{postgres,mysql,sqlite}`, and the Postgres bootstrap snapshot \
+     `crates/aether-data/migrations/postgres`, and the Postgres bootstrap snapshot \
      is generated at build time from `crates/aether-data/schema/bootstrap/postgres` into the crate \
      build output until a generated fragment is deliberately promoted into the driver-specific \
      schema manifests.\n"
@@ -814,7 +793,7 @@ fn write_generated(path: PathBuf, contents: &str) -> Result<(), SchemaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialect::{mysql, postgres, sqlite};
+    use crate::dialect::postgres;
 
     fn announcements_schema() -> LogicalSchema {
         LogicalSchema {
@@ -875,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn emitters_generate_expected_driver_types() {
+    fn emitter_generates_expected_postgres_types() {
         let schema = announcements_schema();
         validate_schema(&schema).expect("fixture schema should be valid");
 
@@ -884,18 +863,6 @@ mod tests {
         assert!(postgres_sql.contains("is_active boolean DEFAULT true NOT NULL"));
         assert!(postgres_sql.contains(
             "CREATE INDEX IF NOT EXISTS announcements_is_active_idx ON public.announcements USING btree (is_active);"
-        ));
-
-        let mysql_sql = mysql::emit_schema(&schema);
-        assert!(mysql_sql.contains("`id` VARCHAR(64) NOT NULL"));
-        assert!(mysql_sql.contains("`is_active` TINYINT(1) NOT NULL DEFAULT 1"));
-        assert!(mysql_sql.contains("KEY announcements_is_active_idx (`is_active`)"));
-
-        let sqlite_sql = sqlite::emit_schema(&schema);
-        assert!(sqlite_sql.contains("id TEXT PRIMARY KEY NOT NULL"));
-        assert!(sqlite_sql.contains("is_active INTEGER NOT NULL DEFAULT 1"));
-        assert!(sqlite_sql.contains(
-            "CREATE INDEX IF NOT EXISTS announcements_is_active_idx ON announcements (is_active);"
         ));
     }
 
@@ -1031,18 +998,7 @@ CREATE TABLE IF NOT EXISTS user_entitlement_providers (
             .expect("crate should live under workspace/crates");
         let schema_dir = workspace.join("crates/aether-data/schema/logical");
         let migrations_dir = workspace.join("crates/aether-data/migrations");
-        let mut required_sql_paths =
-            vec![migrations_dir.join("postgres/20260403000000_baseline.sql")];
-        for driver in ["mysql", "sqlite"] {
-            let driver_dir = migrations_dir.join(driver);
-            let mut paths = std::fs::read_dir(&driver_dir)
-                .unwrap_or_else(|err| panic!("failed to read {}: {err}", driver_dir.display()))
-                .map(|entry| entry.expect("migration entry should be readable").path())
-                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sql"))
-                .collect::<Vec<_>>();
-            paths.sort();
-            required_sql_paths.extend(paths);
-        }
+        let required_sql_paths = vec![migrations_dir.join("postgres/20260403000000_baseline.sql")];
 
         let loaded = load_schema_sources(schema_dir).expect("workspace logical schema should load");
         check_required_tables(&loaded.schema, &required_sql_paths)

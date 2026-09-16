@@ -842,7 +842,6 @@ mod tests {
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data::repository::usage::InMemoryUsageReadRepository;
     use aether_data::repository::video_tasks::InMemoryVideoTaskRepository;
-    use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use aether_data_contracts::repository::candidates::{
         RequestCandidateReadRepository, RequestCandidateStatus, StoredRequestCandidate,
     };
@@ -857,6 +856,7 @@ mod tests {
         UpsertVideoTask, VideoTaskStatus, VideoTaskWriteRepository,
     };
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::{
         build_niffler_billing_reservation_dry_run_shadow_record,
@@ -865,7 +865,7 @@ mod tests {
         submit_stream_report, submit_sync_report, GatewayStreamReportRequest,
         GatewaySyncReportRequest,
     };
-    use crate::data::{GatewayDataConfig, GatewayDataState};
+    use crate::data::GatewayDataState;
     use crate::niffler_runtime::{
         NifflerRuntimeRolloutDecision, NifflerRuntimeRolloutDecisionSource,
     };
@@ -1068,26 +1068,9 @@ mod tests {
         }
     }
 
-    async fn sqlite_niffler_state() -> AppState {
-        let mut pool = SqlPoolConfig::default();
-        pool.min_connections = 0;
-        pool.max_connections = 1;
-        let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)
-            .expect("sqlite database config should build");
-        let state = AppState::new()
-            .expect("app state should build")
-            .with_data_config(GatewayDataConfig::from_database_config(database))
-            .expect("sqlite data config should wire");
-        assert!(state
-            .run_database_migrations()
-            .await
-            .expect("sqlite migrations should run"));
-        state
-    }
-
     fn billing_reservation_record(request_id: &str) -> CreateNifflerBillingReservationRecord {
         CreateNifflerBillingReservationRecord {
-            id: format!("reservation-{request_id}"),
+            id: Uuid::new_v4().to_string(),
             request_id: request_id.to_string(),
             user_id: Some("user-finalize-tests-123".to_string()),
             api_key_id: Some("api-key-finalize-tests-123".to_string()),
@@ -1098,7 +1081,7 @@ mod tests {
             reserved_at_unix_ms: 1_700_000_000_000,
             expires_at_unix_ms: 1_700_000_060_000,
             idempotency_key: format!("reservation-idempotency-{request_id}"),
-            event_id: format!("reserved-event-{request_id}"),
+            event_id: Uuid::new_v4().to_string(),
             event_idempotency_key: format!("reserved-event-idempotency-{request_id}"),
             actor_id: Some("user-finalize-tests-123".to_string()),
         }
@@ -1408,6 +1391,133 @@ mod tests {
         assert_eq!(quota.get("source"), Some(&json!("response_headers")));
         assert_eq!(quota.get("code"), Some(&json!("exhausted")));
         assert_eq!(quota.get("updated_at"), quota.get("observed_at"));
+    }
+
+    #[tokio::test]
+    async fn submit_sync_report_preserves_codex_feature_quota_and_reset_credits() {
+        crate::orchestration::clear_local_report_effect_caches_for_tests();
+
+        let mut key = sample_provider_catalog_key(
+            "key-codex-sync-feature-quota",
+            "provider-codex-sync-feature-quota",
+        );
+        key.upstream_metadata = Some(json!({
+            "codex": {
+                "updated_at": 1_777_000_000u64,
+                "plan_type": "pro",
+                "rate_limit_reset_credits": { "available_count": 1 },
+                "windows": [
+                    {
+                        "code": "weekly",
+                        "label": "7D",
+                        "scope": "account",
+                        "source_role": "secondary",
+                        "used_percent": 5.0,
+                        "reset_after_seconds": 500_000u64,
+                        "window_seconds": 604_800u64,
+                        "window_minutes": 10_080u64
+                    },
+                    {
+                        "code": "spark:5h",
+                        "label": "GPT-5.3-Codex-Spark 5H",
+                        "scope": "feature",
+                        "source_role": "primary",
+                        "used_percent": 0.0,
+                        "reset_after_seconds": 15_000u64,
+                        "window_seconds": 18_000u64,
+                        "window_minutes": 300u64
+                    },
+                    {
+                        "code": "spark:weekly",
+                        "label": "GPT-5.3-Codex-Spark 7D",
+                        "scope": "feature",
+                        "source_role": "secondary",
+                        "used_percent": 0.0,
+                        "reset_after_seconds": 500_000u64,
+                        "window_seconds": 604_800u64,
+                        "window_minutes": 10_080u64
+                    }
+                ]
+            }
+        }));
+        let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+            vec![sample_provider_catalog_provider(
+                "provider-codex-sync-feature-quota",
+                "codex",
+            )],
+            Vec::new(),
+            vec![key],
+        ));
+        let state = build_provider_catalog_test_state(Arc::clone(&provider_catalog_repository));
+
+        submit_sync_report(
+            &state,
+            GatewaySyncReportRequest {
+                trace_id: "trace-codex-reporting-sync-feature-quota".to_string(),
+                report_kind: "openai_responses_sync_success".to_string(),
+                report_context: Some(json!({
+                    "request_id": "req-codex-reporting-sync-feature-quota",
+                    "key_id": "key-codex-sync-feature-quota"
+                })),
+                status_code: 200,
+                headers: sample_codex_paid_headers(),
+                body_json: None,
+                client_body_json: None,
+                body_base64: None,
+                telemetry: None,
+            },
+        )
+        .await
+        .expect("sync report should stay local");
+
+        let reloaded = provider_catalog_repository
+            .list_keys_by_ids(&["key-codex-sync-feature-quota".to_string()])
+            .await
+            .expect("keys should list");
+        let codex = reloaded[0]
+            .upstream_metadata
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|metadata| metadata.get("codex"))
+            .and_then(serde_json::Value::as_object)
+            .expect("codex metadata should exist");
+        let metadata_windows = codex
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("codex metadata windows should exist");
+        assert_eq!(
+            codex.get("rate_limit_reset_credits"),
+            Some(&json!({ "available_count": 1 }))
+        );
+        assert!(metadata_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:5h"))));
+        assert!(metadata_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:weekly"))));
+
+        let quota = reloaded[0]
+            .status_snapshot
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|snapshot| snapshot.get("quota"))
+            .and_then(serde_json::Value::as_object)
+            .expect("quota snapshot should exist");
+        let quota_windows = quota
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("quota windows should exist");
+        assert_eq!(quota.get("source"), Some(&json!("response_headers")));
+        assert_eq!(
+            quota.get("reset_credits"),
+            Some(&json!({ "available_count": 1 }))
+        );
+        assert!(quota_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:5h"))));
+        assert!(quota_windows
+            .iter()
+            .any(|window| window.get("code") == Some(&json!("spark:weekly"))));
     }
 
     #[tokio::test]
@@ -2419,12 +2529,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalizes_niffler_billing_reservations_by_request_outcome() {
-        let state = sqlite_niffler_state().await;
+    async fn finalizes_niffler_billing_reservations_by_request_outcome_when_url_is_set() {
+        let Some(state) = crate::data::tests::postgres_app_state_when_url_is_set(
+            "finalizes_niffler_billing_reservations_by_request_outcome",
+        )
+        .await
+        else {
+            return;
+        };
+        let suffix = Uuid::new_v4();
+        let success_request_id = format!("finalize-success-{suffix}");
+        let failed_request_id = format!("finalize-failed-{suffix}");
+        let manual_review_request_id = format!("finalize-manual-review-{suffix}");
         for request_id in [
-            "req-reservation-finalize-success-123",
-            "req-reservation-finalize-failed-123",
-            "req-reservation-finalize-manual-review-123",
+            &success_request_id,
+            &failed_request_id,
+            &manual_review_request_id,
         ] {
             state
                 .create_niffler_billing_reservation(billing_reservation_record(request_id))
@@ -2437,7 +2557,7 @@ mod tests {
         decision.enable_billing_reservation = true;
 
         let success_context = json!({
-            "request_id": "req-reservation-finalize-success-123",
+            "request_id": &success_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123",
             "provider_id": "provider-finalize-tests-123",
@@ -2471,7 +2591,7 @@ mod tests {
         .await;
 
         let failed_context = json!({
-            "request_id": "req-reservation-finalize-failed-123",
+            "request_id": &failed_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123"
         });
@@ -2486,7 +2606,7 @@ mod tests {
         .await;
 
         let missing_snapshot_context = json!({
-            "request_id": "req-reservation-finalize-manual-review-123",
+            "request_id": &manual_review_request_id,
             "user_id": "user-finalize-tests-123",
             "api_key_id": "api-key-finalize-tests-123"
         });
@@ -2505,7 +2625,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-success-123".to_string()),
+                request_id: Some(success_request_id.clone()),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -2524,7 +2644,7 @@ mod tests {
 
         let snapshots = state
             .list_niffler_settlement_snapshots(&NifflerSettlementSnapshotListQuery {
-                request_id: Some("req-reservation-finalize-success-123".to_string()),
+                request_id: Some(success_request_id),
                 user_id: None,
                 api_key_id: None,
                 product_plan_id: None,
@@ -2540,7 +2660,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-failed-123".to_string()),
+                request_id: Some(failed_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -2565,7 +2685,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("req-reservation-finalize-manual-review-123".to_string()),
+                request_id: Some(manual_review_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,

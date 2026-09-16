@@ -328,6 +328,7 @@ async fn proxy_pii_redaction_local_openai_chat_runtime_masks_headers_and_restore
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let execution_path = response
@@ -369,7 +370,7 @@ async fn proxy_pii_redaction_local_openai_chat_runtime_masks_headers_and_restore
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-proxy-pii-redaction-sync",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -704,6 +705,7 @@ async fn gateway_executes_openai_chat_sync_via_local_decision_gate_without_execu
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -730,7 +732,7 @@ async fn gateway_executes_openai_chat_sync_via_local_decision_gate_without_execu
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-local-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -1010,6 +1012,7 @@ async fn gateway_executes_openai_chat_sync_with_regex_model_mapping_in_execution
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1036,7 +1039,7 @@ async fn gateway_executes_openai_chat_sync_with_regex_model_mapping_in_execution
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-regex-mapping-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -1526,6 +1529,7 @@ async fn gateway_executes_openai_chat_sync_via_local_cross_format_gemini_candida
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1591,7 +1595,7 @@ async fn gateway_executes_openai_chat_sync_via_local_cross_format_gemini_candida
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-gemini-local-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;
@@ -1950,6 +1954,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_claude_cli_syn
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -1997,7 +2002,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_claude_cli_syn
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-claude-cli-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;
@@ -2350,6 +2355,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_gemini_cli_syn
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -2398,7 +2404,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_gemini_cli_syn
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-gemini-cli-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;
@@ -2752,6 +2758,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_claude_sync_fa
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -2802,7 +2809,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_claude_sync_fa
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-claude-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;
@@ -3191,6 +3198,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_gemini_sync_fa
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
@@ -3245,7 +3253,7 @@ async fn gateway_returns_openai_chat_error_for_local_cross_format_gemini_sync_fa
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-chat-gemini-local-error-123",
+        &request_id,
         RequestCandidateStatus::Failed,
     )
     .await;

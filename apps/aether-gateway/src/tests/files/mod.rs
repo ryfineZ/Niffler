@@ -2,7 +2,8 @@ use super::{
     any, build_router, build_router_with_state, build_state_with_execution_runtime_override, json,
     start_server, to_bytes, AppState, Arc, Body, Bytes, HeaderName, HeaderValue, Infallible, Json,
     Mutex, Request, Response, Router, StatusCode, CONTROL_EXECUTED_HEADER,
-    CONTROL_EXECUTE_FALLBACK_HEADER, EXECUTION_PATH_HEADER, TRACE_ID_HEADER,
+    CONTROL_EXECUTE_FALLBACK_HEADER, CONTROL_REQUEST_ID_HEADER, EXECUTION_PATH_HEADER,
+    TRACE_ID_HEADER,
 };
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
@@ -25,6 +26,15 @@ use sha2::{Digest, Sha256};
 mod registry_cleanup;
 mod stream;
 mod sync;
+
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
 
 fn hash_api_key(value: &str) -> String {
     let mut hasher = Sha256::new();
@@ -545,7 +555,7 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_with_local_pl
                 DEVELOPMENT_ENCRYPTION_KEY,
             ),
         );
-    let gateway = build_router_with_state(gateway_state);
+    let gateway = build_router_with_state(gateway_state.clone());
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
     let response = reqwest::Client::new()
@@ -559,6 +569,7 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_with_local_pl
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     assert_eq!(
         response.text().await.expect("body should read"),
         "{\"name\":\"files/abc-123\"}"
@@ -579,8 +590,9 @@ async fn gateway_executes_gemini_files_get_via_local_decision_gate_with_local_pl
         "sk-upstream-gemini-files"
     );
 
+    crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state).await;
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-gemini-files-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

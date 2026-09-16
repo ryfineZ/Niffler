@@ -1,7 +1,5 @@
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 
 use aether_data_query::{DialectSql, SelectColumn, SelectQuery};
 
@@ -11,9 +9,7 @@ pub(crate) use aether_data_contracts::repository::quota::{
     StoredProviderQuotaSnapshot,
 };
 pub use memory::InMemoryProviderQuotaRepository;
-pub use mysql::MysqlProviderQuotaRepository;
 pub use postgres::SqlxProviderQuotaRepository;
-pub use sqlite::SqliteProviderQuotaRepository;
 
 fn quota_snapshot_select() -> SelectQuery<'static> {
     SelectQuery::new("providers").select_columns([
@@ -22,25 +18,21 @@ fn quota_snapshot_select() -> SelectQuery<'static> {
             DialectSql::common("billing_type").with_postgres("CAST(billing_type AS TEXT)"),
         )
         .alias("billing_type"),
-        SelectColumn::expr(DialectSql::dialect(
+        SelectColumn::expr(DialectSql::postgres(
             "CAST(monthly_quota_usd AS DOUBLE PRECISION)",
-            "CAST(monthly_quota_usd AS REAL)",
         ))
         .alias("monthly_quota_usd"),
-        SelectColumn::expr(DialectSql::dialect(
+        SelectColumn::expr(DialectSql::postgres(
             "CAST(COALESCE(monthly_used_usd, 0) AS DOUBLE PRECISION)",
-            "CAST(COALESCE(monthly_used_usd, 0) AS REAL)",
         ))
         .alias("monthly_used_usd"),
         SelectColumn::expr("quota_reset_day"),
-        SelectColumn::expr(DialectSql::dialect(
+        SelectColumn::expr(DialectSql::postgres(
             "CAST(EXTRACT(EPOCH FROM quota_last_reset_at) AS BIGINT)",
-            "quota_last_reset_at",
         ))
         .alias("quota_last_reset_at_unix_secs"),
-        SelectColumn::expr(DialectSql::dialect(
+        SelectColumn::expr(DialectSql::postgres(
             "CAST(EXTRACT(EPOCH FROM quota_expires_at) AS BIGINT)",
-            "quota_expires_at",
         ))
         .alias("quota_expires_at_unix_secs"),
         SelectColumn::expr("is_active"),

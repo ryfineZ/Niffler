@@ -356,6 +356,7 @@ async fn ai_execute_stream_pii_redaction_round_trip() {
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let execution_path = response
@@ -388,7 +389,7 @@ async fn ai_execute_stream_pii_redaction_round_trip() {
     let stored_candidates = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             let stored_candidates = request_candidate_repository
-                .list_by_request_id("trace-ai-execute-stream-pii-redaction")
+                .list_by_request_id(&request_id)
                 .await
                 .expect("request candidate trace should read");
             if stored_candidates

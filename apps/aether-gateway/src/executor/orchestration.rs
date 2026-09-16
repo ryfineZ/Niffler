@@ -43,7 +43,7 @@ use crate::execution_runtime::sync::{
 };
 use crate::executor::candidate_loop::{
     execute_stream_attempt_source, execute_sync_attempt_source, execute_sync_plan_and_reports,
-    mark_unused_local_candidates,
+    mark_unused_local_candidates, release_duplicate_attempt_lease, RequestAttemptRegistry,
 };
 use crate::executor::{
     build_local_execution_exhaustion, record_failed_usage_for_exhausted_request,
@@ -138,6 +138,7 @@ pub(crate) async fn maybe_execute_stream_via_local_decision(
 
     let outcome = execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -206,6 +207,7 @@ pub(crate) async fn maybe_execute_stream_via_local_openai_responses_decision(
 
     execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -269,6 +271,7 @@ pub(crate) async fn maybe_execute_stream_via_standard_family_decision(
 
     execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -432,6 +435,7 @@ pub(crate) async fn maybe_execute_stream_via_local_same_format_provider_decision
 
     execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -502,6 +506,7 @@ fn build_openai_image_sync_heartbeat_shell_response(
     decision: GatewayControlDecision,
     plan_kind: String,
     attempts: Vec<AiSyncAttempt>,
+    attempt_registry: Option<RequestAttemptRegistry>,
 ) -> Result<Response<Body>, GatewayError> {
     let request_id = attempts
         .first()
@@ -521,6 +526,7 @@ fn build_openai_image_sync_heartbeat_shell_response(
                 decision,
                 plan_kind,
                 attempts,
+                attempt_registry,
                 started_at,
             )
             .await,
@@ -563,6 +569,7 @@ async fn execute_openai_image_sync_heartbeat_attempts(
     decision: GatewayControlDecision,
     plan_kind: String,
     attempts: Vec<AiSyncAttempt>,
+    attempt_registry: Option<RequestAttemptRegistry>,
     started_at: Instant,
 ) -> Result<LocalExecutionRequestOutcome, GatewayError> {
     let mut attempts = VecDeque::from(attempts);
@@ -572,6 +579,13 @@ async fn execute_openai_image_sync_heartbeat_attempts(
         let plan = attempt.plan;
         let report_kind = attempt.report_kind;
         let report_context = attempt.report_context;
+        if attempt_registry
+            .as_ref()
+            .is_some_and(|registry| !registry.begin_attempt(&plan, report_context.as_ref()))
+        {
+            release_duplicate_attempt_lease(&state, report_context.as_ref()).await;
+            continue;
+        }
         last_attempted = Some((plan.clone(), report_context.clone()));
         match execute_execution_runtime_sync(
             &state,
@@ -734,6 +748,7 @@ pub(crate) async fn maybe_execute_sync_via_local_image_decision(
                 decision.clone(),
                 plan_kind.to_string(),
                 attempts,
+                parts.extensions.get::<RequestAttemptRegistry>().cloned(),
             )?,
         ));
     }
@@ -780,6 +795,7 @@ pub(crate) async fn maybe_execute_stream_via_local_gemini_files_decision(
 
     execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -813,6 +829,7 @@ pub(crate) async fn maybe_execute_stream_via_local_image_decision(
 
     let outcome = execute_stream_attempt_source::<AiStreamAttempt, _>(
         state,
+        parts,
         trace_id,
         decision,
         plan_kind,
@@ -1135,6 +1152,7 @@ mod tests {
             test_openai_image_heartbeat_decision(),
             TEST_OPENAI_IMAGE_SYNC_PLAN_KIND.to_string(),
             attempts,
+            None,
             Instant::now(),
         )
         .await
@@ -1147,5 +1165,41 @@ mod tests {
 
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
         assert_eq!(body, json!({"data": [{"b64_json": "second-candidate"}]}));
+    }
+
+    #[tokio::test]
+    async fn openai_image_sync_heartbeat_skips_a_service_path_already_attempted() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_for_override = Arc::clone(&call_count);
+        let state = AppState::new()
+            .expect("state should build")
+            .with_execution_runtime_sync_override_for_tests(move |plan| {
+                call_count_for_override.fetch_add(1, Ordering::SeqCst);
+                Ok(test_openai_image_execution_result(
+                    plan,
+                    StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                    json!({"error": {"message": "retry later"}}),
+                ))
+            });
+        let attempts = vec![
+            test_openai_image_heartbeat_attempt(0, "endpoint-duplicate", "candidate-first"),
+            test_openai_image_heartbeat_attempt(1, "endpoint-duplicate", "candidate-duplicate"),
+        ];
+
+        let outcome = execute_openai_image_sync_heartbeat_attempts(
+            state,
+            "/v1/images/generations".to_string(),
+            "trace-image-heartbeat-duplicate".to_string(),
+            test_openai_image_heartbeat_decision(),
+            TEST_OPENAI_IMAGE_SYNC_PLAN_KIND.to_string(),
+            attempts,
+            Some(RequestAttemptRegistry::default()),
+            Instant::now(),
+        )
+        .await
+        .expect("heartbeat attempts should execute");
+
+        assert!(matches!(outcome, LocalExecutionRequestOutcome::NoPath));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 }

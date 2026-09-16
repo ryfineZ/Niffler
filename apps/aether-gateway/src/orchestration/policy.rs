@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use aether_contracts::ExecutionPlan;
 use serde_json::{json, Value};
@@ -26,6 +26,58 @@ pub(crate) struct LocalStreamFailoverPolicy {
     pub(crate) max_wait_ms: u64,
     pub(crate) max_buffer_bytes: usize,
     pub(crate) cooldown_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamFailoverAttemptAdmission {
+    Allowed,
+    DuplicateAccount,
+    BudgetExhausted,
+}
+
+#[derive(Default)]
+pub(crate) struct StreamFailoverAttemptBudget {
+    seen_accounts: HashSet<(String, String)>,
+    attempts: u64,
+}
+
+impl StreamFailoverAttemptBudget {
+    pub(crate) fn admit(
+        &mut self,
+        provider_id: &str,
+        _endpoint_id: &str,
+        key_id: &str,
+        max_account_switches: u64,
+    ) -> StreamFailoverAttemptAdmission {
+        let account = (provider_id.to_string(), key_id.to_string());
+        if !self.seen_accounts.insert(account) {
+            return StreamFailoverAttemptAdmission::DuplicateAccount;
+        }
+        let max_attempts = max_account_switches.saturating_add(1);
+        if self.attempts >= max_attempts {
+            return StreamFailoverAttemptAdmission::BudgetExhausted;
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        StreamFailoverAttemptAdmission::Allowed
+    }
+
+    pub(crate) fn admit_with_policy(
+        &mut self,
+        provider_id: &str,
+        endpoint_id: &str,
+        key_id: &str,
+        policy: &LocalStreamFailoverPolicy,
+    ) -> StreamFailoverAttemptAdmission {
+        if !policy.enabled {
+            return StreamFailoverAttemptAdmission::Allowed;
+        }
+        self.admit(
+            provider_id,
+            endpoint_id,
+            key_id,
+            policy.max_account_switches,
+        )
+    }
 }
 
 impl Default for LocalStreamFailoverPolicy {
@@ -105,23 +157,66 @@ pub(crate) async fn resolve_local_failover_policy(
     policy
 }
 
+pub(crate) const GLOBAL_STREAM_FAILOVER_CONFIG_KEY: &str = "request_failover";
+
+pub(crate) async fn read_global_stream_failover_policy(
+    state: &AppState,
+) -> LocalStreamFailoverPolicy {
+    let value = match state
+        .read_system_config_json_value(GLOBAL_STREAM_FAILOVER_CONFIG_KEY)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                event_name = "request_failover_config_read_failed",
+                ?error,
+                "failed to load request failover policy; using safe defaults"
+            );
+            None
+        }
+    };
+    global_stream_failover_policy_from_value(value.as_ref())
+}
+
+pub(crate) fn global_stream_failover_policy_from_value(
+    value: Option<&Value>,
+) -> LocalStreamFailoverPolicy {
+    let defaults = json!({"enabled": true, "max_account_switches": 2,
+        "max_wait_ms": 5000, "max_buffer_bytes": 65536, "cooldown_seconds": 30});
+    let mut config = defaults.as_object().unwrap().clone();
+    if let Some(value) = value.and_then(Value::as_object) {
+        config.extend(value.clone());
+    }
+    local_stream_failover_policy_from_report_context(Some(
+        &json!({"stream_failover_policy": config}),
+    ))
+    .expect("global stream failover defaults are valid")
+}
+
 pub(crate) async fn resolve_local_stream_failover_policy(
     state: &AppState,
     plan: &ExecutionPlan,
-    report_context: Option<&serde_json::Value>,
+    report_context: Option<&Value>,
 ) -> LocalStreamFailoverPolicy {
-    if let Some(policy) = local_stream_failover_policy_from_report_context(report_context) {
-        return policy;
-    }
-
-    let transport = match state
-        .read_provider_transport_snapshot(&plan.provider_id, &plan.endpoint_id, &plan.key_id)
-        .await
+    if !crate::ai_serving::is_openai_responses_format(&plan.provider_api_format)
+        || crate::ai_serving::openai_request_is_image_generation_intent(
+            plan.model_name.as_deref().unwrap_or_default(),
+            plan.body.json_body.as_ref().unwrap_or(&Value::Null),
+        )
     {
-        Ok(Some(transport)) => transport,
-        Ok(None) | Err(_) => return LocalStreamFailoverPolicy::default(),
-    };
-    local_stream_failover_policy_from_transport(&transport)
+        return LocalStreamFailoverPolicy::default();
+    }
+    // Only trust the request snapshot created by the global planner, never legacy endpoint settings.
+    if report_context
+        .and_then(|v| v.get("global_stream_failover_policy"))
+        .is_some()
+    {
+        return global_stream_failover_policy_from_value(
+            report_context.and_then(|v| v.get("global_stream_failover_policy")),
+        );
+    }
+    read_global_stream_failover_policy(state).await
 }
 
 pub(crate) fn local_failover_policy_from_transport(
@@ -452,7 +547,7 @@ fn local_failover_policy_to_value(policy: &LocalFailoverPolicy) -> Value {
     })
 }
 
-fn local_stream_failover_policy_to_value(policy: &LocalStreamFailoverPolicy) -> Value {
+pub(crate) fn local_stream_failover_policy_to_value(policy: &LocalStreamFailoverPolicy) -> Value {
     json!({
         "enabled": policy.enabled,
         "max_account_switches": policy.max_account_switches,
@@ -747,6 +842,52 @@ mod tests {
                 max_buffer_bytes: 1_048_576,
                 cooldown_seconds: 1,
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod global_capacity_tests {
+    use super::*;
+    #[test]
+    fn capacity_global_policy_defaults_enabled_and_validates_bounds() {
+        let policy = global_stream_failover_policy_from_value(None);
+        assert!(policy.enabled);
+        assert_eq!(policy.max_account_switches, 2);
+        assert_eq!(policy.max_wait_ms, 5000);
+        assert!(!global_stream_failover_policy_from_value(Some(&json!({"enabled":false}))).enabled);
+        assert_eq!(
+            global_stream_failover_policy_from_value(Some(&json!({"max_account_switches": 0})))
+                .max_account_switches,
+            0
+        );
+    }
+    #[tokio::test]
+    async fn capacity_global_policy_ignores_legacy_endpoint_snapshot() {
+        let state = AppState::new().unwrap();
+        let plan: ExecutionPlan = serde_json::from_value(json!({"request_id":"global-policy", "provider_id":"p", "endpoint_id":"e", "key_id":"k", "method":"POST", "url":"https://example.invalid/responses", "body":{}, "stream":true, "client_api_format":"openai:responses", "provider_api_format":"openai:responses", "model_name":"gpt-test"})).unwrap();
+        let legacy = json!({"stream_failover_policy":{"enabled":false,"max_account_switches":0}});
+        assert!(
+            resolve_local_stream_failover_policy(&state, &plan, Some(&legacy))
+                .await
+                .enabled
+        );
+        state
+            .upsert_system_config_json_value(
+                GLOBAL_STREAM_FAILOVER_CONFIG_KEY,
+                &json!({"enabled":false}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !resolve_local_stream_failover_policy(
+                &state,
+                &plan,
+                Some(&json!({"stream_failover_policy":{"enabled":true}}))
+            )
+            .await
+            .enabled
         );
     }
 }

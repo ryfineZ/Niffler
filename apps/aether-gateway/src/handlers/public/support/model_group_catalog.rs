@@ -11,7 +11,10 @@ use aether_data_contracts::repository::{
 use axum::{body::Body, http, response::IntoResponse, response::Response, Json};
 use serde_json::json;
 
-use super::{build_auth_error_response, sanitize_public_model_config_for_user, AppState};
+use super::{
+    build_auth_error_response, resolve_request_portal, sanitize_public_model_config_for_user,
+    validate_official_usd_registration_group, AppState, GatewayPublicRequestContext,
+};
 
 #[path = "model_group_catalog/health.rs"]
 mod health;
@@ -109,12 +112,20 @@ impl PublicModelGroupCatalogSource {
     }
 }
 
-pub(super) async fn build_public_model_group_catalog_response(state: &AppState) -> Response<Body> {
+pub(super) async fn build_public_model_group_catalog_response(
+    state: &AppState,
+    request_context: &GatewayPublicRequestContext,
+    headers: &http::HeaderMap,
+) -> Response<Body> {
+    let portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(_) => return unavailable_response(),
+    };
     let models = match list_all_active_models(state).await {
         Ok(models) => models,
         Err(()) => return unavailable_response(),
     };
-    let mut groups = match load_catalog_groups(state).await {
+    let mut groups = match load_catalog_groups(state, &portal).await {
         Ok(groups) => groups,
         Err(()) => return unavailable_response(),
     };
@@ -130,27 +141,52 @@ pub(super) async fn build_public_model_group_catalog_response(state: &AppState) 
 
     let health_by_model = load_public_model_health_snapshot(state, &models).await;
     let mut group_payloads = Vec::with_capacity(groups.len());
+    let use_discount_terms = portal.is_official_usd();
     for group in groups {
         let mut model_payloads = Vec::new();
         for model in models.iter().filter(|model| group.allows_model(model)) {
             let health = health_by_model.get(&model.id).cloned().unwrap_or_default();
             model_payloads.push(public_model_payload(model, health));
         }
-        group_payloads.push(json!({
+        let sales_multiplier = group.sales_multiplier;
+        let model_sales_multipliers = group.model_sales_multipliers;
+        let mut payload = json!({
             "id": group.id,
             "name": group.name,
-            "sales_multiplier": group.sales_multiplier,
-            "model_sales_multipliers": group.model_sales_multipliers,
             "allowed_models": group.allowed_models,
             "allowed_models_mode": group.allowed_models_mode,
             "models": model_payloads,
-        }));
+        });
+        if use_discount_terms {
+            payload["discount"] = json!(sales_multiplier);
+            payload["model_discounts"] = json!(model_sales_multipliers);
+        } else {
+            payload["sales_multiplier"] = json!(sales_multiplier);
+            payload["model_sales_multipliers"] = json!(model_sales_multipliers);
+        }
+        group_payloads.push(payload);
     }
 
     Json(json!({ "groups": group_payloads })).into_response()
 }
 
-async fn load_catalog_groups(state: &AppState) -> Result<Vec<PublicModelGroupCatalogSource>, ()> {
+async fn load_catalog_groups(
+    state: &AppState,
+    portal: &super::PortalContext,
+) -> Result<Vec<PublicModelGroupCatalogSource>, ()> {
+    if portal.is_official_usd() {
+        let group_id = validate_official_usd_registration_group(state, portal)
+            .await
+            .map_err(|_| ())?;
+        let group = state
+            .find_user_group_by_id(&group_id)
+            .await
+            .map_err(|_| ())?
+            .ok_or(())?;
+        return Ok(vec![PublicModelGroupCatalogSource::from_legacy_group(
+            group,
+        )]);
+    }
     let product_plans = if state.has_niffler_core_reader() {
         list_all_product_plans(state).await?
     } else {

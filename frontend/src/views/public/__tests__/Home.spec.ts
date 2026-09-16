@@ -10,6 +10,12 @@ const authStore = vi.hoisted(() => ({
   isAuthenticated: false,
   canAccessAdmin: false,
 }))
+const sitePortal = vi.hoisted(() => ({
+  value: {
+    id: 'default',
+    canonical_url: 'https://niffler.org',
+  } as { id: string, canonical_url?: string | null } | null,
+}))
 
 vi.mock('@/api/public-models', () => ({
   getPublicGlobalModels,
@@ -17,6 +23,10 @@ vi.mock('@/api/public-models', () => ({
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => authStore,
+}))
+
+vi.mock('@/composables/useSiteInfo', () => ({
+  useSiteInfo: () => ({ portal: sitePortal }),
 }))
 
 const mountedApps: Array<{ app: App, root: HTMLElement }> = []
@@ -50,6 +60,7 @@ beforeEach(() => {
   window.localStorage.clear()
   authStore.isAuthenticated = false
   authStore.canAccessAdmin = false
+  sitePortal.value = { id: 'default', canonical_url: 'https://niffler.org' }
   getPublicGlobalModels.mockResolvedValue({ models: [], total: 0 })
   i18n.global.locale.value = 'zh-CN'
 })
@@ -60,10 +71,40 @@ afterEach(() => {
     root.remove()
   }
   getPublicGlobalModels.mockReset()
+  vi.unstubAllGlobals()
   document.body.innerHTML = ''
 })
 
 describe('home quick start and FAQ', () => {
+  it('shows endpoint latency only on the default portal', async () => {
+    const root = await mountHome()
+
+    await vi.waitFor(() => {
+      expect(root.querySelector('[data-endpoint-latency]')).not.toBeNull()
+    })
+  })
+
+  it('does not expose or request main-site endpoints on the official USD portal', async () => {
+    sitePortal.value = { id: 'official_usd', canonical_url: 'https://global.niffler.org' }
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const root = await mountHome()
+    await new Promise(resolve => window.setTimeout(resolve, 300))
+
+    expect(root.querySelector('[data-endpoint-latency]')).toBeNull()
+    expect(root.textContent).not.toContain('niffler.org')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not load endpoint probes when the default portal URL is unavailable', async () => {
+    sitePortal.value = { id: 'default', canonical_url: null }
+
+    const root = await mountHome()
+
+    expect(root.querySelector('[data-endpoint-latency]')).toBeNull()
+  })
+
   it('renders four cinematic scenes with one active indicator', async () => {
     const root = await mountHome()
 

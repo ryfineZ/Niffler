@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use super::{
     any, build_router, build_router_with_state, build_state_with_execution_runtime_override,
-    hash_api_key, json, sample_auth_snapshot, sample_files_candidate_row,
+    hash_api_key, json, response_request_id, sample_auth_snapshot, sample_files_candidate_row,
     sample_files_provider_catalog_endpoint, sample_files_provider_catalog_key,
     sample_files_provider_catalog_provider, start_server, to_bytes, Arc, Body, Bytes, HeaderName,
     HeaderValue, InMemoryAuthApiKeySnapshotRepository,
@@ -232,6 +232,7 @@ async fn gateway_executes_gemini_files_download_via_local_decision_gate_with_loc
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response_request_id(&response);
     assert_eq!(
         response.text().await.expect("body should read"),
         "file-bytes"
@@ -269,7 +270,7 @@ async fn gateway_executes_gemini_files_download_via_local_decision_gate_with_loc
             crate::request_candidate_runtime::flush_request_candidate_status_writes(&gateway_state)
                 .await;
             let stored_candidates = request_candidate_repository
-                .list_by_request_id("trace-gemini-files-download-local-123")
+                .list_by_request_id(&request_id)
                 .await
                 .expect("request candidate trace should read");
             if stored_candidates

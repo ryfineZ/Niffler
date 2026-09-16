@@ -19,7 +19,10 @@ pub use body_capture::{
     UsageBodyCaptureEngine,
 };
 pub use config::UsageRuntimeConfig;
-pub use event::{now_ms, UsageEvent, UsageEventData, UsageEventType, USAGE_EVENT_VERSION};
+pub use event::{
+    now_ms, UsageEvent, UsageEventData, UsageEventType, USAGE_EVENT_VERSION,
+    USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY,
+};
 pub use queue::UsageQueue;
 pub use record::build_upsert_usage_record_from_event;
 pub use report::{
@@ -40,12 +43,15 @@ pub use runtime::{
     UsageRuntimeAccess, DEFAULT_USAGE_REQUEST_BODY_CAPTURE_LIMIT_BYTES,
     DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
 };
-pub use settlement::{settle_usage_if_needed, UsageSettlementWriter};
+pub use settlement::{
+    settle_usage_if_needed, should_attempt_usage_settlement, UsageSettlementWriter,
+};
 pub use standardized_usage::StandardizedUsage;
 pub use usage_mapper::{map_usage, map_usage_from_response, UsageMapper};
 pub use worker::{
-    build_usage_queue_worker, write_event_record, ManualProxyNodeCounter, UsageDataEventRecorder,
-    UsageEventRecorder, UsageQueueWorker, UsageRecordWriter,
+    build_usage_queue_worker, upsert_usage_record_with_provider_api_key_fallback,
+    write_event_record, ManualProxyNodeCounter, UsageDataEventRecorder, UsageEventRecorder,
+    UsageQueueWorker, UsageRecordWriter,
 };
 pub use write::{
     build_lifecycle_usage_seed, build_pending_usage_record, build_pending_usage_record_from_seed,

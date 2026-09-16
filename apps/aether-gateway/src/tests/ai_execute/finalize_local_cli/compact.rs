@@ -386,6 +386,7 @@ async fn gateway_executes_openai_responses_compact_openai_family_upstream_stream
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -430,10 +431,7 @@ async fn gateway_executes_openai_responses_compact_openai_family_upstream_stream
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-compact-openai-family-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-openai-compact-openai-family-stream-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://api.openai.example/custom/v1/responses/compact"
@@ -454,7 +452,7 @@ async fn gateway_executes_openai_responses_compact_openai_family_upstream_stream
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-compact-openai-family-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1

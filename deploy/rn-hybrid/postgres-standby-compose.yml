@@ -1,0 +1,68 @@
+services:
+  niffler-postgres15:
+    image: postgres@sha256:67dc02dae6e27fa8b4333df9bfdf15265b33ce04186cd7e65c0b8fe67ee37b97
+    container_name: niffler-postgres15
+    restart: unless-stopped
+    stop_grace_period: 2m
+    shm_size: 1gb
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=3GB
+      - -c
+      - effective_cache_size=10GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - hot_standby=on
+      - -c
+      - hot_standby_feedback=on
+      - -c
+      - max_standby_streaming_delay=2h
+      - -c
+      - idle_in_transaction_session_timeout=30000
+      - -c
+      - tcp_keepalives_idle=30
+      - -c
+      - tcp_keepalives_interval=10
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/postgresql/tls/server.crt
+      - -c
+      - ssl_key_file=/etc/postgresql/tls/server.key
+      - -c
+      - hba_file=/etc/postgresql/tls/pg_hba.conf
+    ports:
+      - 127.0.0.1:55432:5432
+    volumes:
+      - /opt/niffler-data/postgres15:/var/lib/postgresql/data
+      - /opt/niffler-data/postgres15-tls/server.crt:/etc/postgresql/tls/server.crt:ro
+      - /opt/niffler-data/postgres15-tls/server.key:/etc/postgresql/tls/server.key:ro
+      - /opt/niffler-data/postgres15-tls/pg_hba.conf:/etc/postgresql/tls/pg_hba.conf:ro
+      - /opt/niffler-data/secrets/replication.pgpass:/run/secrets/replication.pgpass:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aether"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"

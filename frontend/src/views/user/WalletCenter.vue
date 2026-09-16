@@ -226,6 +226,16 @@
               {{ Number(selectedRechargeOption.usd_exchange_rate).toFixed(4) }}
               {{ selectedRechargeOption.pay_currency || 'CNY' }} {{ t('wallet.conversion') }}
             </div>
+            <div
+              v-if="selectedRechargeOption.exchange_rate_source"
+              class="mt-1"
+              :class="selectedRechargeOption.exchange_rate_live ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"
+            >
+              {{ exchangeRateStatusLabel(selectedRechargeOption) }}
+              <template v-if="selectedRechargeOption.exchange_rate_as_of">
+                · {{ formatDateTime(selectedRechargeOption.exchange_rate_as_of) }}
+              </template>
+            </div>
           </div>
 
           <Button
@@ -465,10 +475,10 @@
                         <TableCell
                           :class="item.data.amount >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'"
                         >
-                          {{ item.data.amount >= 0 ? '+' : '' }}{{ item.data.amount.toFixed(4) }}
+                          {{ item.data.amount >= 0 ? '+' : '' }}{{ formatWalletAmount(item.data.amount) }}
                         </TableCell>
                         <TableCell class="text-xs tabular-nums">
-                          {{ item.data.balance_before.toFixed(4) }} → {{ item.data.balance_after.toFixed(4) }}
+                          {{ formatWalletAmount(item.data.balance_before) }} → {{ formatWalletAmount(item.data.balance_after) }}
                         </TableCell>
                         <TableCell class="text-xs text-muted-foreground">
                           {{ item.data.description || '-' }}
@@ -723,6 +733,7 @@ import { log } from '@/utils/logger'
 import {
   dailyUsageCategoryLabel,
   formatTokenCount,
+  formatWalletAmount,
   formatWalletCurrency as formatCurrency,
   paymentOrderContentLabel,
   paymentOrderMethodLabel,
@@ -826,6 +837,12 @@ const estimatedRechargePayAmount = computed(() => {
   return (Number(rechargeForm.amount_usd || 0) * rate).toFixed(2)
 })
 const rechargeAmountUsdText = computed(() => Number(rechargeForm.amount_usd || 0).toFixed(2))
+
+function exchangeRateStatusLabel(option: WalletRechargeOption): string {
+  if (option.exchange_rate_live) return t('exchangeRate.current')
+  if (option.exchange_rate_source === 'live_cache_stale') return t('exchangeRate.stale')
+  return t('exchangeRate.configured')
+}
 
 const dailyQuota = computed(() => walletBalance.value?.daily_quota ?? null)
 const hasActiveDailyQuota = computed(() => Boolean(dailyQuota.value?.has_active))

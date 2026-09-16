@@ -908,12 +908,7 @@ pub(super) async fn handle_dodopay_notify(
     if !dodopay_product_matches(&payload, &config.app_id) {
         return dodopay_plain(http::StatusCode::BAD_REQUEST, "fail");
     }
-    if dodopay_callback_currency(&payload)
-        .as_deref()
-        .is_some_and(|currency| !currency.eq_ignore_ascii_case(&config.pay_currency))
-    {
-        return dodopay_plain(http::StatusCode::BAD_REQUEST, "fail");
-    }
+    let pay_currency = dodopay_callback_currency(&payload);
     let order_no = dodopay_callback_order_no(&payload);
     let gateway_order_id = dodopay_callback_gateway_order_id(&payload);
     if order_no.is_none() && gateway_order_id.is_none() {
@@ -951,8 +946,8 @@ pub(super) async fn handle_dodopay_notify(
                 gateway_order_id,
                 amount_usd,
                 pay_amount: Some(pay_amount),
-                pay_currency: Some(config.pay_currency),
-                exchange_rate: Some(config.usd_exchange_rate),
+                pay_currency,
+                exchange_rate: None,
                 payload_hash,
                 payload,
                 signature_valid: true,
@@ -1158,6 +1153,7 @@ mod tests {
         query: impl Into<String>,
     ) -> crate::control::GatewayPublicRequestContext {
         crate::control::GatewayPublicRequestContext {
+            request_id: "request-dodopay-cancel-test".to_string(),
             trace_id: "trace-dodopay-cancel-test".to_string(),
             request_method: axum::http::Method::GET,
             request_path: "/api/payment/dodopay/cancel".to_string(),

@@ -302,31 +302,34 @@ fn removes_codex_responses_lite_header_for_unsupported_model() {
 }
 
 #[test]
-fn keeps_codex_responses_lite_header_for_supported_model() {
-    let mut headers = BTreeMap::new();
-    headers.insert(
-        "x-openai-internal-codex-responses-lite".to_string(),
-        "true".to_string(),
-    );
-    let body = json!({
-        "model": "gpt-5.6-sol",
-        "tool_choice": "auto"
-    });
+fn keeps_codex_responses_lite_header_for_supported_models() {
+    for model in ["gpt-5.6-sol", "gpt-5.6"] {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "x-openai-internal-codex-responses-lite".to_string(),
+            "true".to_string(),
+        );
+        let body = json!({
+            "model": model,
+            "tool_choice": "auto"
+        });
 
-    apply_codex_openai_responses_special_headers(
-        &mut headers,
-        &body,
-        &HeaderMap::new(),
-        "codex",
-        "openai:responses",
-        Some("trace-codex-gpt-56-sol"),
-        Some(r#"{"account_id":"acc-123"}"#),
-    );
+        apply_codex_openai_responses_special_headers(
+            &mut headers,
+            &body,
+            &HeaderMap::new(),
+            "codex",
+            "openai:responses",
+            Some("trace-codex-gpt-56-sol"),
+            Some(r#"{"account_id":"acc-123"}"#),
+        );
 
-    assert_eq!(
-        headers.get("x-openai-internal-codex-responses-lite"),
-        Some(&"true".to_string())
-    );
+        assert_eq!(
+            headers.get("x-openai-internal-codex-responses-lite"),
+            Some(&"true".to_string()),
+            "{model} should use the Sol-compatible Responses Lite path"
+        );
+    }
 }
 
 #[test]

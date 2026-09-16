@@ -9,12 +9,9 @@
 
 mod leases;
 mod maintenance;
-mod mysql;
 mod postgres;
 mod read;
-mod sqlite;
 mod stats;
-mod stats_common;
 mod system;
 mod transactions;
 mod wallet;
@@ -26,10 +23,8 @@ use std::sync::Arc;
 use crate::maintenance::DatabasePoolSummary;
 use crate::UsageObjectStore;
 pub use leases::DataLeaseBackends;
-pub use mysql::MysqlBackend;
 pub use postgres::PostgresBackend;
 pub use read::DataReadRepositories;
-pub use sqlite::SqliteBackend;
 pub use transactions::DataTransactionBackends;
 pub use write::DataWriteRepositories;
 
@@ -39,16 +34,11 @@ use crate::{DataLayerConfig, DataLayerError};
 #[derive(Clone, Copy)]
 enum SqlBackendRef<'a> {
     Postgres(&'a PostgresBackend),
-    Mysql(&'a MysqlBackend),
-    Sqlite(&'a SqliteBackend),
 }
-
 #[derive(Debug, Clone, Default)]
 pub struct DataBackends {
     config: DataLayerConfig,
     postgres: Option<PostgresBackend>,
-    mysql: Option<MysqlBackend>,
-    sqlite: Option<SqliteBackend>,
     leases: DataLeaseBackends,
     read: DataReadRepositories,
     transactions: DataTransactionBackends,
@@ -77,11 +67,7 @@ fn summarize_pool(
 
 impl DataBackends {
     fn sql_backend(&self) -> Option<SqlBackendRef<'_>> {
-        self.postgres
-            .as_ref()
-            .map(SqlBackendRef::Postgres)
-            .or_else(|| self.mysql.as_ref().map(SqlBackendRef::Mysql))
-            .or_else(|| self.sqlite.as_ref().map(SqlBackendRef::Sqlite))
+        self.postgres.as_ref().map(SqlBackendRef::Postgres)
     }
 
     pub fn from_config(config: DataLayerConfig) -> Result<Self, DataLayerError> {
@@ -93,43 +79,23 @@ impl DataBackends {
             .map(UsageObjectStore::from_config)
             .transpose()?
             .map(Arc::new);
-        let database = config.effective_database();
-        let postgres = match database.clone() {
-            Some(database) if database.driver == DatabaseDriver::Postgres => {
-                Some(PostgresBackend::from_config_with_usage_object_store(
+        let postgres = config
+            .effective_database()
+            .map(|database| {
+                PostgresBackend::from_config_with_usage_object_store(
                     database.to_postgres_config()?,
                     usage_object_store,
-                )?)
-            }
-            _ => None,
-        };
-        let mysql = match database.clone() {
-            Some(database) if database.driver == DatabaseDriver::Mysql => {
-                Some(MysqlBackend::from_config(database)?)
-            }
-            _ => None,
-        };
-        let sqlite = match database {
-            Some(database) if database.driver == DatabaseDriver::Sqlite => {
-                Some(SqliteBackend::from_config(database)?)
-            }
-            _ => None,
-        };
+                )
+            })
+            .transpose()?;
         let leases = DataLeaseBackends::from_postgres(postgres.as_ref())?;
-        let read =
-            DataReadRepositories::from_backends(postgres.as_ref(), mysql.as_ref(), sqlite.as_ref());
+        let read = DataReadRepositories::from_postgres(postgres.as_ref());
         let transactions = DataTransactionBackends::from_postgres(postgres.as_ref());
-        let write = DataWriteRepositories::from_backends(
-            postgres.as_ref(),
-            mysql.as_ref(),
-            sqlite.as_ref(),
-        );
+        let write = DataWriteRepositories::from_postgres(postgres.as_ref());
 
         Ok(Self {
             config,
             postgres,
-            mysql,
-            sqlite,
             leases,
             read,
             transactions,
@@ -149,14 +115,6 @@ impl DataBackends {
         self.config
             .effective_database()
             .map(|database| database.driver)
-    }
-
-    pub fn mysql(&self) -> Option<&MysqlBackend> {
-        self.mysql.as_ref()
-    }
-
-    pub fn sqlite(&self) -> Option<&SqliteBackend> {
-        self.sqlite.as_ref()
     }
 
     pub fn read(&self) -> &DataReadRepositories {
@@ -183,8 +141,6 @@ impl DataBackends {
 
     pub fn has_runtime_backends(&self) -> bool {
         self.postgres.is_some()
-            || self.mysql.is_some()
-            || self.sqlite.is_some()
             || self.leases.has_any()
             || self.read.has_any()
             || self.transactions.has_any()
@@ -199,19 +155,6 @@ impl DataBackends {
             Some(SqlBackendRef::Postgres(backend)) => sqlx::query_scalar::<_, String>(
                 "SELECT table_name FROM information_schema.tables \
                  WHERE table_schema = 'public' AND table_name LIKE 'niffler_%'",
-            )
-            .fetch_all(backend.pool())
-            .await
-            .map_err(DataLayerError::sql)?,
-            Some(SqlBackendRef::Mysql(backend)) => sqlx::query_scalar::<_, String>(
-                "SELECT table_name FROM information_schema.tables \
-                 WHERE table_schema = DATABASE() AND table_name LIKE 'niffler_%'",
-            )
-            .fetch_all(backend.pool())
-            .await
-            .map_err(DataLayerError::sql)?,
-            Some(SqlBackendRef::Sqlite(backend)) => sqlx::query_scalar::<_, String>(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'niffler_%'",
             )
             .fetch_all(backend.pool())
             .await
@@ -231,10 +174,7 @@ impl DataBackends {
 #[cfg(test)]
 mod tests {
     use super::DataBackends;
-    use crate::{
-        driver::postgres::PostgresPoolConfig, DataLayerConfig, DatabaseDriver, SqlDatabaseConfig,
-        SqlPoolConfig,
-    };
+    use crate::{driver::postgres::PostgresPoolConfig, DataLayerConfig};
 
     #[test]
     fn builds_empty_backends_from_default_config() {
@@ -243,8 +183,6 @@ mod tests {
 
         assert!(!backends.has_runtime_backends());
         assert!(backends.postgres().is_none());
-        assert!(backends.mysql().is_none());
-        assert!(backends.sqlite().is_none());
         assert!(backends.leases().postgres().is_none());
         assert!(backends.read().auth_api_keys().is_none());
         assert!(backends.read().auth_modules().is_none());
@@ -284,8 +222,6 @@ mod tests {
 
         assert!(backends.has_runtime_backends());
         assert!(backends.postgres().is_some());
-        assert!(backends.mysql().is_none());
-        assert!(backends.sqlite().is_none());
         assert!(backends.leases().postgres().is_some());
         assert!(backends.read().auth_api_keys().is_some());
         assert!(backends.read().auth_modules().is_some());
@@ -313,109 +249,6 @@ mod tests {
         assert!(backends.write().provider_quotas().is_some());
         assert!(backends.write().settlement().is_some());
         assert!(backends.write().usage().is_some());
-        assert!(backends.write().wallets().is_some());
-        assert!(backends.config().effective_database().is_some());
-    }
-
-    #[tokio::test]
-    async fn builds_mysql_backend_from_database_config_with_first_core_repository() {
-        let backends = DataBackends::from_config(DataLayerConfig {
-            database: Some(SqlDatabaseConfig {
-                driver: DatabaseDriver::Mysql,
-                url: "mysql://user:pass@localhost:3306/aether".to_string(),
-                pool: SqlPoolConfig::default(),
-            }),
-            postgres: None,
-            usage_object_store: None,
-        })
-        .expect("mysql backend should build");
-
-        assert!(backends.has_runtime_backends());
-        assert!(backends.postgres().is_none());
-        assert!(backends.mysql().is_some());
-        assert!(backends.sqlite().is_none());
-        assert!(backends.read().has_any());
-        assert!(backends.read().announcements().is_some());
-        assert!(backends.read().auth_api_keys().is_some());
-        assert!(backends.read().auth_modules().is_some());
-        assert!(backends.read().billing().is_some());
-        assert!(backends.read().gemini_file_mappings().is_some());
-        assert!(backends.read().global_models().is_some());
-        assert!(backends.read().management_tokens().is_some());
-        assert!(backends.read().minimal_candidate_selection().is_some());
-        assert!(backends.read().oauth_providers().is_some());
-        assert!(backends.read().provider_catalog().is_some());
-        assert!(backends.read().provider_quotas().is_some());
-        assert!(backends.read().proxy_nodes().is_some());
-        assert!(backends.read().request_candidates().is_some());
-        assert!(backends.read().users().is_some());
-        assert!(backends.read().video_tasks().is_some());
-        assert!(backends.has_stats_hourly_aggregation_backend());
-        assert!(backends.has_stats_daily_aggregation_backend());
-        assert!(backends.write().has_any());
-        assert!(backends.write().announcements().is_some());
-        assert!(backends.write().auth_api_keys().is_some());
-        assert!(backends.write().auth_modules().is_some());
-        assert!(backends.write().gemini_file_mappings().is_some());
-        assert!(backends.write().global_models().is_some());
-        assert!(backends.write().management_tokens().is_some());
-        assert!(backends.write().oauth_providers().is_some());
-        assert!(backends.write().proxy_nodes().is_some());
-        assert!(backends.write().provider_catalog().is_some());
-        assert!(backends.write().provider_quotas().is_some());
-        assert!(backends.write().request_candidates().is_some());
-        assert!(backends.write().video_tasks().is_some());
-        assert!(backends.write().wallets().is_some());
-        assert!(backends.config().effective_database().is_some());
-    }
-
-    #[tokio::test]
-    async fn builds_sqlite_backend_from_database_config_with_first_core_repository() {
-        let backends = DataBackends::from_config(DataLayerConfig {
-            database: Some(SqlDatabaseConfig {
-                driver: DatabaseDriver::Sqlite,
-                url: "sqlite://./data/aether.db".to_string(),
-                pool: SqlPoolConfig::default(),
-            }),
-            postgres: None,
-            usage_object_store: None,
-        })
-        .expect("sqlite backend should build");
-
-        assert!(backends.has_runtime_backends());
-        assert!(backends.postgres().is_none());
-        assert!(backends.mysql().is_none());
-        assert!(backends.sqlite().is_some());
-        assert!(backends.read().has_any());
-        assert!(backends.read().announcements().is_some());
-        assert!(backends.read().auth_api_keys().is_some());
-        assert!(backends.read().auth_modules().is_some());
-        assert!(backends.read().billing().is_some());
-        assert!(backends.read().gemini_file_mappings().is_some());
-        assert!(backends.read().global_models().is_some());
-        assert!(backends.read().management_tokens().is_some());
-        assert!(backends.read().oauth_providers().is_some());
-        assert!(backends.read().provider_catalog().is_some());
-        assert!(backends.read().provider_quotas().is_some());
-        assert!(backends.read().proxy_nodes().is_some());
-        assert!(backends.read().request_candidates().is_some());
-        assert!(backends.read().users().is_some());
-        assert!(backends.read().video_tasks().is_some());
-        assert!(backends.has_stats_hourly_aggregation_backend());
-        assert!(backends.has_stats_daily_aggregation_backend());
-        assert!(backends.write().has_any());
-        assert!(backends.write().announcements().is_some());
-        assert!(backends.write().auth_api_keys().is_some());
-        assert!(backends.write().auth_modules().is_some());
-        assert!(backends.write().gemini_file_mappings().is_some());
-        assert!(backends.write().global_models().is_some());
-        assert!(backends.write().management_tokens().is_some());
-        assert!(backends.write().oauth_providers().is_some());
-        assert!(backends.write().proxy_nodes().is_some());
-        assert!(backends.write().provider_catalog().is_some());
-        assert!(backends.write().provider_quotas().is_some());
-        assert!(backends.write().request_candidates().is_some());
-        assert!(backends.write().video_tasks().is_some());
         assert!(backends.write().wallets().is_some());
         assert!(backends.config().effective_database().is_some());
     }

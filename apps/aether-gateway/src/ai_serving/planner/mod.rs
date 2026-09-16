@@ -31,6 +31,7 @@ pub(crate) use self::candidate_resolution::{
     candidate_auth_channel_skip_reason, read_candidate_transport_snapshot,
     EligibleLocalExecutionCandidate, LocalExecutionCandidateKind, SkippedLocalExecutionCandidate,
 };
+pub(crate) use self::candidate_source::with_request_billing_scope;
 pub(crate) use self::codex_identity_convergence::{
     apply_codex_oauth_identity_convergence_to_request,
     build_codex_oauth_identity_convergence_request_context,
@@ -174,3 +175,5 @@ pub(crate) async fn maybe_build_stream_plan_payload(
     )
     .await
 }
+
+pub(crate) use standard::openai_request_is_image_generation_intent;

@@ -411,6 +411,7 @@ async fn run_sync_redaction_case_with_system_config(
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let execution_path = response
@@ -428,7 +429,7 @@ async fn run_sync_redaction_case_with_system_config(
         serde_json::from_str(&response_text).expect("response body should parse");
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id(&format!("trace-{test_id}"))
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);

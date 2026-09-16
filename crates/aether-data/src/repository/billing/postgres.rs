@@ -4,12 +4,15 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
 use super::{
-    quota::{usage_quota_grants_from_entitlement, StoredUsageQuotaWindow},
+    quota::{
+        usage_quota_grants_from_entitlement, LoadedUserPlanQuotaSummary, StoredUsageQuotaWindow,
+        StoredUsageQuotaWindows,
+    },
     AdminBillingCollectorRecord, AdminBillingCollectorWriteInput, AdminBillingMutationOutcome,
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput,
     BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository, PaymentGatewayConfigRecord,
     PaymentGatewayConfigWriteInput, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
 };
 use crate::{error::SqlxResultExt, DataLayerError};
 
@@ -1251,6 +1254,130 @@ RETURNING
             .await
     }
 
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, DataLayerError> {
+        if user_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let rows = sqlx::query(
+            r#"
+SELECT
+  upe.user_id,
+  upe.id AS entitlement_id,
+  upe.plan_id,
+  bp.title AS plan_title,
+  upe.starts_at,
+  upe.expires_at,
+  upe.entitlements_snapshot,
+  COALESCE(
+    (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'scope', usage_window.window_scope,
+          'key', usage_window.window_key,
+          'used_usd', CAST(usage_window.used_usd AS DOUBLE PRECISION),
+          'started_at_unix_secs', EXTRACT(EPOCH FROM usage_window.window_started_at)::BIGINT,
+          'ends_at_unix_secs', EXTRACT(EPOCH FROM usage_window.window_ends_at)::BIGINT
+        )
+        ORDER BY usage_window.window_scope, usage_window.window_key
+      )
+      FROM entitlement_usage_windows usage_window
+      WHERE usage_window.user_entitlement_id = upe.id
+    ),
+    '[]'::jsonb
+  ) AS usage_windows
+FROM user_plan_entitlements upe
+JOIN billing_plans bp ON bp.id = upe.plan_id
+WHERE upe.user_id = ANY($1)
+  AND upe.status = 'active'
+  AND upe.starts_at <= NOW()
+  AND upe.expires_at > NOW()
+ORDER BY upe.user_id ASC, upe.expires_at ASC, upe.created_at ASC, upe.id ASC
+            "#,
+        )
+        .bind(user_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_postgres_err()?;
+        let now = chrono::Utc::now();
+        let mut loaded_summaries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let user_id: String = row.try_get("user_id").map_postgres_err()?;
+            let entitlement_id: String = row.try_get("entitlement_id").map_postgres_err()?;
+            let plan_id: String = row.try_get("plan_id").map_postgres_err()?;
+            let plan_title: String = row.try_get("plan_title").map_postgres_err()?;
+            let starts_at: chrono::DateTime<chrono::Utc> =
+                row.try_get("starts_at").map_postgres_err()?;
+            let expires_at: chrono::DateTime<chrono::Utc> =
+                row.try_get("expires_at").map_postgres_err()?;
+            let entitlements: serde_json::Value =
+                row.try_get("entitlements_snapshot").map_postgres_err()?;
+            let usage_windows: serde_json::Value =
+                row.try_get("usage_windows").map_postgres_err()?;
+            let mut usage_by_window = BTreeMap::new();
+            let mut stored_windows = StoredUsageQuotaWindows::new();
+            for item in usage_windows.as_array().into_iter().flatten() {
+                let Some(scope) = item.get("scope").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(window_key) = item.get("key").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(used_usd) = item.get("used_usd").and_then(serde_json::Value::as_f64)
+                else {
+                    continue;
+                };
+                usage_by_window.insert((scope.to_string(), window_key.to_string()), used_usd);
+                let Some(window_started_at) = item
+                    .get("started_at_unix_secs")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                else {
+                    continue;
+                };
+                let Some(window_ends_at) = item
+                    .get("ends_at_unix_secs")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                else {
+                    continue;
+                };
+                stored_windows.insert(
+                    scope.to_string(),
+                    StoredUsageQuotaWindow {
+                        window_key: window_key.to_string(),
+                        window_started_at,
+                        window_ends_at,
+                    },
+                );
+            }
+            let grants = usage_quota_grants_from_entitlement(
+                &entitlement_id,
+                &entitlements,
+                now,
+                starts_at,
+                Some(&stored_windows),
+            )?;
+            loaded_summaries.push(LoadedUserPlanQuotaSummary {
+                user_id,
+                entitlement_id,
+                plan_id,
+                plan_title,
+                starts_at_unix_secs: starts_at.timestamp().max(0) as u64,
+                expires_at_unix_secs: expires_at.timestamp().max(0) as u64,
+                grants,
+                usage_by_window,
+            });
+        }
+        let summaries = loaded_summaries
+            .into_iter()
+            .map(LoadedUserPlanQuotaSummary::into_record)
+            .collect();
+        Ok(Some(summaries))
+    }
+
     async fn find_user_daily_quota_availability_for_global_model(
         &self,
         user_id: &str,
@@ -1280,16 +1407,15 @@ SELECT
       )
     ORDER BY bpp.provider_id
   ) AS provider_ids,
-  five_hour.window_key AS five_hour_window_key,
-  five_hour.window_started_at AS five_hour_window_started_at,
-  five_hour.window_ends_at AS five_hour_window_ends_at,
   COALESCE(
     (
       SELECT jsonb_agg(
         jsonb_build_object(
           'scope', usage_window.window_scope,
           'key', usage_window.window_key,
-          'used_usd', CAST(usage_window.used_usd AS DOUBLE PRECISION)
+          'used_usd', CAST(usage_window.used_usd AS DOUBLE PRECISION),
+          'started_at_unix_secs', EXTRACT(EPOCH FROM usage_window.window_started_at)::BIGINT,
+          'ends_at_unix_secs', EXTRACT(EPOCH FROM usage_window.window_ends_at)::BIGINT
         )
         ORDER BY usage_window.window_scope, usage_window.window_key
       )
@@ -1297,29 +1423,8 @@ SELECT
       WHERE usage_window.user_entitlement_id = upe.id
     ),
     '[]'::jsonb
-  ) AS usage_windows,
-  COALESCE(
-    (
-      SELECT jsonb_object_agg(legacy_usage.usage_date, legacy_usage.used_usd)
-      FROM (
-        SELECT
-          usage_date,
-          CAST(SUM(amount_usd) AS DOUBLE PRECISION) AS used_usd
-        FROM entitlement_usage_ledgers
-        WHERE user_entitlement_id = upe.id
-        GROUP BY usage_date
-      ) legacy_usage
-    ),
-    '{}'::jsonb
-  ) AS legacy_usage_by_key
+  ) AS usage_windows
 FROM user_plan_entitlements upe
-LEFT JOIN LATERAL (
-  SELECT window_key, window_started_at, window_ends_at
-  FROM entitlement_usage_windows
-  WHERE user_entitlement_id = upe.id
-    AND window_scope = 'five_hour'
-  LIMIT 1
-) five_hour ON TRUE
 WHERE upe.user_id = $1
   AND upe.status = 'active'
   AND upe.starts_at <= NOW()
@@ -1335,8 +1440,7 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
         let now = chrono::Utc::now();
         let mut grants = Vec::new();
         let mut provider_ids_by_entitlement = BTreeMap::<String, Vec<String>>::new();
-        let mut usage_by_entitlement =
-            BTreeMap::<String, (BTreeMap<(String, String), f64>, BTreeMap<String, f64>)>::new();
+        let mut usage_by_entitlement = BTreeMap::<String, BTreeMap<(String, String), f64>>::new();
         for row in rows {
             let entitlement_id: String = row.try_get("id").map_postgres_err()?;
             let entitlement_started_at: chrono::DateTime<chrono::Utc> =
@@ -1351,24 +1455,10 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             {
                 continue;
             }
-            let stored_five_hour = row
-                .try_get::<Option<String>, _>("five_hour_window_key")
-                .map_postgres_err()?
-                .map(|window_key| {
-                    Ok(StoredUsageQuotaWindow {
-                        window_key,
-                        window_started_at: row
-                            .try_get("five_hour_window_started_at")
-                            .map_postgres_err()?,
-                        window_ends_at: row
-                            .try_get("five_hour_window_ends_at")
-                            .map_postgres_err()?,
-                    })
-                })
-                .transpose()?;
             let usage_windows: serde_json::Value =
                 row.try_get("usage_windows").map_postgres_err()?;
             let mut usage_by_window = BTreeMap::new();
+            let mut stored_windows = StoredUsageQuotaWindows::new();
             for item in usage_windows.as_array().into_iter().flatten() {
                 let Some(scope) = item.get("scope").and_then(serde_json::Value::as_str) else {
                     continue;
@@ -1381,29 +1471,36 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
                     continue;
                 };
                 usage_by_window.insert((scope.to_string(), window_key.to_string()), used_usd);
+                let Some(window_started_at) = item
+                    .get("started_at_unix_secs")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                else {
+                    continue;
+                };
+                let Some(window_ends_at) = item
+                    .get("ends_at_unix_secs")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                else {
+                    continue;
+                };
+                stored_windows.insert(
+                    scope.to_string(),
+                    StoredUsageQuotaWindow {
+                        window_key: window_key.to_string(),
+                        window_started_at,
+                        window_ends_at,
+                    },
+                );
             }
-            let legacy_usage_by_key: serde_json::Value =
-                row.try_get("legacy_usage_by_key").map_postgres_err()?;
-            let legacy_usage_by_key = legacy_usage_by_key
-                .as_object()
-                .into_iter()
-                .flat_map(|values| values.iter())
-                .filter_map(|(window_key, used_usd)| {
-                    used_usd
-                        .as_f64()
-                        .map(|used_usd| (window_key.clone(), used_usd))
-                })
-                .collect::<BTreeMap<_, _>>();
-            usage_by_entitlement.insert(
-                entitlement_id.clone(),
-                (usage_by_window, legacy_usage_by_key),
-            );
+            usage_by_entitlement.insert(entitlement_id.clone(), usage_by_window);
             grants.extend(usage_quota_grants_from_entitlement(
                 &entitlement_id,
                 &entitlements,
                 now,
                 entitlement_started_at,
-                stored_five_hour.as_ref(),
+                Some(&stored_windows),
             )?);
         }
         let mut grouped_limits: BTreeMap<String, (Option<f64>, Option<f64>, f64)> = BTreeMap::new();
@@ -1412,10 +1509,8 @@ ORDER BY upe.expires_at ASC, upe.created_at ASC, upe.id ASC
             allow_wallet_overage &= grant.allow_wallet_overage;
             let used = usage_by_entitlement
                 .get(&grant.entitlement_id)
-                .and_then(|(usage_by_window, legacy_usage_by_key)| {
-                    usage_by_window
-                        .get(&(grant.scope.to_string(), grant.window_key.clone()))
-                        .or_else(|| legacy_usage_by_key.get(&grant.window_key))
+                .and_then(|usage_by_window| {
+                    usage_by_window.get(&(grant.scope.to_string(), grant.window_key.clone()))
                 })
                 .copied()
                 .unwrap_or(0.0);
@@ -1854,6 +1949,76 @@ INSERT INTO user_plan_entitlements (
             .expect("quota lookup should run")
             .expect("quota lookup should be available");
         assert_eq!(first.allowed_provider_ids, vec![first_provider_id.clone()]);
+        let summaries = repository
+            .list_active_user_plan_quota_summaries(std::slice::from_ref(&user_id))
+            .await
+            .expect("plan quota summary lookup should run")
+            .expect("plan quota summaries should be available");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].plan_title, "Live Provider Plan");
+        assert_eq!(summaries[0].daily_total_usd, Some(10.0));
+        assert_eq!(summaries[0].daily_remaining_usd, Some(10.0));
+        assert!(summaries[0].daily_window_ends_at_unix_secs.is_some());
+
+        sqlx::query(
+            r#"
+INSERT INTO entitlement_usage_windows (
+  id, user_entitlement_id, user_id, window_scope, window_key,
+  window_started_at, window_ends_at, used_usd, created_at, updated_at
+) VALUES ($1, $2, $3, 'daily', 'stored-daily-window',
+          NOW() - INTERVAL '5 minutes', NOW() + INTERVAL '23 hours 55 minutes',
+          3.25, NOW(), NOW())
+            "#,
+        )
+        .bind(format!("window-{}", &suffix[..32]))
+        .bind(&entitlement_id)
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .expect("stored daily quota window should seed");
+        let (stored_window_started_at, stored_window_ends_at): (i64, i64) = sqlx::query_as(
+            r#"
+SELECT
+  EXTRACT(EPOCH FROM window_started_at)::BIGINT,
+  EXTRACT(EPOCH FROM window_ends_at)::BIGINT
+FROM entitlement_usage_windows
+WHERE user_entitlement_id = $1 AND window_scope = 'daily'
+            "#,
+        )
+        .bind(&entitlement_id)
+        .fetch_one(&pool)
+        .await
+        .expect("stored daily quota window should read");
+        sqlx::query(
+            "UPDATE user_plan_entitlements SET starts_at = NOW() - INTERVAL '2 minutes', updated_at = NOW() WHERE id = $1",
+        )
+        .bind(&entitlement_id)
+        .execute(&pool)
+        .await
+        .expect("entitlement start should update");
+
+        let edited_summaries = repository
+            .list_active_user_plan_quota_summaries(std::slice::from_ref(&user_id))
+            .await
+            .expect("edited plan quota summary lookup should run")
+            .expect("edited plan quota summaries should be available");
+        assert_eq!(edited_summaries[0].daily_used_usd, Some(3.25));
+        assert_eq!(edited_summaries[0].daily_remaining_usd, Some(6.75));
+        assert_eq!(
+            edited_summaries[0].daily_window_started_at_unix_secs,
+            Some(stored_window_started_at as u64)
+        );
+        assert_eq!(
+            edited_summaries[0].daily_window_ends_at_unix_secs,
+            Some(stored_window_ends_at as u64)
+        );
+        let edited_availability = repository
+            .find_user_daily_quota_availability_for_global_model(&user_id, Some(&global_model_id))
+            .await
+            .expect("edited quota lookup should run")
+            .expect("edited quota lookup should be available");
+        assert_eq!(edited_availability.used_usd, 3.25);
+        assert_eq!(edited_availability.remaining_usd, 6.75);
 
         let mut transaction = pool.begin().await.expect("transaction should begin");
         sqlx::query("DELETE FROM billing_plan_providers WHERE plan_id = $1")

@@ -1,9 +1,10 @@
 pub(super) use super::{
-    base_url_from_request, build_unhandled_public_support_response,
+    base_url_from_request, build_portal_mismatch_response, build_unhandled_public_support_response,
     decrypt_catalog_secret_with_fallbacks, escape_admin_email_template_html,
     ldap_module_config_is_valid, module_available_from_env, read_admin_email_template_payload,
-    render_admin_email_template_html, system_config_bool, system_config_string, AppState,
-    GatewayError, GatewayPublicRequestContext,
+    render_admin_email_template_html, resolve_request_portal, resolve_user_portal,
+    system_config_bool, system_config_string, validate_official_usd_registration_group, AppState,
+    GatewayError, GatewayPublicRequestContext, PortalContext,
 };
 pub(super) use axum::{
     body::Body,
@@ -55,6 +56,10 @@ fn default_auth_login_type() -> String {
     "local".to_string()
 }
 
+fn build_auth_login_invalid_credentials_response() -> Response<Body> {
+    build_auth_error_response(http::StatusCode::UNAUTHORIZED, "邮箱或密码错误", false)
+}
+
 fn system_config_f64(value: Option<&serde_json::Value>, default: f64) -> f64 {
     match value {
         Some(serde_json::Value::Number(value)) => value.as_f64().unwrap_or(default),
@@ -96,6 +101,7 @@ async fn handle_auth_login(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Response<Body> {
     let Some(request_body) = request_body else {
@@ -127,6 +133,23 @@ async fn handle_auth_login(
         Err(response) => return response,
     };
     let auth_type = payload.auth_type.trim().to_ascii_lowercase();
+    let request_portal = match resolve_request_portal(state, request_context, headers).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("portal settings lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    if request_portal.is_official_usd() && auth_type != "local" {
+        return build_auth_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "专属门户仅支持邮箱密码登录",
+            false,
+        );
+    }
     let user = match auth_type.as_str() {
         "local" => {
             let user = match state.find_user_auth_by_identifier(&identifier).await {
@@ -260,14 +283,29 @@ async fn handle_auth_login(
         }
     };
 
-    build_auth_login_success_response(state, headers, client_device_id, user).await
+    let user_portal = match resolve_user_portal(state, &user.id).await {
+        Ok(value) => value,
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
+    };
+    if request_portal.id != user_portal.id {
+        // A login response must not reveal that the account exists on another portal.
+        return build_auth_login_invalid_credentials_response();
+    }
+
+    build_auth_login_success_response(state, headers, client_ip, client_device_id, user).await
 }
 
 pub(super) async fn maybe_build_local_auth_response(
     state: &AppState,
     request_context: &GatewayPublicRequestContext,
     headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     request_body: Option<&axum::body::Bytes>,
 ) -> Option<Response<Body>> {
     let decision = request_context.control_decision.as_ref()?;
@@ -279,17 +317,14 @@ pub(super) async fn maybe_build_local_auth_response(
         Some("send_verification_code")
             if request_context.request_path == "/api/auth/send-verification-code" =>
         {
-            Some(
-                handle_auth_send_verification_code(state, headers, cf_connecting_ip, request_body)
-                    .await,
-            )
+            Some(handle_auth_send_verification_code(state, headers, client_ip, request_body).await)
         }
         Some("login") if request_context.request_path == "/api/auth/login" => {
-            Some(handle_auth_login(state, request_context, headers, request_body).await)
+            Some(handle_auth_login(state, request_context, headers, client_ip, request_body).await)
         }
-        Some("register") if request_context.request_path == "/api/auth/register" => {
-            Some(handle_auth_register(state, headers, cf_connecting_ip, request_body).await)
-        }
+        Some("register") if request_context.request_path == "/api/auth/register" => Some(
+            handle_auth_register(state, request_context, headers, client_ip, request_body).await,
+        ),
         Some("verify_email") if request_context.request_path == "/api/auth/verify-email" => {
             Some(handle_auth_verify_email(state, request_body).await)
         }
@@ -324,7 +359,10 @@ pub(super) async fn maybe_build_local_auth_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{maybe_build_local_auth_response, AppState, GatewayPublicRequestContext};
+    use super::{
+        build_auth_login_invalid_credentials_response, maybe_build_local_auth_response, AppState,
+        GatewayPublicRequestContext,
+    };
     use crate::control::GatewayControlDecision;
     use axum::body::to_bytes;
     use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -372,5 +410,22 @@ mod tests {
         assert_eq!(payload["route_family"], "auth");
         assert_eq!(payload["route_kind"], "login");
         assert_eq!(payload["request_path"], "/api/auth/login/history");
+    }
+
+    #[tokio::test]
+    async fn login_invalid_credentials_response_does_not_disclose_portal() {
+        let response = build_auth_login_invalid_credentials_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+
+        assert_eq!(payload["detail"], "邮箱或密码错误");
+        assert!(payload.get("portal_mismatch").is_none());
+        assert!(payload.get("portal").is_none());
+        assert!(payload.get("canonical_url").is_none());
     }
 }

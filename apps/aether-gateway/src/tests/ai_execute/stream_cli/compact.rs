@@ -471,6 +471,7 @@ async fn gateway_executes_openai_responses_compact_stream_via_local_decision_gat
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let request_id = super::response_request_id(&response);
     assert_eq!(
         response
             .headers()
@@ -541,7 +542,7 @@ async fn gateway_executes_openai_responses_compact_stream_via_local_decision_gat
     let stored_candidates = wait_for_request_candidate_status(
         &gateway_state,
         &request_candidate_repository,
-        "trace-openai-compact-local-123",
+        &request_id,
         RequestCandidateStatus::Success,
     )
     .await;

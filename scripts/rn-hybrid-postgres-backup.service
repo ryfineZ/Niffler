@@ -1,0 +1,23 @@
+[Unit]
+Description=Niffler rn-hybrid PostgreSQL backup to Cloudflare R2
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=niffler-postgres-backup-alert.service
+
+[Service]
+Type=oneshot
+Environment=NIFFLER_POSTGRES_CONTAINER=niffler-postgres15
+Environment="NIFFLER_BACKUP_SERVER_LABEL=数据库服务器（rn-hybrid）"
+Environment=NIFFLER_BACKUP_LOG_HOST=rn-hybrid
+ExecStart=/usr/local/sbin/niffler-postgres-backup
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+TimeoutStartSec=2h
+ExecStartPost=-/usr/local/sbin/niffler-postgres-backup-alert success

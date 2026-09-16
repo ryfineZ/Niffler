@@ -8,6 +8,26 @@ use super::{
 };
 
 impl GatewayDataState {
+    pub(crate) async fn summarize_capacity_errors(
+        &self,
+        provider_ids: &[String],
+        since_ms: u64,
+        until_ms: u64,
+    ) -> Result<
+        Vec<aether_data_contracts::repository::candidates::CapacityModelSummary>,
+        DataLayerError,
+    > {
+        match &self.request_candidate_reader {
+            Some(repo) => {
+                repo.summarize_capacity_errors(provider_ids, since_ms, until_ms)
+                    .await
+            }
+            None => Err(DataLayerError::InvalidConfiguration(
+                "request candidate reader unavailable".into(),
+            )),
+        }
+    }
+
     pub(crate) async fn find_request_billing_admission(
         &self,
         request_id: &str,
@@ -508,6 +528,16 @@ impl GatewayDataState {
         match &self.provider_catalog_writer {
             Some(repository) => repository.delete_key(key_id).await,
             None => Ok(false),
+        }
+    }
+
+    pub(crate) async fn delete_provider_catalog_keys(
+        &self,
+        key_ids: &[String],
+    ) -> Result<u64, DataLayerError> {
+        match &self.provider_catalog_writer {
+            Some(repository) => repository.delete_keys(key_ids).await,
+            None => Ok(0),
         }
     }
 

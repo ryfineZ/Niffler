@@ -146,6 +146,16 @@ pub fn resolve_provider_model_name_with_model_directives(
     enable_model_directives: bool,
 ) -> Option<(String, Option<String>)> {
     let selected_provider_model_name = resolve_selected_provider_model_name(row, api_format)?;
+    if !row_supports_requested_model_with_model_directives(
+        row,
+        requested_model_name,
+        api_format,
+        enable_model_directives,
+    ) {
+        // 行本身必须服务请求的模型名（全局名/供应商名/映射）才可作为候选；
+        // 密钥可用列表只能收窄范围，残留的已删除/停用模型名不得放行无关行。
+        return None;
+    }
     let Some(key_allowed_models) = row.key_allowed_models.as_ref() else {
         return Some((selected_provider_model_name, None));
     };
@@ -461,6 +471,34 @@ mod tests {
     #[test]
     fn invalid_model_mapping_pattern_returns_false() {
         assert!(!matches_model_mapping("([a-z", "gpt-4o"));
+    }
+
+    #[test]
+    fn key_allowed_models_cannot_route_unrelated_row_for_stale_model_name() {
+        let mut row = sample_row("gpt-image-2", "gpt-image-2");
+        row.key_allowed_models = Some(vec!["gpt-5.6-luna".to_string()]);
+
+        assert!(resolve_provider_model_name(&row, "gpt-5.6-luna", "openai:chat").is_none());
+    }
+
+    #[test]
+    fn unrestricted_key_still_requires_row_to_serve_requested_model() {
+        let row = sample_row("gpt-image-2", "gpt-image-2");
+
+        assert!(resolve_provider_model_name(&row, "gpt-5.6-luna", "openai:chat").is_none());
+        assert!(resolve_provider_model_name(&row, "gpt-image-2", "openai:chat").is_some());
+    }
+
+    #[test]
+    fn key_allowed_models_still_allows_row_that_serves_requested_model() {
+        let mut row = sample_row("gpt-5.6-luna", "gpt-5.6-luna-upstream");
+        row.key_allowed_models = Some(vec!["gpt-5.6-luna".to_string()]);
+
+        let resolved = resolve_provider_model_name(&row, "gpt-5.6-luna", "openai:chat")
+            .expect("row serving the requested model should stay routable");
+
+        assert_eq!(resolved.0, "gpt-5.6-luna-upstream");
+        assert_eq!(resolved.1, None);
     }
 
     #[test]

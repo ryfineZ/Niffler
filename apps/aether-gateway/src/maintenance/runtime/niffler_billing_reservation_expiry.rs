@@ -97,28 +97,7 @@ fn stable_expired_event_id(request_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use aether_data_contracts::repository::niffler_core::CreateNifflerBillingReservationRecord;
-
-    use crate::data::GatewayDataConfig;
-    use crate::AppState;
-
-    async fn sqlite_state() -> AppState {
-        let mut pool = SqlPoolConfig::default();
-        pool.min_connections = 0;
-        pool.max_connections = 1;
-        let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)
-            .expect("sqlite database config should build");
-        let state = AppState::new()
-            .expect("app state should build")
-            .with_data_config(GatewayDataConfig::from_database_config(database))
-            .expect("sqlite data config should wire");
-        assert!(state
-            .run_database_migrations()
-            .await
-            .expect("sqlite migrations should run"));
-        state
-    }
 
     fn reservation_record(
         request_id: &str,
@@ -126,7 +105,7 @@ mod tests {
         expires_at_unix_ms: u64,
     ) -> CreateNifflerBillingReservationRecord {
         CreateNifflerBillingReservationRecord {
-            id: format!("reservation-{request_id}"),
+            id: Uuid::new_v4().to_string(),
             request_id: request_id.to_string(),
             user_id: Some("user-1".to_string()),
             api_key_id: Some("key-1".to_string()),
@@ -137,20 +116,28 @@ mod tests {
             reserved_at_unix_ms: 1_000,
             expires_at_unix_ms,
             idempotency_key: format!("reservation-idempotency-{request_id}"),
-            event_id: format!("reserved-event-{request_id}"),
+            event_id: Uuid::new_v4().to_string(),
             event_idempotency_key: format!("reserved-event-idempotency-{request_id}"),
             actor_id: Some("test".to_string()),
         }
     }
 
     #[tokio::test]
-    async fn expiry_worker_releases_only_expired_active_reservations() {
-        let state = sqlite_state().await;
+    async fn expiry_worker_releases_only_expired_active_reservations_when_url_is_set() {
+        let Some(state) = crate::data::tests::postgres_app_state_when_url_is_set(
+            "expiry_worker_releases_only_expired_active_reservations",
+        )
+        .await
+        else {
+            return;
+        };
+        let expired_request_id = Uuid::new_v4().to_string();
+        let open_request_id = Uuid::new_v4().to_string();
         let now_unix_ms = now_unix_secs().saturating_mul(1_000);
         state
             .data
             .create_niffler_billing_reservation(reservation_record(
-                "request-expired",
+                &expired_request_id,
                 1.0,
                 now_unix_ms.saturating_sub(1),
             ))
@@ -159,7 +146,7 @@ mod tests {
         state
             .data
             .create_niffler_billing_reservation(reservation_record(
-                "request-open",
+                &open_request_id,
                 2.0,
                 now_unix_ms.saturating_add(60_000),
             ))
@@ -169,8 +156,8 @@ mod tests {
         let summary = perform_niffler_billing_reservation_expiry_once(&state.data)
             .await
             .expect("expiry worker should run");
-        assert_eq!(summary.scanned, 1);
-        assert_eq!(summary.expired, 1);
+        assert!(summary.scanned >= 1);
+        assert!(summary.expired >= 1);
         assert!(!summary.capped);
 
         let expired = state
@@ -179,7 +166,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("request-expired".to_string()),
+                request_id: Some(expired_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -201,7 +188,7 @@ mod tests {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: Some("request-open".to_string()),
+                request_id: Some(open_request_id),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,

@@ -364,6 +364,8 @@ pub struct StoredAdminPaymentOrder {
     pub order_no: String,
     pub wallet_id: String,
     pub user_id: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_name: Option<String>,
     pub amount_usd: f64,
     pub debt_repayment_usd: f64,
     pub pay_amount: Option<f64>,
@@ -394,6 +396,8 @@ pub struct AdminWalletPaymentOrderRecord {
     pub order_no: String,
     pub wallet_id: String,
     pub user_id: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_name: Option<String>,
     pub amount_usd: f64,
     pub debt_repayment_usd: f64,
     pub pay_amount: Option<f64>,
@@ -597,6 +601,94 @@ pub(crate) fn redeem_code_refundable_amount(balance_bucket: &str, amount_usd: f6
         amount_usd
     } else {
         0.0
+    }
+}
+
+const WALLET_AMOUNT_USD_SCALE: f64 = 100_000_000.0;
+const PAYMENT_AMOUNT_MINOR_UNIT_SCALE: f64 = 100.0;
+
+pub(crate) fn normalize_wallet_amount_usd(amount_usd: f64) -> Option<f64> {
+    if !amount_usd.is_finite() || amount_usd <= 0.0 {
+        return None;
+    }
+    let normalized = (amount_usd * WALLET_AMOUNT_USD_SCALE).round() / WALLET_AMOUNT_USD_SCALE;
+    (normalized.is_finite() && normalized > 0.0).then_some(normalized)
+}
+
+pub(crate) fn payment_callback_settled_amount_usd(
+    callback_amount_usd: f64,
+    callback_pay_amount: Option<f64>,
+    order_amount_usd: f64,
+    order_pay_amount: Option<f64>,
+    order_exchange_rate: Option<f64>,
+) -> Option<f64> {
+    let effective_order_exchange_rate = order_exchange_rate.or_else(|| {
+        let order_pay_amount = order_pay_amount?;
+        if !order_pay_amount.is_finite()
+            || order_pay_amount <= 0.0
+            || !order_amount_usd.is_finite()
+            || order_amount_usd <= 0.0
+        {
+            return None;
+        }
+        Some(order_pay_amount / order_amount_usd)
+    });
+    match (callback_pay_amount, effective_order_exchange_rate) {
+        (Some(callback_pay_amount), Some(order_exchange_rate)) => {
+            normalize_wallet_amount_usd(callback_pay_amount / order_exchange_rate)
+        }
+        _ => normalize_wallet_amount_usd(callback_amount_usd),
+    }
+}
+
+pub(crate) fn payment_callback_currency_matches(
+    callback_pay_currency: Option<&str>,
+    order_pay_currency: Option<&str>,
+) -> bool {
+    match (
+        callback_pay_currency
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        order_pay_currency
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) {
+        (Some(callback_pay_currency), Some(order_pay_currency)) => {
+            callback_pay_currency.eq_ignore_ascii_case(order_pay_currency)
+        }
+        _ => true,
+    }
+}
+
+pub(crate) fn payment_callback_amount_matches(
+    callback_amount_usd: f64,
+    callback_pay_amount: Option<f64>,
+    order_amount_usd: f64,
+    order_pay_amount: Option<f64>,
+) -> bool {
+    if let (Some(callback_pay_amount), Some(order_pay_amount)) =
+        (callback_pay_amount, order_pay_amount)
+    {
+        if !callback_pay_amount.is_finite()
+            || callback_pay_amount <= 0.0
+            || !order_pay_amount.is_finite()
+            || order_pay_amount <= 0.0
+        {
+            return false;
+        }
+        let callback_minor_units = (callback_pay_amount * PAYMENT_AMOUNT_MINOR_UNIT_SCALE).round();
+        let order_minor_units = (order_pay_amount * PAYMENT_AMOUNT_MINOR_UNIT_SCALE).round();
+        return (callback_minor_units - order_minor_units).abs() <= 1.0;
+    }
+
+    match (
+        normalize_wallet_amount_usd(callback_amount_usd),
+        normalize_wallet_amount_usd(order_amount_usd),
+    ) {
+        (Some(callback_amount_usd), Some(order_amount_usd)) => {
+            callback_amount_usd == order_amount_usd
+        }
+        _ => false,
     }
 }
 
@@ -1167,8 +1259,9 @@ impl<T> WalletRepository for T where T: WalletReadRepository + WalletWriteReposi
 #[cfg(test)]
 mod tests {
     use super::{
-        redeem_code_credits_recharge_balance, redeem_code_payment_method,
-        redeem_code_refundable_amount, StoredWalletSnapshot,
+        payment_callback_amount_matches, payment_callback_currency_matches,
+        payment_callback_settled_amount_usd, redeem_code_credits_recharge_balance,
+        redeem_code_payment_method, redeem_code_refundable_amount, StoredWalletSnapshot,
     };
     use crate::repository::settlement::UsageSettlementInput;
 
@@ -1227,5 +1320,50 @@ mod tests {
         assert!(redeem_code_credits_recharge_balance(" Recharge "));
         assert_eq!(redeem_code_payment_method("recharge"), "card_code");
         assert_eq!(redeem_code_refundable_amount("recharge", 8.5), 8.5);
+    }
+
+    #[test]
+    fn payment_callback_compares_channel_amounts_in_minor_units() {
+        assert!(payment_callback_amount_matches(
+            10.001_388_89,
+            Some(72.01),
+            10.0,
+            Some(72.0),
+        ));
+        assert!(!payment_callback_amount_matches(
+            10.002_777_78,
+            Some(72.02),
+            10.0,
+            Some(72.0),
+        ));
+    }
+
+    #[test]
+    fn payment_callback_settlement_uses_the_order_exchange_rate() {
+        assert_eq!(
+            payment_callback_settled_amount_usd(
+                72.01 / 7.3,
+                Some(72.01),
+                10.0,
+                Some(72.0),
+                Some(7.2),
+            ),
+            Some(10.001_388_89),
+        );
+    }
+
+    #[test]
+    fn payment_callback_settlement_derives_missing_legacy_order_exchange_rate() {
+        assert_eq!(
+            payment_callback_settled_amount_usd(72.01 / 7.3, Some(72.01), 10.0, Some(72.0), None,),
+            Some(10.001_388_89),
+        );
+    }
+
+    #[test]
+    fn payment_callback_rejects_a_currency_that_differs_from_the_order() {
+        assert!(payment_callback_currency_matches(Some("cny"), Some("CNY")));
+        assert!(payment_callback_currency_matches(None, Some("CNY")));
+        assert!(!payment_callback_currency_matches(Some("USD"), Some("CNY")));
     }
 }

@@ -151,7 +151,6 @@ mod tests {
     use aether_data::repository::billing::InMemoryBillingReadRepository;
     use aether_data::repository::candidate_selection::InMemoryMinimalCandidateSelectionReadRepository;
     use aether_data::repository::wallet::StoredWalletSnapshot;
-    use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use aether_data_contracts::repository::billing::StoredBillingModelContext;
     use aether_data_contracts::repository::candidate_selection::{
         StoredMinimalCandidateSelectionRow, StoredProviderModelMapping,
@@ -164,27 +163,15 @@ mod tests {
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Uri};
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::prepare_niffler_billing_reservation_for_request;
     use crate::clock::current_unix_ms;
     use crate::control::{GatewayControlAuthContext, GatewayControlDecision};
-    use crate::data::GatewayDataConfig;
     use crate::AppState;
 
-    async fn sqlite_state_with_billing_overrides() -> AppState {
-        let mut pool = SqlPoolConfig::default();
-        pool.min_connections = 0;
-        pool.max_connections = 1;
-        let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)
-            .expect("sqlite database config should build");
-        let state = AppState::new()
-            .expect("app state should build")
-            .with_data_config(GatewayDataConfig::from_database_config(database))
-            .expect("sqlite data config should wire");
-        assert!(state
-            .run_database_migrations()
-            .await
-            .expect("sqlite migrations should run"));
+    async fn postgres_state_with_billing_overrides(test_name: &str) -> Option<AppState> {
+        let state = crate::data::tests::postgres_app_state_when_url_is_set(test_name).await?;
 
         let candidate_repository =
             Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
@@ -198,9 +185,11 @@ mod tests {
                 candidate_repository,
                 billing_repository,
             );
-        state
-            .with_data_state_for_tests(data)
-            .with_auth_wallets_for_tests(vec![wallet("user-1", 10.0)])
+        Some(
+            state
+                .with_data_state_for_tests(data)
+                .with_auth_wallets_for_tests(vec![wallet("user-1", 10.0)]),
+        )
     }
 
     fn candidate_row() -> StoredMinimalCandidateSelectionRow {
@@ -335,13 +324,13 @@ mod tests {
         )
     }
 
-    async fn reservation_count(state: &AppState) -> usize {
+    async fn reservation_count(state: &AppState, request_id: &str) -> usize {
         state
             .list_niffler_billing_reservations(&NifflerBillingReservationListQuery {
                 status: None,
                 user_id: None,
                 api_key_id: None,
-                request_id: None,
+                request_id: Some(request_id.to_string()),
                 expires_at_gte_unix_ms: None,
                 expires_at_lte_unix_ms: None,
                 expires_at_lt_unix_ms: None,
@@ -377,9 +366,10 @@ mod tests {
     }
 
     async fn enable_product_plan_reservation(state: &AppState) {
+        let product_plan_id = Uuid::new_v4().to_string();
         state
             .create_niffler_product_plan(CreateNifflerProductPlanRecord {
-                id: "plan-1".to_string(),
+                id: product_plan_id.clone(),
                 display_name: "Plan 1".to_string(),
                 is_public: false,
                 is_active: true,
@@ -393,9 +383,9 @@ mod tests {
         state
             .upsert_niffler_api_key_product_plan_binding(
                 UpsertNifflerApiKeyProductPlanBindingRecord {
-                    id: "binding-api-key-1-plan-1".to_string(),
+                    id: Uuid::new_v4().to_string(),
                     api_key_id: "api-key-1".to_string(),
-                    product_plan_id: "plan-1".to_string(),
+                    product_plan_id: product_plan_id.clone(),
                     config: None,
                     created_at_unix_ms: 1_700_000_000_000,
                     updated_at_unix_ms: 1_700_000_000_000,
@@ -405,9 +395,9 @@ mod tests {
             .expect("api key product plan binding should upsert");
         state
             .upsert_niffler_runtime_rollout_setting(UpsertNifflerRuntimeRolloutSettingRecord {
-                id: "rollout-product-plan-1".to_string(),
+                id: Uuid::new_v4().to_string(),
                 target_scope: NifflerRuntimeRolloutTargetScope::ProductPlan,
-                target_id: "plan-1".to_string(),
+                target_id: product_plan_id,
                 enable_new_routing: false,
                 enable_settlement_snapshot: false,
                 enable_error_return_rules: false,
@@ -423,8 +413,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_rollout_cannot_reenable_billing_reservation() {
-        let state = sqlite_state_with_billing_overrides().await;
+    async fn api_key_rollout_cannot_reenable_billing_reservation_when_url_is_set() {
+        let Some(state) = postgres_state_with_billing_overrides(
+            "api_key_rollout_cannot_reenable_billing_reservation",
+        )
+        .await
+        else {
+            return;
+        };
         enable_api_key_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
 
@@ -440,12 +436,21 @@ mod tests {
         .expect("reservation preparation should run");
 
         assert_eq!(rejection, None);
-        assert_eq!(reservation_count(&state).await, 0);
+        assert_eq!(
+            reservation_count(&state, "request-api-key-reservation-1").await,
+            0
+        );
     }
 
     #[tokio::test]
-    async fn product_plan_rollout_cannot_reenable_billing_reservation() {
-        let state = sqlite_state_with_billing_overrides().await;
+    async fn product_plan_rollout_cannot_reenable_billing_reservation_when_url_is_set() {
+        let Some(state) = postgres_state_with_billing_overrides(
+            "product_plan_rollout_cannot_reenable_billing_reservation",
+        )
+        .await
+        else {
+            return;
+        };
         enable_product_plan_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
 
@@ -461,12 +466,21 @@ mod tests {
         .expect("reservation preparation should run");
 
         assert_eq!(rejection, None);
-        assert_eq!(reservation_count(&state).await, 0);
+        assert_eq!(
+            reservation_count(&state, "request-product-plan-reservation-1").await,
+            0
+        );
     }
 
     #[tokio::test]
-    async fn legacy_active_reservations_do_not_reduce_available_wallet() {
-        let state = sqlite_state_with_billing_overrides().await;
+    async fn legacy_active_reservations_do_not_reduce_available_wallet_when_url_is_set() {
+        let Some(state) = postgres_state_with_billing_overrides(
+            "legacy_active_reservations_do_not_reduce_available_wallet",
+        )
+        .await
+        else {
+            return;
+        };
         enable_api_key_reservation(&state).await;
         let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
         let request_body = body();
@@ -483,8 +497,8 @@ mod tests {
 
         state
             .create_niffler_billing_reservation(CreateNifflerBillingReservationRecord {
-                id: "reservation-large-active".to_string(),
-                request_id: "request-large-active".to_string(),
+                id: Uuid::new_v4().to_string(),
+                request_id: Uuid::new_v4().to_string(),
                 user_id: Some("user-1".to_string()),
                 api_key_id: Some("api-key-1".to_string()),
                 product_plan_id: None,
@@ -493,9 +507,9 @@ mod tests {
                 entitlement_reserved_usd: 0.0,
                 reserved_at_unix_ms: current_unix_ms(),
                 expires_at_unix_ms: current_unix_ms().saturating_add(60_000),
-                idempotency_key: "reservation-large-active".to_string(),
-                event_id: "reservation-large-active-event".to_string(),
-                event_idempotency_key: "reservation-large-active-event".to_string(),
+                idempotency_key: Uuid::new_v4().to_string(),
+                event_id: Uuid::new_v4().to_string(),
+                event_idempotency_key: Uuid::new_v4().to_string(),
                 actor_id: Some("test".to_string()),
             })
             .await

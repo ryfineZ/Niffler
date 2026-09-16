@@ -7,14 +7,16 @@ export type PoolManagementStatus =
   | 'disabled'
   | 'quota_exhausted'
   | 'blocked'
-export type PoolManagementSortBy = 'imported_at' | 'last_used_at' | 'score'
+export type PoolManagementSortBy = 'imported_at' | 'last_used_at' | 'score' | 'capacity'
 export type PoolManagementSortOrder = 'asc' | 'desc'
 export type PoolManagementStatsMode = 'current_cycle' | 'account_total'
+export type PoolManagementCapacityFilter = 'all' | 'recent' | 'unresolved'
 
 export interface PoolManagementViewState {
   providerId: string | null
   search: string
   status: PoolManagementStatus
+  capacity: PoolManagementCapacityFilter
   planType: string
   page: number
   pageSize: number
@@ -27,6 +29,7 @@ export interface PoolManagementStateSource {
   providerId?: string
   search?: string
   status?: string
+  capacity?: string
   planType?: string
   page?: string
   pageSize?: string
@@ -51,6 +54,7 @@ export const DEFAULT_POOL_MANAGEMENT_VIEW_STATE: PoolManagementViewState = {
   providerId: null,
   search: '',
   status: 'all',
+  capacity: 'all',
   planType: 'all',
   page: 1,
   pageSize: 50,
@@ -90,6 +94,10 @@ function normalizePlanType(value: unknown): string {
   return normalized || 'all'
 }
 
+function normalizeCapacityFilter(value: unknown): PoolManagementCapacityFilter {
+  return value === 'recent' || value === 'unresolved' ? value : 'all'
+}
+
 function normalizePositiveInteger(value: unknown, fallback: number): number {
   const normalized = Number.parseInt(String(value ?? ''), 10)
   if (!Number.isFinite(normalized) || normalized <= 0) {
@@ -99,7 +107,7 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
 }
 
 function normalizeSortBy(value: unknown): PoolManagementSortBy | null {
-  if (value === 'imported_at' || value === 'last_used_at' || value === 'score') {
+  if (value === 'imported_at' || value === 'last_used_at' || value === 'score' || value === 'capacity') {
     return value
   }
   return DEFAULT_POOL_MANAGEMENT_VIEW_STATE.sortBy
@@ -114,10 +122,12 @@ function normalizeStatsMode(value: unknown): PoolManagementStatsMode {
 }
 
 function normalizeViewState(input: PoolManagementViewStateInput): PoolManagementViewState {
+  const capacity = normalizeCapacityFilter(input.capacity)
   return {
     providerId: normalizeProviderId(input.providerId),
     search: normalizeSearch(input.search),
-    status: normalizeStatus(input.status),
+    status: capacity === 'all' ? normalizeStatus(input.status) : 'all',
+    capacity,
     planType: normalizePlanType(input.planType),
     page: normalizePositiveInteger(input.page, DEFAULT_POOL_MANAGEMENT_VIEW_STATE.page),
     pageSize: normalizePositiveInteger(input.pageSize, DEFAULT_POOL_MANAGEMENT_VIEW_STATE.pageSize),
@@ -145,11 +155,17 @@ export function readPoolManagementViewState(
   storage?: StorageLike,
 ): PoolManagementViewState {
   const stored = normalizeViewState(readStoredState(storage))
+  // URL 指定任一状态筛选时，不叠加会话中保存的另一种状态。
+  const capacity = source.capacity !== undefined
+    ? normalizeCapacityFilter(source.capacity)
+    : source.status !== undefined ? 'all' : stored.capacity
+  const status = source.status !== undefined ? normalizeStatus(source.status) : stored.status
 
   return {
     providerId: source.providerId !== undefined ? normalizeProviderId(source.providerId) : stored.providerId,
     search: source.search !== undefined ? normalizeSearch(source.search) : stored.search,
-    status: source.status !== undefined ? normalizeStatus(source.status) : stored.status,
+    status: capacity === 'all' ? status : 'all',
+    capacity,
     planType: source.planType !== undefined ? normalizePlanType(source.planType) : stored.planType,
     page: source.page !== undefined
       ? normalizePositiveInteger(source.page, DEFAULT_POOL_MANAGEMENT_VIEW_STATE.page)
@@ -191,6 +207,7 @@ export function buildPoolManagementQueryPatch(
     providerId: normalized.providerId || undefined,
     search: search || undefined,
     status: normalized.status === 'all' ? undefined : normalized.status,
+    capacity: normalized.capacity === 'all' ? undefined : normalized.capacity,
     planType: normalized.planType === 'all' ? undefined : normalized.planType,
     page: normalized.page <= 1 ? undefined : String(normalized.page),
     pageSize:

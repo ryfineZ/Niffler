@@ -1,3 +1,4 @@
+use aether_routing_core::RoutingSchedulingPreset;
 use aether_runtime_state::RuntimeLockLease;
 use aether_scheduler_core::parse_request_candidate_report_context;
 use serde_json::Value;
@@ -32,6 +33,7 @@ pub(crate) struct LocalExecutionCandidateMetadata {
     pub(crate) pool_key_index: Option<u32>,
     pub(crate) pool_key_lease: Option<RuntimeLockLease>,
     pub(crate) scheduler_affinity_epoch: Option<u64>,
+    pub(crate) pool_scheduling_presets_override: Option<Vec<RoutingSchedulingPreset>>,
 }
 
 pub(crate) const SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD: &str = "scheduler_affinity_epoch";
@@ -39,6 +41,8 @@ pub(crate) const POOL_KEY_LEASE_KEY_REPORT_FIELD: &str = "pool_key_lease_key";
 pub(crate) const POOL_KEY_LEASE_OWNER_REPORT_FIELD: &str = "pool_key_lease_owner";
 pub(crate) const POOL_KEY_LEASE_TOKEN_REPORT_FIELD: &str = "pool_key_lease_token";
 pub(crate) const POOL_KEY_LEASE_TTL_MS_REPORT_FIELD: &str = "pool_key_lease_ttl_ms";
+pub(crate) const POOL_SCHEDULING_PRESETS_OVERRIDE_REPORT_FIELD: &str =
+    "pool_scheduling_presets_override";
 
 pub(crate) fn attempt_identity_from_report_context(
     report_context: Option<&Value>,
@@ -70,6 +74,26 @@ pub(crate) fn local_execution_candidate_metadata_from_report_context(
         scheduler_affinity_epoch: report_context
             .and_then(|value| value.get(SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD))
             .and_then(Value::as_u64),
+        pool_scheduling_presets_override: report_context
+            .and_then(|value| value.get(POOL_SCHEDULING_PRESETS_OVERRIDE_REPORT_FIELD))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .filter(|presets: &Vec<RoutingSchedulingPreset>| !presets.is_empty()),
+    }
+}
+
+pub(crate) fn insert_pool_scheduling_presets_override_report_context_field(
+    extra_fields: &mut serde_json::Map<String, Value>,
+    presets: Option<&[RoutingSchedulingPreset]>,
+) {
+    let Some(presets) = presets.filter(|presets| !presets.is_empty()) else {
+        return;
+    };
+    if let Ok(value) = serde_json::to_value(presets) {
+        extra_fields.insert(
+            POOL_SCHEDULING_PRESETS_OVERRIDE_REPORT_FIELD.to_string(),
+            value,
+        );
     }
 }
 
@@ -195,6 +219,7 @@ mod tests {
         GatewayProviderTransportEndpoint, GatewayProviderTransportKey,
         GatewayProviderTransportProvider, GatewayProviderTransportSnapshot,
     };
+    use aether_routing_core::RoutingSchedulingPreset;
     use aether_runtime_state::RuntimeLockLease;
 
     fn sample_transport(
@@ -485,6 +510,9 @@ mod tests {
             "pool_key_lease_owner": "gateway-1",
             "pool_key_lease_token": "gateway-1:token-1",
             "pool_key_lease_ttl_ms": 900000,
+            "pool_scheduling_presets_override": [
+                {"preset": "load_balance", "enabled": true}
+            ],
         })));
 
         assert_eq!(
@@ -499,6 +527,11 @@ mod tests {
                     ttl_ms: 900000,
                 }),
                 scheduler_affinity_epoch: None,
+                pool_scheduling_presets_override: Some(vec![RoutingSchedulingPreset {
+                    preset: "load_balance".to_string(),
+                    enabled: true,
+                    mode: None,
+                }]),
             }
         );
     }

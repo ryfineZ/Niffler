@@ -30,6 +30,7 @@ export function applyUsageActiveRequestUpdate(
   record.official_cost = update.official_cost ?? undefined
   if (typeof update.cost === 'number') record.cost = update.cost
   record.sales_multiplier = update.sales_multiplier ?? undefined
+  record.discount = update.discount ?? undefined
   record.actual_cost = update.actual_cost ?? undefined
   record.rate_multiplier = update.rate_multiplier ?? undefined
   record.response_time_ms = update.response_time_ms ?? undefined

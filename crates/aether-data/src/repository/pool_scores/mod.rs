@@ -1,14 +1,10 @@
 pub use aether_data_contracts::repository::pool_scores::*;
 
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 
 pub use memory::InMemoryPoolMemberScoreRepository;
-pub use mysql::MysqlPoolMemberScoreRepository;
 pub use postgres::PostgresPoolMemberScoreRepository;
-pub use sqlite::SqlitePoolMemberScoreRepository;
 
 fn merge_score_reason_patch(
     mut current: serde_json::Value,

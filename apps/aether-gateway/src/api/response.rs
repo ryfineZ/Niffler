@@ -386,6 +386,7 @@ pub(crate) fn build_local_overloaded_response(
 #[cfg(test)]
 mod tests {
     use super::build_client_response_from_parts;
+    use crate::constants::CONTROL_REQUEST_ID_HEADER;
     use axum::body::Body;
     use std::collections::BTreeMap;
 
@@ -414,5 +415,22 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("no")
         );
+    }
+
+    #[test]
+    fn ordinary_upstream_cannot_supply_gateway_request_id() {
+        let response = build_client_response_from_parts(
+            200,
+            &BTreeMap::from([(
+                CONTROL_REQUEST_ID_HEADER.to_string(),
+                "upstream-controlled-id".to_string(),
+            )]),
+            Body::empty(),
+            "trace-upstream-request-id-1",
+            None,
+        )
+        .expect("response should build");
+
+        assert!(response.headers().get(CONTROL_REQUEST_ID_HEADER).is_none());
     }
 }

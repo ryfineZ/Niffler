@@ -148,6 +148,11 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
         target,
         "usage_estimated_due_to_missing_upstream_usage",
     );
+    copy_bool(
+        source,
+        target,
+        crate::USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY,
+    );
     copy_non_null_value(source, target, "billing_snapshot");
     copy_number(source, target, "base_cost_usd");
     copy_number(source, target, "user_total_cost_usd");
@@ -210,6 +215,11 @@ fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map
         &mut source,
         target,
         "usage_estimated_due_to_missing_upstream_usage",
+    );
+    remove_bool(
+        &mut source,
+        target,
+        crate::USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY,
     );
     remove_non_null_value(&mut source, target, "billing_snapshot");
     remove_number(&mut source, target, "base_cost_usd");

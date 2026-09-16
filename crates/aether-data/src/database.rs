@@ -4,23 +4,17 @@ use std::str::FromStr;
 use crate::driver::postgres::PostgresPoolConfig;
 use crate::DataLayerError;
 
-pub const DEFAULT_SQLITE_DATABASE_URL: &str = "sqlite://./data/aether.db";
-
 #[derive(
     Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum DatabaseDriver {
-    Sqlite,
-    Mysql,
     Postgres,
 }
 
 impl DatabaseDriver {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Sqlite => "sqlite",
-            Self::Mysql => "mysql",
             Self::Postgres => "postgres",
         }
     }
@@ -28,8 +22,6 @@ impl DatabaseDriver {
     pub fn from_database_url(url: &str) -> Option<Self> {
         let scheme = url.split_once(':')?.0.to_ascii_lowercase();
         match scheme.as_str() {
-            "sqlite" => Some(Self::Sqlite),
-            "mysql" | "mariadb" => Some(Self::Mysql),
             "postgres" | "postgresql" => Some(Self::Postgres),
             _ => None,
         }
@@ -47,11 +39,9 @@ impl FromStr for DatabaseDriver {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "sqlite" => Ok(Self::Sqlite),
-            "mysql" | "mariadb" => Ok(Self::Mysql),
             "postgres" | "postgresql" => Ok(Self::Postgres),
             other => Err(DataLayerError::InvalidConfiguration(format!(
-                "unsupported database driver '{other}'; expected sqlite, mysql, or postgres"
+                "unsupported database driver '{other}'; expected postgres"
             ))),
         }
     }
@@ -94,11 +84,6 @@ impl SqlPoolConfig {
                 "{driver} statement_cache_capacity must be positive"
             )));
         }
-        if driver == DatabaseDriver::Sqlite && self.require_ssl {
-            return Err(DataLayerError::InvalidConfiguration(
-                "sqlite database does not support require_ssl".to_string(),
-            ));
-        }
         Ok(())
     }
 }
@@ -125,14 +110,6 @@ impl SqlDatabaseConfig {
         Ok(config)
     }
 
-    pub fn sqlite_default() -> Self {
-        Self {
-            driver: DatabaseDriver::Sqlite,
-            url: DEFAULT_SQLITE_DATABASE_URL.to_string(),
-            pool: SqlPoolConfig::default(),
-        }
-    }
-
     pub fn validate(&self) -> Result<(), DataLayerError> {
         if self.url.trim().is_empty() {
             return Err(DataLayerError::InvalidConfiguration(format!(
@@ -140,13 +117,16 @@ impl SqlDatabaseConfig {
                 self.driver
             )));
         }
-        if let Some(url_driver) = DatabaseDriver::from_database_url(&self.url) {
-            if url_driver != self.driver {
-                return Err(DataLayerError::InvalidConfiguration(format!(
-                    "database driver '{}' does not match url scheme '{}'",
-                    self.driver, url_driver
-                )));
-            }
+        let Some(url_driver) = DatabaseDriver::from_database_url(&self.url) else {
+            return Err(DataLayerError::InvalidConfiguration(
+                "database url must use postgres:// or postgresql://".to_string(),
+            ));
+        };
+        if url_driver != self.driver {
+            return Err(DataLayerError::InvalidConfiguration(format!(
+                "database driver '{}' does not match url scheme '{}'",
+                self.driver, url_driver
+            )));
         }
         self.pool.validate(self.driver)
     }
@@ -168,12 +148,6 @@ impl SqlDatabaseConfig {
     }
 
     pub fn to_postgres_config(&self) -> Result<PostgresPoolConfig, DataLayerError> {
-        if self.driver != DatabaseDriver::Postgres {
-            return Err(DataLayerError::InvalidConfiguration(format!(
-                "cannot build postgres pool config from {} database config",
-                self.driver
-            )));
-        }
         Ok(PostgresPoolConfig {
             database_url: self.url.clone(),
             min_connections: self.pool.min_connections,
@@ -195,47 +169,46 @@ impl From<PostgresPoolConfig> for SqlDatabaseConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig, DEFAULT_SQLITE_DATABASE_URL};
+    use super::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
     use crate::driver::postgres::PostgresPoolConfig;
 
     #[test]
     fn parses_database_driver_aliases() {
         assert_eq!(
-            "sqlite".parse::<DatabaseDriver>().unwrap(),
-            DatabaseDriver::Sqlite
-        );
-        assert_eq!(
-            "mariadb".parse::<DatabaseDriver>().unwrap(),
-            DatabaseDriver::Mysql
-        );
-        assert_eq!(
             "postgresql".parse::<DatabaseDriver>().unwrap(),
             DatabaseDriver::Postgres
         );
+        assert!("sqlite".parse::<DatabaseDriver>().is_err());
+        assert!("mysql".parse::<DatabaseDriver>().is_err());
+        assert!("mariadb".parse::<DatabaseDriver>().is_err());
         assert!("oracle".parse::<DatabaseDriver>().is_err());
     }
 
     #[test]
     fn infers_driver_from_database_url_scheme() {
         assert_eq!(
+            DatabaseDriver::from_database_url("postgres://localhost/aether"),
+            Some(DatabaseDriver::Postgres)
+        );
+        assert_eq!(
+            DatabaseDriver::from_database_url("postgresql://localhost/aether"),
+            Some(DatabaseDriver::Postgres)
+        );
+        assert_eq!(
             DatabaseDriver::from_database_url("sqlite://./data/aether.db"),
-            Some(DatabaseDriver::Sqlite)
+            None
         );
         assert_eq!(
             DatabaseDriver::from_database_url("mysql://localhost/aether"),
-            Some(DatabaseDriver::Mysql)
-        );
-        assert_eq!(
-            DatabaseDriver::from_database_url("postgres://localhost/aether"),
-            Some(DatabaseDriver::Postgres)
+            None
         );
     }
 
     #[test]
     fn validates_driver_url_mismatch() {
         let config = SqlDatabaseConfig {
-            driver: DatabaseDriver::Mysql,
-            url: "postgres://localhost/aether".to_string(),
+            driver: DatabaseDriver::Postgres,
+            url: "sqlite://./data/aether.db".to_string(),
             pool: SqlPoolConfig::default(),
         };
 
@@ -259,13 +232,5 @@ mod tests {
 
         assert_eq!(database.driver, DatabaseDriver::Postgres);
         assert_eq!(database.to_postgres_config().unwrap(), postgres);
-    }
-
-    #[test]
-    fn sqlite_default_uses_local_database_path() {
-        let database = SqlDatabaseConfig::sqlite_default();
-
-        assert_eq!(database.driver, DatabaseDriver::Sqlite);
-        assert_eq!(database.url, DEFAULT_SQLITE_DATABASE_URL);
     }
 }

@@ -112,6 +112,8 @@ export interface PaymentOrder {
   order_no: string
   wallet_id: string
   user_id: string | null
+  owner_type?: 'user' | 'api_key' | null
+  owner_name?: string | null
   amount_usd: number
   debt_repayment_usd?: number
   pay_amount: number | null
@@ -175,6 +177,9 @@ export interface WalletRechargeOption {
   payment_channel?: string
   pay_currency?: string
   usd_exchange_rate?: number
+  exchange_rate_source?: string
+  exchange_rate_as_of?: string | null
+  exchange_rate_live?: boolean
   min_recharge_usd?: number
 }
 

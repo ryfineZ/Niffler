@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
-import { paymentOrderContentLabel, paymentOrderKindLabel, paymentOrderMethodLabel, paymentStatusLabel } from '../walletDisplay'
+import {
+  formatWalletAmount,
+  formatWalletCurrency,
+  paymentOrderContentLabel,
+  paymentOrderKindLabel,
+  paymentOrderMethodLabel,
+  paymentStatusLabel,
+} from '../walletDisplay'
+
+describe('wallet amount formatting', () => {
+  it('keeps every stored decimal without hiding the settled amount', () => {
+    expect(formatWalletAmount(10)).toBe('10.00')
+    expect(formatWalletAmount(10.5)).toBe('10.50')
+    expect(formatWalletAmount(10.001_388_89)).toBe('10.00138889')
+    expect(formatWalletCurrency(-626.710_000_01)).toBe('$-626.71000001')
+  })
+})
 
 describe('paymentOrderMethodLabel', () => {
   it('shows the real DoDoPay channel when callback records it', () => {

@@ -14,7 +14,8 @@ use crate::{
     apply_usage_body_capture_policy_to_event, apply_usage_body_capture_policy_to_record,
     build_stream_terminal_usage_seed, build_sync_terminal_usage_seed,
     build_terminal_usage_event_from_seed, build_upsert_usage_record_from_event,
-    build_usage_queue_worker, settle_usage_if_needed, LifecycleUsageSeed,
+    build_usage_queue_worker, settle_usage_if_needed,
+    upsert_usage_record_with_provider_api_key_fallback, LifecycleUsageSeed,
     StreamTerminalUsagePayloadSeed, SyncTerminalUsagePayloadSeed, TerminalUsageContextSeed,
     UsageEvent, UsageQueue, UsageRecordWriter, UsageRuntimeConfig, UsageSettlementWriter,
 };
@@ -133,7 +134,9 @@ impl UsageRuntime {
             match build_pending_usage_record_offthread(seed, now_unix_secs).await {
                 Ok(mut record) => {
                     apply_body_capture_policy_to_record_from_data(&data, &mut record).await;
-                    if let Err(err) = data.upsert_usage_record(record).await {
+                    if let Err(err) =
+                        upsert_usage_record_with_provider_api_key_fallback(&data, record).await
+                    {
                         warn!(
                             event_name = "usage_pending_record_failed",
                             log_type = "event",
@@ -154,6 +157,28 @@ impl UsageRuntime {
                 }
             }
         }));
+    }
+
+    pub async fn record_pending_event_direct<T>(
+        &self,
+        data: &T,
+        mut event: UsageEvent,
+    ) -> Result<(), DataLayerError>
+    where
+        T: UsageRuntimeAccess,
+    {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        if event.event_type != crate::UsageEventType::Pending {
+            return Err(DataLayerError::UnexpectedValue(
+                "direct pending usage write requires a pending event".to_string(),
+            ));
+        }
+        apply_body_capture_policy_from_data(data, &mut event).await;
+        let record = build_upsert_usage_record_from_event(&event)?;
+        upsert_usage_record_with_provider_api_key_fallback(data, record).await?;
+        Ok(())
     }
 
     pub fn record_stream_started<T>(
@@ -184,7 +209,9 @@ impl UsageRuntime {
             {
                 Ok(mut record) => {
                     apply_body_capture_policy_to_record_from_data(&data, &mut record).await;
-                    if let Err(err) = data.upsert_usage_record(record).await {
+                    if let Err(err) =
+                        upsert_usage_record_with_provider_api_key_fallback(&data, record).await
+                    {
                         warn!(
                             event_name = "usage_stream_record_failed",
                             log_type = "event",
@@ -352,6 +379,25 @@ impl UsageRuntime {
     where
         T: UsageRuntimeAccess,
     {
+        if event
+            .data
+            .request_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(crate::USAGE_PENDING_MISSING_UPSTREAM_METADATA_KEY))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            warn!(
+                event_name = "usage_terminal_missing_upstream_usage",
+                log_type = "event",
+                request_id = %event.request_id,
+                provider_name = %event.data.provider_name,
+                model = %event.data.model,
+                status_code = ?event.data.status_code,
+                billing_status = "pending",
+                "terminal usage has no upstream usage or local estimate; settlement is deferred"
+            );
+        }
         if let Some(runner) = data.usage_worker_queue() {
             match UsageQueue::new(runner, self.config.clone()) {
                 Ok(queue) => match queue.enqueue(&event).await {
@@ -388,29 +434,31 @@ impl UsageRuntime {
         T: UsageRuntimeAccess,
     {
         match build_upsert_usage_record_from_event(event) {
-            Ok(record) => match data.upsert_usage_record(record).await {
-                Ok(Some(stored)) => {
-                    if let Err(err) = settle_usage_if_needed(data, &stored).await {
+            Ok(record) => {
+                match upsert_usage_record_with_provider_api_key_fallback(data, record).await {
+                    Ok(Some(stored)) => {
+                        if let Err(err) = settle_usage_if_needed(data, &stored).await {
+                            warn!(
+                                event_name = "usage_terminal_settlement_failed",
+                                log_type = "event",
+                                request_id = %event.request_id,
+                                error = %err,
+                                "usage runtime failed to settle terminal usage directly"
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
                         warn!(
-                            event_name = "usage_terminal_settlement_failed",
+                            event_name = "usage_terminal_upsert_failed",
                             log_type = "event",
                             request_id = %event.request_id,
                             error = %err,
-                            "usage runtime failed to settle terminal usage directly"
+                            "usage runtime failed to upsert terminal usage directly"
                         );
                     }
                 }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        event_name = "usage_terminal_upsert_failed",
-                        log_type = "event",
-                        request_id = %event.request_id,
-                        error = %err,
-                        "usage runtime failed to upsert terminal usage directly"
-                    );
-                }
-            },
+            }
             Err(err) => {
                 warn!(
                     event_name = "usage_terminal_upsert_build_failed",
@@ -721,6 +769,36 @@ mod tests {
         assert_eq!(records[0].request_id, "req-no-redis-1");
         assert_eq!(records[0].status, "completed");
         assert_eq!(records[0].total_tokens, Some(12));
+    }
+
+    #[tokio::test]
+    async fn direct_pending_usage_is_stored_before_the_call_returns() {
+        let runtime = UsageRuntime::new(UsageRuntimeConfig {
+            enabled: true,
+            ..UsageRuntimeConfig::default()
+        })
+        .expect("usage runtime should build");
+        let store = NoRedisUsageStore::default();
+        let event = UsageEvent::new(
+            UsageEventType::Pending,
+            "req-direct-pending-1",
+            UsageEventData {
+                provider_name: "Niffler 平台".to_string(),
+                model: "gpt-5".to_string(),
+                ..UsageEventData::default()
+            },
+        );
+
+        runtime
+            .record_pending_event_direct(&store, event)
+            .await
+            .expect("pending usage should be stored");
+
+        let records = store.records.lock().expect("records lock");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].request_id, "req-direct-pending-1");
+        assert_eq!(records[0].status, "pending");
+        assert_eq!(records[0].billing_status, "pending");
     }
 
     #[tokio::test]

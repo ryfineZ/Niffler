@@ -8,6 +8,8 @@ use aether_scheduler_core::{
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Response;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::time::{timeout, Duration};
 use tracing::{debug, warn, Instrument};
 
@@ -29,6 +31,67 @@ use crate::request_candidate_runtime::{
 use crate::{AppState, GatewayError};
 
 const DEFAULT_STREAM_CANDIDATE_WATCHDOG_TIMEOUT_MS: u64 = 300_000;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestAttemptRegistry {
+    attempted: Arc<Mutex<HashSet<RequestAttemptKey>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RequestAttemptKey {
+    provider_id: String,
+    endpoint_id: String,
+    key_id: String,
+    model_name: String,
+    retry_index: u32,
+}
+
+impl RequestAttemptRegistry {
+    pub(crate) fn begin_attempt(
+        &self,
+        plan: &aether_contracts::ExecutionPlan,
+        report_context: Option<&serde_json::Value>,
+    ) -> bool {
+        let retry_index = parse_request_candidate_report_context(report_context)
+            .map(|context| context.retry_index)
+            .unwrap_or_default();
+        let key = RequestAttemptKey {
+            provider_id: plan.provider_id.trim().to_string(),
+            endpoint_id: plan.endpoint_id.trim().to_string(),
+            key_id: plan.key_id.trim().to_string(),
+            model_name: plan.model_name.as_deref().unwrap_or("").trim().to_string(),
+            retry_index,
+        };
+        self.attempted
+            .lock()
+            .expect("request attempt registry lock")
+            .insert(key)
+    }
+}
+
+fn should_begin_attempt(
+    parts: Option<&http::request::Parts>,
+    plan: &aether_contracts::ExecutionPlan,
+    report_context: Option<&serde_json::Value>,
+) -> bool {
+    parts
+        .and_then(|parts| parts.extensions.get::<RequestAttemptRegistry>())
+        .is_none_or(|registry| registry.begin_attempt(plan, report_context))
+}
+
+pub(crate) async fn release_duplicate_attempt_lease(
+    state: &AppState,
+    report_context: Option<&serde_json::Value>,
+) {
+    let metadata = local_execution_candidate_metadata_from_report_context(report_context);
+    if let Some(lease) = metadata.pool_key_lease.as_ref() {
+        if let Err(err) =
+            release_admin_provider_pool_key_lease(state.runtime_state.as_ref(), lease).await
+        {
+            warn!(error = ?err, "gateway failed to release duplicate candidate pool key lease");
+        }
+    }
+}
 
 fn attach_redaction_execution_candidate(response: &mut Response<Body>, candidate_id: Option<&str>) {
     if let Some(candidate_id) = candidate_id
@@ -153,6 +216,20 @@ where
     async fn execute_attempt(&self, attempt: &T) -> Result<Option<Self::Response>, Self::Error> {
         let plan = attempt.execution_plan().clone();
         let report_context = attempt.report_context();
+        if !should_begin_attempt(Some(self.parts), &plan, report_context.as_ref()) {
+            release_duplicate_attempt_lease(self.state, report_context.as_ref()).await;
+            debug!(
+                event_name = "candidate_loop_duplicate_attempt_skipped",
+                log_type = "event",
+                request_id = %short_request_id(plan.request_id.as_str()),
+                provider_id = %plan.provider_id,
+                endpoint_id = %plan.endpoint_id,
+                key_id = %plan.key_id,
+                model_name = plan.model_name.as_deref().unwrap_or("-"),
+                "gateway skipped a service path already attempted by this request"
+            );
+            return Ok(None);
+        }
         let report_context =
             match run_content_moderation_precheck(self.state, &plan, report_context).await? {
                 ContentModerationPrecheckOutcome::Continue { report_context } => report_context,
@@ -220,6 +297,7 @@ where
 
 pub(crate) async fn execute_stream_plan_and_reports<T>(
     state: &AppState,
+    parts: &http::request::Parts,
     trace_id: &str,
     decision: &GatewayControlDecision,
     plan_kind: &str,
@@ -254,6 +332,7 @@ where
 
         let port = StreamAttemptLoopPort {
             state,
+            parts,
             trace_id,
             decision,
             plan_kind,
@@ -274,6 +353,7 @@ where
 
 pub(crate) async fn execute_stream_attempt_source<T, S>(
     state: &AppState,
+    parts: &http::request::Parts,
     trace_id: &str,
     decision: &GatewayControlDecision,
     plan_kind: &str,
@@ -296,6 +376,7 @@ where
 
         let port = StreamAttemptLoopPort {
             state,
+            parts,
             trace_id,
             decision,
             plan_kind,
@@ -343,6 +424,7 @@ where
 
 struct StreamAttemptLoopPort<'a> {
     state: &'a AppState,
+    parts: &'a http::request::Parts,
     trace_id: &'a str,
     decision: &'a GatewayControlDecision,
     plan_kind: &'a str,
@@ -360,6 +442,20 @@ where
     async fn execute_attempt(&self, attempt: &T) -> Result<Option<Self::Response>, Self::Error> {
         let plan = attempt.execution_plan().clone();
         let report_context = attempt.report_context();
+        if !should_begin_attempt(Some(self.parts), &plan, report_context.as_ref()) {
+            release_duplicate_attempt_lease(self.state, report_context.as_ref()).await;
+            debug!(
+                event_name = "candidate_loop_duplicate_attempt_skipped",
+                log_type = "event",
+                request_id = %short_request_id(plan.request_id.as_str()),
+                provider_id = %plan.provider_id,
+                endpoint_id = %plan.endpoint_id,
+                key_id = %plan.key_id,
+                model_name = plan.model_name.as_deref().unwrap_or("-"),
+                "gateway skipped a service path already attempted by this request"
+            );
+            return Ok(None);
+        }
         let report_context =
             match run_content_moderation_precheck(self.state, &plan, report_context).await? {
                 ContentModerationPrecheckOutcome::Continue { report_context } => report_context,
@@ -738,6 +834,24 @@ mod tests {
             "user_id": "user_1",
             "api_key_id": "api_key_1",
         })
+    }
+
+    #[test]
+    fn request_attempt_registry_blocks_duplicate_service_path_and_allows_explicit_retry() {
+        let registry = RequestAttemptRegistry::default();
+        let plan = test_plan(None);
+        let first = test_report_context();
+
+        assert!(registry.begin_attempt(&plan, Some(&first)));
+        assert!(!registry.begin_attempt(&plan, Some(&first)));
+
+        let mut retry = first.clone();
+        retry["retry_index"] = json!(1);
+        assert!(registry.begin_attempt(&plan, Some(&retry)));
+
+        let mut other_endpoint = plan.clone();
+        other_endpoint.endpoint_id = "endpoint_other".to_string();
+        assert!(registry.begin_attempt(&other_endpoint, Some(&first)));
     }
 
     #[test]

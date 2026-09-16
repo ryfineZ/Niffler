@@ -1,0 +1,10 @@
+Host dmit-monitor
+    HostName 179.253.242.2
+    Port 22
+    User niffler-monitor-sync
+    IdentityFile /etc/niffler-monitor-bot/dmit_monitor_ed25519
+    IdentitiesOnly yes
+    UserKnownHostsFile /etc/niffler-monitor-bot/known_hosts
+    StrictHostKeyChecking yes
+    ConnectTimeout 10
+    BatchMode yes

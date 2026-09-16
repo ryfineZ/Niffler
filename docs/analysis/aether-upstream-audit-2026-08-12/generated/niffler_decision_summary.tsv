@@ -1,0 +1,6 @@
+branch	recommended_disposition	commit_count
+niffler	DECISION_REQUIRED	3
+niffler	HISTORY_ONLY	41
+niffler	KEEP	43
+niffler	KEEP_REBASE	268
+niffler	SPLIT	2

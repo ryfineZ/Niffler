@@ -359,6 +359,8 @@ fn stored_admin_payment_order_to_gateway(
         order_no: order.order_no,
         wallet_id: order.wallet_id,
         user_id: order.user_id,
+        owner_type: order.owner_type,
+        owner_name: order.owner_name,
         amount_usd: order.amount_usd,
         debt_repayment_usd: order.debt_repayment_usd,
         pay_amount: order.pay_amount,

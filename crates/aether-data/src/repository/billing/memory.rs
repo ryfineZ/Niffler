@@ -1,13 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
 
 use async_trait::async_trait;
 
-use super::quota::quota_base_amount;
+use super::quota::{
+    quota_base_amount, summarize_usage_quota_grants, usage_quota_grants_from_entitlement,
+};
 use super::{
     AdminBillingMutationOutcome, BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
     PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput, StoredBillingModelContext,
     UserDailyQuotaAvailabilityRecord, UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanQuotaSummaryRecord,
 };
 use crate::DataLayerError;
 
@@ -564,6 +567,78 @@ impl BillingReadRepository for InMemoryBillingReadRepository {
     ) -> Result<Option<UserDailyQuotaAvailabilityRecord>, DataLayerError> {
         self.find_user_daily_quota_availability_for_global_model(user_id, None)
             .await
+    }
+
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, DataLayerError> {
+        let requested_user_ids = user_ids.iter().cloned().collect::<BTreeSet<_>>();
+        if requested_user_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let now_unix_secs = current_unix_secs();
+        let now = chrono::DateTime::from_timestamp(now_unix_secs as i64, 0).ok_or_else(|| {
+            DataLayerError::UnexpectedValue("invalid current timestamp".to_string())
+        })?;
+        let plans = self
+            .billing_plans_by_id
+            .read()
+            .expect("billing repository lock");
+        let entitlements = self
+            .entitlements_by_id
+            .read()
+            .expect("billing repository lock");
+        let mut summaries = entitlements
+            .values()
+            .filter(|entitlement| {
+                requested_user_ids.contains(&entitlement.user_id)
+                    && entitlement.status == "active"
+                    && entitlement.starts_at_unix_secs <= now_unix_secs
+                    && entitlement.expires_at_unix_secs > now_unix_secs
+            })
+            .filter_map(|entitlement| {
+                let plan = plans.get(&entitlement.plan_id)?;
+                let starts_at =
+                    chrono::DateTime::from_timestamp(entitlement.starts_at_unix_secs as i64, 0)?;
+                let grants = usage_quota_grants_from_entitlement(
+                    &entitlement.id,
+                    &entitlement.entitlements_snapshot,
+                    now,
+                    starts_at,
+                    None,
+                )
+                .ok()?;
+                let summary = summarize_usage_quota_grants(&grants, |_| 0.0).unwrap_or_default();
+                Some(UserPlanQuotaSummaryRecord {
+                    user_id: entitlement.user_id.clone(),
+                    entitlement_id: entitlement.id.clone(),
+                    plan_id: entitlement.plan_id.clone(),
+                    plan_title: plan.title.clone(),
+                    starts_at_unix_secs: entitlement.starts_at_unix_secs,
+                    expires_at_unix_secs: entitlement.expires_at_unix_secs,
+                    quota_total_usd: summary.quota_total_usd,
+                    quota_used_usd: summary.quota_used_usd,
+                    quota_remaining_usd: summary.quota_remaining_usd,
+                    daily_total_usd: summary.daily_total_usd,
+                    daily_used_usd: summary.daily_used_usd,
+                    daily_remaining_usd: summary.daily_remaining_usd,
+                    daily_window_started_at_unix_secs: summary
+                        .daily_window_started_at
+                        .map(|value| value.timestamp().max(0) as u64),
+                    daily_window_ends_at_unix_secs: summary
+                        .daily_window_ends_at
+                        .map(|value| value.timestamp().max(0) as u64),
+                })
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            left.user_id
+                .cmp(&right.user_id)
+                .then_with(|| left.expires_at_unix_secs.cmp(&right.expires_at_unix_secs))
+                .then_with(|| left.entitlement_id.cmp(&right.entitlement_id))
+        });
+        Ok(Some(summaries))
     }
 
     async fn find_user_daily_quota_availability_for_global_model(

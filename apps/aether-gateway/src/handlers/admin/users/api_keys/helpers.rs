@@ -3,6 +3,7 @@ use crate::handlers::admin::request::AdminAppState;
 use crate::handlers::admin::shared::{
     attach_admin_audit_response, decrypt_catalog_secret_with_fallbacks,
 };
+use crate::handlers::public::resolve_user_portal;
 use crate::handlers::shared::{
     api_key_placeholder_display, generate_gateway_api_key_plaintext, masked_gateway_api_key_display,
 };
@@ -121,6 +122,13 @@ pub(super) async fn validate_admin_user_api_key_group_id(
     let Some(group) = state.find_user_group_by_id(group_id).await? else {
         return Ok(Err(build_admin_users_bad_request_response("分组不存在")));
     };
+
+    let portal = resolve_user_portal(state.app(), user_id).await?;
+    if portal.is_official_usd() && portal.group_id.as_deref() != Some(group_id) {
+        return Ok(Err(build_admin_users_bad_request_response(
+            "专属门户用户的 API Key 必须使用专属计费分组",
+        )));
+    }
 
     if group.visibility.trim().eq_ignore_ascii_case("public") {
         return Ok(Ok(()));

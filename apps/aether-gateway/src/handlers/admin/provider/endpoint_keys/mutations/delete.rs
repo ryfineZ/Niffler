@@ -35,7 +35,7 @@ pub(super) async fn maybe_handle(
     if let Some(response) = maybe_freeze_migrated_legacy_provider_key_write(state, &key_id).await? {
         return Ok(Some(response));
     }
-    let Some(_existing_key) = state
+    let Some(existing_key) = state
         .read_provider_catalog_keys_by_ids(std::slice::from_ref(&key_id))
         .await?
         .into_iter()
@@ -43,7 +43,11 @@ pub(super) async fn maybe_handle(
     else {
         return Ok(Some(not_found_response(format!("Key {key_id} 不存在"))));
     };
-    if !state.delete_provider_catalog_key(&key_id).await? {
+    if state
+        .delete_provider_catalog_keys(std::slice::from_ref(&existing_key))
+        .await?
+        == 0
+    {
         return Ok(Some(not_found_response(format!("Key {key_id} 不存在"))));
     }
 

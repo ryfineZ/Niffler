@@ -263,7 +263,7 @@
               :key="line.label"
               class="text-[10px] text-muted-foreground"
             >
-              {{ t('usageRecords.deductedCost', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatMultiplier(line.multiplier) }) }}
+              {{ t('usageRecords.deductedCost', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatChargeFactor(record, line) }) }}
             </span>
             <span
               v-if="hasModerationCost(record)"
@@ -943,7 +943,7 @@
                 :key="line.label"
                 class="text-muted-foreground"
               >
-                {{ t('usageRecords.deductedCost', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatMultiplier(line.multiplier) }) }}
+                {{ t('usageRecords.deductedCost', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatChargeFactor(record, line) }) }}
               </span>
               <span
                 v-if="hasModerationCost(record)"
@@ -1452,7 +1452,12 @@ function toFiniteNumber(value: number | null | undefined): number | null {
 }
 
 function getSalesMultiplier(record: UsageRecord): number | null {
-  return toFiniteNumber(record.sales_multiplier)
+  return toFiniteNumber(record.discount) ?? toFiniteNumber(record.sales_multiplier)
+}
+
+function usesDiscountTerms(record: UsageRecord): boolean {
+  return Object.prototype.hasOwnProperty.call(record, 'discount')
+    || Object.prototype.hasOwnProperty.call(record.charge_breakdown || {}, 'wallet_discount')
 }
 
 function resolveChargeBreakdown(record: UsageRecord): ResolvedChargeBreakdown {
@@ -1481,7 +1486,8 @@ function resolveChargeBreakdown(record: UsageRecord): ResolvedChargeBreakdown {
   )
   const packageMultiplier = toFiniteNumber(rawBreakdown?.package_multiplier)
     ?? (packageDebit > COST_EPSILON ? 1 : null)
-  const walletMultiplier = toFiniteNumber(rawBreakdown?.wallet_multiplier)
+  const walletMultiplier = toFiniteNumber(rawBreakdown?.wallet_discount)
+    ?? toFiniteNumber(rawBreakdown?.wallet_multiplier)
     ?? salesMultiplier
     ?? (resolvedOfficialCost > COST_EPSILON && walletDebit > COST_EPSILON ? walletDebit / resolvedOfficialCost : null)
 
@@ -1575,6 +1581,15 @@ function formatMultiplier(value: number | null): string {
   return `${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}x`
 }
 
+function formatChargeFactor(record: UsageRecord, line: ChargeLine): string {
+  if (usesDiscountTerms(record) && line.label === 'wallet') {
+    if (line.multiplier === null) return '-'
+    const value = line.multiplier.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+    return t('models.discountFactor', { value })
+  }
+  return formatMultiplier(line.multiplier)
+}
+
 function formatCostMultiplier(record: UsageRecord): string {
   return t('usageRecords.costMultiplierValue', { value: formatMultiplier(getCostMultiplier(record)) })
 }
@@ -1587,7 +1602,7 @@ function getRecordCostTitle(record: UsageRecord): string {
   const chargeLines = getChargeLines(record)
   const lines = [
     t('usageRecords.officialPriceTooltip', { amount: formatCurrency(getOfficialCost(record)) }),
-    ...chargeLines.map(line => t('usageRecords.deductedTooltip', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatMultiplier(line.multiplier) })),
+    ...chargeLines.map(line => t('usageRecords.deductedTooltip', { label: formatChargeLabel(line.label), amount: formatCurrency(line.amount), multiplier: formatChargeFactor(record, line) })),
   ]
   if (chargeLines.length === 0) lines.push(t('usageRecords.noUserCharge'))
   if (hasModerationCost(record)) {

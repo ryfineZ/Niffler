@@ -417,6 +417,8 @@ fn append_seed_extra_data_from_report_context(
     context: &Map<String, Value>,
 ) {
     const PASSTHROUGH_FIELDS: &[&str] = &[
+        "trace_id",
+        "client_request_id",
         "execution_strategy",
         "conversion_mode",
         "client_contract",
@@ -489,6 +491,19 @@ pub fn build_local_request_candidate_status_record(
         routing_trace: metadata.routing_trace.clone(),
     });
     let extra_data = mark_request_candidate_stream_completed_if_success(status, extra_data);
+    let mut extra_data = extra_data.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(model) = plan.model_name.as_deref() {
+        extra_data["upstream_model"] = serde_json::json!(model);
+    }
+    if status == RequestCandidateStatus::Failed
+        && aether_data_contracts::repository::candidates::is_model_capacity_error(
+            error_type.as_deref(),
+            error_message.as_deref(),
+        )
+    {
+        extra_data["capacity_error"] = serde_json::json!(true);
+    }
+    let extra_data = Some(extra_data);
     let created_at_unix_ms = started_at_unix_ms.or(finished_at_unix_ms);
 
     Some(UpsertRequestCandidateRecord {
@@ -549,6 +564,18 @@ pub fn build_report_request_candidate_status_record(
         .or_else(|| finished_at_unix_ms.and_then(non_epoch_unix_ms))
         .unwrap_or(terminal_unix_secs);
 
+    let mut extra_data =
+        mark_request_candidate_stream_completed_if_success(status, slot.extra_data);
+    if status == RequestCandidateStatus::Failed
+        && aether_data_contracts::repository::candidates::is_model_capacity_error(
+            error_type.as_deref(),
+            error_message.as_deref(),
+        )
+    {
+        extra_data.get_or_insert_with(|| serde_json::json!({}))["capacity_error"] =
+            serde_json::json!(true);
+    }
+
     UpsertRequestCandidateRecord {
         id: slot.id,
         request_id: slot.request_id,
@@ -569,7 +596,7 @@ pub fn build_report_request_candidate_status_record(
         error_message,
         latency_ms,
         concurrent_requests: None,
-        extra_data: mark_request_candidate_stream_completed_if_success(status, slot.extra_data),
+        extra_data,
         required_capabilities: None,
         created_at_unix_ms: Some(created_at_unix_ms),
         started_at_unix_ms,
@@ -1119,7 +1146,9 @@ mod tests {
                 "retry_index": 2,
                 "user_id": "user-1",
                 "api_key_id": "api-key-1",
-                "client_api_format": "openai:chat"
+                "client_api_format": "openai:chat",
+                "trace_id": "trace-client-1",
+                "client_request_id": "client-request-1"
             })),
             123,
             "generated-1".to_string(),
@@ -1130,6 +1159,22 @@ mod tests {
         assert_eq!(seed.upsert_record.candidate_index, 3);
         assert_eq!(seed.upsert_record.retry_index, 2);
         assert_eq!(seed.upsert_record.user_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            seed.upsert_record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("trace_id"))
+                .and_then(Value::as_str),
+            Some("trace-client-1")
+        );
+        assert_eq!(
+            seed.upsert_record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("client_request_id"))
+                .and_then(Value::as_str),
+            Some("client-request-1")
+        );
         assert_eq!(
             seed.report_context
                 .get("provider_id")
@@ -1143,6 +1188,44 @@ mod tests {
             finalized.get("candidate_id").and_then(Value::as_str),
             Some("cand-final")
         );
+    }
+
+    #[test]
+    fn capacity_candidate_records_actual_model_and_only_marks_capacity_failures() {
+        let mut plan = sample_plan();
+        plan.candidate_id = Some("capacity-attempt".into());
+        plan.model_name = Some("actual-upstream-model".into());
+        for (message, marked) in [
+            (
+                "Selected model is at capacity. Please try a different model.",
+                true,
+            ),
+            ("Rate limit exceeded", false),
+        ] {
+            let record = build_local_request_candidate_status_record(
+                LocalRequestCandidateStatusRecordInput {
+                    plan: &plan,
+                    report_context: Some(
+                        &json!({"candidate_index": 0, "mapped_model": "requested-alias"}),
+                    ),
+                    status_update: SchedulerRequestCandidateStatusUpdate {
+                        status: RequestCandidateStatus::Failed,
+                        status_code: Some(503),
+                        error_type: None,
+                        error_message: Some(message.into()),
+                        latency_ms: Some(42),
+                        started_at_unix_ms: Some(100),
+                        finished_at_unix_ms: Some(142),
+                    },
+                },
+            )
+            .unwrap();
+            let extra = record.extra_data.unwrap();
+            assert_eq!(record.id, "capacity-attempt");
+            assert_eq!(extra["upstream_model"], "actual-upstream-model");
+            assert_eq!(extra["mapped_model"], "requested-alias");
+            assert_eq!(extra["capacity_error"].as_bool().unwrap_or(false), marked);
+        }
     }
 
     #[test]
@@ -1319,6 +1402,47 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.get("stream_completed")),
             Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn report_status_record_marks_structured_capacity_errors() {
+        let record =
+            build_report_request_candidate_status_record(ReportRequestCandidateStatusRecordInput {
+                slot: SchedulerResolvedReportRequestCandidateSlot {
+                    id: "capacity-report".to_string(),
+                    request_id: "req-capacity".to_string(),
+                    user_id: None,
+                    api_key_id: None,
+                    candidate_index: 0,
+                    retry_index: 0,
+                    provider_id: Some("provider-1".to_string()),
+                    endpoint_id: Some("endpoint-1".to_string()),
+                    key_id: Some("key-1".to_string()),
+                    extra_data: None,
+                    created_at_unix_ms: 2_000,
+                    started_at_unix_ms: None,
+                    finished_at_unix_ms: None,
+                },
+                status_update: SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Failed,
+                    status_code: Some(503),
+                    error_type: Some("server_is_overloaded".to_string()),
+                    error_message: Some("Please retry later.".to_string()),
+                    latency_ms: None,
+                    started_at_unix_ms: None,
+                    finished_at_unix_ms: Some(3_000),
+                },
+                now_unix_ms: 4_000,
+            });
+
+        assert_eq!(
+            record
+                .extra_data
+                .as_ref()
+                .and_then(|value| value.get("capacity_error"))
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 

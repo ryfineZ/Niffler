@@ -78,6 +78,8 @@ fn sample_payment_order(
         order_no: format!("po-{order_id}"),
         wallet_id: wallet_id.to_string(),
         user_id: Some(user_id.to_string()),
+        owner_type: Some("user".to_string()),
+        owner_name: Some(format!("name-{user_id}")),
         amount_usd,
         debt_repayment_usd: 0.0,
         pay_amount: None,
@@ -204,6 +206,8 @@ async fn gateway_handles_admin_payments_list_orders_locally_with_trusted_admin_p
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], "order-1");
     assert_eq!(items[0]["wallet_id"], "wallet-1");
+    assert_eq!(items[0]["owner_type"], "user");
+    assert_eq!(items[0]["owner_name"], "name-user-1");
     assert_eq!(items[0]["payment_method"], "alipay");
     assert_eq!(items[0]["order_kind"], "wallet_recharge");
     assert_eq!(items[0]["status"], "pending");

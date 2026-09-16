@@ -55,7 +55,7 @@ Grok OAuth 默认每 30 分钟以并发 1 执行一次账号自检，从 `/v1/bi
 - 网关 OAuth 生命周期、Provider 调度、请求格式转换和账号自检；
 - 管理接口的额度数据；
 - 管理后台 Provider 表单、OAuth 导入、号池高级设置、额度展示和使用记录；
-- PostgreSQL、MySQL、SQLite 与内存实现的 Provider 候选查询。
+- PostgreSQL 与内存实现的 Provider 候选查询。
 
 OAuth 凭据继续按现有 OAuth key 机制加密保存。日志、截图、工单和测试输出不得包含
 access token、refresh token 或完整 callback URL。

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::{MysqlBackend, PostgresBackend, SqliteBackend};
+use super::PostgresBackend;
 use crate::repository::announcements::AnnouncementWriteRepository;
 use crate::repository::auth::AuthApiKeyWriteRepository;
 use crate::repository::auth_modules::AuthModuleWriteRepository;
@@ -46,7 +46,6 @@ pub struct DataWriteRepositories {
     video_tasks: Option<Arc<dyn VideoTaskWriteRepository>>,
     wallets: Option<Arc<dyn WalletWriteRepository>>,
 }
-
 impl fmt::Debug for DataWriteRepositories {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataWriteRepositories")
@@ -81,100 +80,31 @@ impl fmt::Debug for DataWriteRepositories {
 }
 
 impl DataWriteRepositories {
-    pub(crate) fn from_backends(
-        postgres: Option<&PostgresBackend>,
-        mysql: Option<&MysqlBackend>,
-        sqlite: Option<&SqliteBackend>,
-    ) -> Self {
-        Self {
-            announcements: postgres
-                .map(PostgresBackend::announcement_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::announcement_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::announcement_write_repository)),
-            auth_api_keys: postgres
-                .map(PostgresBackend::auth_api_key_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::auth_api_key_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::auth_api_key_write_repository)),
-            auth_modules: postgres
-                .map(PostgresBackend::auth_module_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::auth_module_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::auth_module_write_repository)),
-            background_tasks: postgres
-                .map(PostgresBackend::background_task_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::background_task_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::background_task_write_repository)),
-            content_moderation_evidence: postgres
-                .map(PostgresBackend::content_moderation_evidence_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::content_moderation_evidence_write_repository))
-                .or_else(|| {
-                    sqlite.map(SqliteBackend::content_moderation_evidence_write_repository)
-                }),
-            request_candidates: postgres
-                .map(PostgresBackend::request_candidate_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::request_candidate_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::request_candidate_write_repository)),
-            gemini_file_mappings: postgres
-                .map(PostgresBackend::gemini_file_mapping_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::gemini_file_mapping_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::gemini_file_mapping_write_repository)),
-            global_models: postgres
-                .map(PostgresBackend::global_model_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::global_model_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::global_model_write_repository)),
-            management_tokens: postgres
-                .map(PostgresBackend::management_token_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::management_token_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::management_token_write_repository)),
-            niffler_core: postgres
-                .map(PostgresBackend::niffler_core_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::niffler_core_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::niffler_core_write_repository)),
-            oauth_providers: postgres
-                .map(PostgresBackend::oauth_provider_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::oauth_provider_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::oauth_provider_write_repository)),
-            pool_scores: postgres
-                .map(PostgresBackend::pool_score_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::pool_score_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::pool_score_write_repository)),
-            proxy_nodes: postgres
-                .map(PostgresBackend::proxy_node_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::proxy_node_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::proxy_node_write_repository)),
-            provider_catalog: postgres
-                .map(PostgresBackend::provider_catalog_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::provider_catalog_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::provider_catalog_write_repository)),
-            provider_quotas: postgres
-                .map(PostgresBackend::provider_quota_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::provider_quota_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::provider_quota_write_repository)),
-            routing_groups: postgres
-                .map(PostgresBackend::routing_group_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::routing_group_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::routing_group_write_repository)),
-            settlement: postgres
-                .map(PostgresBackend::settlement_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::settlement_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::settlement_write_repository)),
-            usage: postgres
-                .map(PostgresBackend::usage_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::usage_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::usage_write_repository)),
-            video_tasks: postgres
-                .map(PostgresBackend::video_task_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::video_task_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::video_task_write_repository)),
-            wallets: postgres
-                .map(PostgresBackend::wallet_write_repository)
-                .or_else(|| mysql.map(MysqlBackend::wallet_write_repository))
-                .or_else(|| sqlite.map(SqliteBackend::wallet_write_repository)),
-        }
-    }
-
-    #[cfg(test)]
     pub(crate) fn from_postgres(postgres: Option<&PostgresBackend>) -> Self {
-        Self::from_backends(postgres, None, None)
+        Self {
+            announcements: postgres.map(PostgresBackend::announcement_write_repository),
+            auth_api_keys: postgres.map(PostgresBackend::auth_api_key_write_repository),
+            auth_modules: postgres.map(PostgresBackend::auth_module_write_repository),
+            background_tasks: postgres.map(PostgresBackend::background_task_write_repository),
+            content_moderation_evidence: postgres
+                .map(PostgresBackend::content_moderation_evidence_write_repository),
+            request_candidates: postgres.map(PostgresBackend::request_candidate_write_repository),
+            gemini_file_mappings: postgres
+                .map(PostgresBackend::gemini_file_mapping_write_repository),
+            global_models: postgres.map(PostgresBackend::global_model_write_repository),
+            management_tokens: postgres.map(PostgresBackend::management_token_write_repository),
+            niffler_core: postgres.map(PostgresBackend::niffler_core_write_repository),
+            oauth_providers: postgres.map(PostgresBackend::oauth_provider_write_repository),
+            pool_scores: postgres.map(PostgresBackend::pool_score_write_repository),
+            proxy_nodes: postgres.map(PostgresBackend::proxy_node_write_repository),
+            provider_catalog: postgres.map(PostgresBackend::provider_catalog_write_repository),
+            provider_quotas: postgres.map(PostgresBackend::provider_quota_write_repository),
+            routing_groups: postgres.map(PostgresBackend::routing_group_write_repository),
+            settlement: postgres.map(PostgresBackend::settlement_write_repository),
+            usage: postgres.map(PostgresBackend::usage_write_repository),
+            video_tasks: postgres.map(PostgresBackend::video_task_write_repository),
+            wallets: postgres.map(PostgresBackend::wallet_write_repository),
+        }
     }
 
     pub fn announcements(&self) -> Option<Arc<dyn AnnouncementWriteRepository>> {

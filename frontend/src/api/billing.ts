@@ -158,9 +158,28 @@ export interface UserPlanEntitlement {
   updated_at?: string | null
 }
 
+export interface UserPlanQuotaSummary {
+  user_id: string
+  entitlement_id: string
+  plan_id: string
+  plan_title: string
+  starts_at: string | null
+  expires_at: string | null
+  quota_total_usd: number
+  quota_used_usd: number
+  quota_remaining_usd: number
+  daily_total_usd: number | null
+  daily_used_usd: number | null
+  daily_remaining_usd: number | null
+  daily_window_started_at: string | null
+  daily_window_ends_at: string | null
+}
+
 export interface UserPlanEntitlementsResponse {
   items: UserPlanEntitlement[]
   total: number
+  quota_summary?: UserPlanQuotaSummary | null
+  quota_summary_status?: 'ok' | 'unavailable'
 }
 
 function normalizeChannels(channels: PaymentGatewayConfig['channels']): EpayChannelConfig[] {

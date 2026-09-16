@@ -9,7 +9,8 @@ use super::support_payment::payment_epay::{
 };
 use super::{
     build_auth_error_response, build_auth_json_response, resolve_authenticated_local_user,
-    sanitize_wallet_gateway_response, unix_secs_to_rfc3339, AppState, GatewayPublicRequestContext,
+    resolve_payment_exchange_rate, sanitize_wallet_gateway_response, unix_secs_to_rfc3339,
+    AppState, GatewayPublicRequestContext,
 };
 use aether_data::repository::wallet::{
     CancelPaymentOrderInput, UpdatePendingPaymentOrderGatewayInput, WalletMutationOutcome,
@@ -207,6 +208,31 @@ fn entitlement_payload(
     })
 }
 
+fn quota_summary_payload(
+    summary: &aether_data_contracts::repository::billing::UserPlanQuotaSummaryRecord,
+) -> serde_json::Value {
+    json!({
+        "user_id": summary.user_id,
+        "entitlement_id": summary.entitlement_id,
+        "plan_id": summary.plan_id,
+        "plan_title": summary.plan_title,
+        "starts_at": unix_secs_to_rfc3339(summary.starts_at_unix_secs),
+        "expires_at": unix_secs_to_rfc3339(summary.expires_at_unix_secs),
+        "quota_total_usd": summary.quota_total_usd,
+        "quota_used_usd": summary.quota_used_usd,
+        "quota_remaining_usd": summary.quota_remaining_usd,
+        "daily_total_usd": summary.daily_total_usd,
+        "daily_used_usd": summary.daily_used_usd,
+        "daily_remaining_usd": summary.daily_remaining_usd,
+        "daily_window_started_at": summary
+            .daily_window_started_at_unix_secs
+            .and_then(unix_secs_to_rfc3339),
+        "daily_window_ends_at": summary
+            .daily_window_ends_at_unix_secs
+            .and_then(unix_secs_to_rfc3339),
+    })
+}
+
 fn compute_plan_payment_amounts(
     plan: &aether_data_contracts::repository::billing::BillingPlanRecord,
     pay_currency: &str,
@@ -266,7 +292,12 @@ pub(super) async fn handle_billing_entitlements(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let entitlements = match state.list_user_plan_entitlements(&auth.user.id).await {
+    let user_ids = [auth.user.id.clone()];
+    let (entitlements_result, quota_summaries_result) = tokio::join!(
+        state.list_user_plan_entitlements(&auth.user.id),
+        state.list_active_user_plan_quota_summaries(&user_ids),
+    );
+    let entitlements = match entitlements_result {
         Ok(Some(value)) => value,
         Ok(None) => return billing_storage_unavailable_response(),
         Err(err) => {
@@ -275,6 +306,18 @@ pub(super) async fn handle_billing_entitlements(
                 format!("billing entitlement lookup failed: {err:?}"),
                 false,
             )
+        }
+    };
+    let (quota_summary, quota_summary_status) = match quota_summaries_result {
+        Ok(Some(value)) => (value.first().map(quota_summary_payload), "ok"),
+        Ok(None) => (None, "unavailable"),
+        Err(err) => {
+            tracing::error!(
+                user_id = %auth.user.id,
+                error = ?err,
+                "billing quota summary lookup failed"
+            );
+            (None, "unavailable")
         }
     };
     let now = Utc::now().timestamp().max(0) as u64;
@@ -291,7 +334,13 @@ pub(super) async fn handle_billing_entitlements(
             payload
         })
         .collect::<Vec<_>>();
-    Json(json!({"items": items, "total": items.len()})).into_response()
+    Json(json!({
+        "items": items,
+        "total": items.len(),
+        "quota_summary": quota_summary,
+        "quota_summary_status": quota_summary_status,
+    }))
+    .into_response()
 }
 
 pub(super) async fn handle_billing_plan_checkout(
@@ -362,10 +411,27 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
             }
         };
+        let exchange_rate = match resolve_payment_exchange_rate(
+            state,
+            &auth.user.id,
+            &config.pay_currency,
+            config.usd_exchange_rate,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(detail) => {
+                return build_auth_error_response(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    detail,
+                    false,
+                )
+            }
+        };
         let (plan_amount_usd, plan_pay_amount) = match compute_dodopay_plan_payment_amounts(
             &plan,
             &config.pay_currency,
-            config.usd_exchange_rate,
+            exchange_rate.rate,
         ) {
             Ok(value) => value,
             Err(detail) => {
@@ -391,10 +457,11 @@ pub(super) async fn handle_billing_plan_checkout(
                 false,
             );
         };
-        let pending_gateway_response = json!({
+        let mut pending_gateway_response = json!({
             "gateway": "dodopay",
             "provider_order_status": "pending_checkout",
         });
+        exchange_rate.enrich_payload(&mut pending_gateway_response);
         let outcome = match state
             .create_plan_purchase_order(
                 aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
@@ -403,7 +470,7 @@ pub(super) async fn handle_billing_plan_checkout(
                     amount_usd: plan_amount_usd,
                     pay_amount: plan_pay_amount,
                     pay_currency: config.pay_currency.clone(),
-                    exchange_rate: config.usd_exchange_rate,
+                    exchange_rate: exchange_rate.rate,
                     payment_method: checkout_request.payment_method.clone(),
                     payment_provider: Some(checkout_request.payment_provider.clone()),
                     payment_channel: Some(payment_channel.clone()),
@@ -502,11 +569,13 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_GATEWAY, detail, false);
             }
         };
+        let mut gateway_response = checkout.payment_instructions.clone();
+        exchange_rate.enrich_payload(&mut gateway_response);
         let updated_order = match state
             .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
                 order_id: pending_order.id.clone(),
                 gateway_order_id: checkout.gateway_order_id.clone(),
-                gateway_response: checkout.payment_instructions.clone(),
+                gateway_response,
             })
             .await
         {
@@ -583,6 +652,19 @@ pub(super) async fn handle_billing_plan_checkout(
             return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
         }
     };
+    let resolved_exchange_rate = match resolve_payment_exchange_rate(
+        state,
+        &auth.user.id,
+        &config.pay_currency,
+        config.usd_exchange_rate,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(detail) => {
+            return build_auth_error_response(http::StatusCode::SERVICE_UNAVAILABLE, detail, false)
+        }
+    };
     let payment_channel =
         match resolve_epay_channel(&config, checkout_request.payment_channel.as_deref()) {
             Ok(value) => value,
@@ -590,13 +672,16 @@ pub(super) async fn handle_billing_plan_checkout(
                 return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false);
             }
         };
-    let (plan_amount_usd, plan_pay_amount) =
-        match compute_plan_payment_amounts(&plan, &config.pay_currency, config.usd_exchange_rate) {
-            Ok(value) => value,
-            Err(detail) => {
-                return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
-            }
-        };
+    let (plan_amount_usd, plan_pay_amount) = match compute_plan_payment_amounts(
+        &plan,
+        &config.pay_currency,
+        resolved_exchange_rate.rate,
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            return build_auth_error_response(http::StatusCode::BAD_REQUEST, detail, false)
+        }
+    };
     let Some(callback_base_url) = epay_callback_base_url(
         config.callback_base_url.as_deref(),
         headers,
@@ -609,12 +694,13 @@ pub(super) async fn handle_billing_plan_checkout(
         );
     };
     let pay_currency = config.pay_currency.clone();
-    let exchange_rate = config.usd_exchange_rate;
+    let exchange_rate = resolved_exchange_rate.rate;
     let gateway_order_id = order_no.clone();
-    let pending_gateway_response = json!({
+    let mut pending_gateway_response = json!({
         "gateway": "epay",
         "provider_order_status": "pending_checkout",
     });
+    resolved_exchange_rate.enrich_payload(&mut pending_gateway_response);
     let outcome = match state
         .create_plan_purchase_order(
             aether_data::repository::wallet::CreatePlanPurchaseOrderInput {
@@ -689,7 +775,7 @@ pub(super) async fn handle_billing_plan_checkout(
             false,
         );
     };
-    let checkout = build_epay_checkout_url(
+    let mut checkout = build_epay_checkout_url(
         &config,
         &EpayCheckoutInput {
             order_no: order_no.clone(),
@@ -700,6 +786,7 @@ pub(super) async fn handle_billing_plan_checkout(
             return_url: format!("{callback_base_url}/api/payment/epay/return"),
         },
     );
+    resolved_exchange_rate.enrich_payload(&mut checkout);
     let updated_order = match state
         .update_pending_payment_order_gateway(UpdatePendingPaymentOrderGatewayInput {
             order_id: order.id.clone(),
@@ -783,7 +870,9 @@ pub(super) async fn maybe_build_local_billing_response(
 
 #[cfg(test)]
 mod tests {
-    use aether_data_contracts::repository::billing::BillingPlanRecord;
+    use aether_data_contracts::repository::billing::{
+        BillingPlanRecord, UserPlanQuotaSummaryRecord,
+    };
     use serde_json::json;
 
     fn billing_plan(price_amount: f64, price_currency: &str) -> BillingPlanRecord {
@@ -828,5 +917,30 @@ mod tests {
             super::compute_dodopay_plan_payment_amounts(&cny_plan, "USD", 7.2),
             Err("套餐币种与支付网关币种不匹配")
         );
+    }
+
+    #[test]
+    fn quota_summary_payload_includes_daily_refresh_and_remaining_quota() {
+        let payload = super::quota_summary_payload(&UserPlanQuotaSummaryRecord {
+            user_id: "user-1".to_string(),
+            entitlement_id: "ent-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            plan_title: "GPT Pro 月套餐".to_string(),
+            starts_at_unix_secs: 1_755_283_329,
+            expires_at_unix_secs: 1_757_875_329,
+            quota_total_usd: 80.0,
+            quota_used_usd: 20.0,
+            quota_remaining_usd: 60.0,
+            daily_total_usd: Some(80.0),
+            daily_used_usd: Some(20.0),
+            daily_remaining_usd: Some(60.0),
+            daily_window_started_at_unix_secs: Some(1_755_283_329),
+            daily_window_ends_at_unix_secs: Some(1_755_369_729),
+        });
+
+        assert_eq!(payload["plan_title"], "GPT Pro 月套餐");
+        assert_eq!(payload["quota_remaining_usd"], 60.0);
+        assert_eq!(payload["daily_remaining_usd"], 60.0);
+        assert!(payload["daily_window_ends_at"].is_string());
     }
 }

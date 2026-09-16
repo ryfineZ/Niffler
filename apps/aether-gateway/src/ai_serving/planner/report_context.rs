@@ -6,6 +6,7 @@ use aether_ai_serving::{
     provider_stream_event_api_format_for_provider_type as ai_provider_stream_event_api_format_for_provider_type,
     AiExecutionReportContextParts, AiRequestOrigin,
 };
+use aether_routing_core::RoutingSchedulingPreset;
 use aether_runtime_state::RuntimeLockLease;
 use aether_scheduler_core::{ClientSessionAffinity, SchedulerRankingOutcome};
 use serde_json::{Map, Value};
@@ -19,7 +20,8 @@ use crate::client_session_affinity::{
     client_session_affinity_report_context_value, CLIENT_SESSION_AFFINITY_REPORT_CONTEXT_FIELD,
 };
 use crate::orchestration::{
-    insert_pool_key_lease_report_context_fields, ExecutionAttemptIdentity,
+    insert_pool_key_lease_report_context_fields,
+    insert_pool_scheduling_presets_override_report_context_field, ExecutionAttemptIdentity,
     SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD,
 };
 
@@ -42,6 +44,7 @@ pub(crate) struct LocalExecutionReportContextParts<'a> {
     pub(crate) mapped_model: Option<&'a str>,
     pub(crate) candidate_group_id: Option<&'a str>,
     pub(crate) pool_key_lease: Option<&'a RuntimeLockLease>,
+    pub(crate) pool_scheduling_presets_override: Option<&'a [RoutingSchedulingPreset]>,
     pub(crate) ranking: Option<&'a SchedulerRankingOutcome>,
     pub(crate) upstream_url: Option<&'a str>,
     pub(crate) header_rules: Option<&'a Value>,
@@ -80,6 +83,22 @@ pub(crate) fn build_local_execution_report_context(
         parts.original_request_body_base64,
     );
     let mut extra_fields = parts.extra_fields;
+    if let Some(trace_id) = original_headers
+        .get(crate::constants::TRACE_ID_HEADER)
+        .filter(|value| !value.is_empty())
+    {
+        extra_fields
+            .entry("trace_id".to_string())
+            .or_insert_with(|| Value::String(trace_id.clone()));
+    }
+    if let Some(client_request_id) = original_headers
+        .get("x-request-id")
+        .filter(|value| !value.is_empty())
+    {
+        extra_fields
+            .entry("client_request_id".to_string())
+            .or_insert_with(|| Value::String(client_request_id.clone()));
+    }
     if let Some(value) = parts
         .client_session_affinity
         .and_then(client_session_affinity_report_context_value)
@@ -107,6 +126,10 @@ pub(crate) fn build_local_execution_report_context(
         merge_incoming_tls_fingerprint(&mut extra_fields, incoming_tls);
     }
     insert_pool_key_lease_report_context_fields(&mut extra_fields, parts.pool_key_lease);
+    insert_pool_scheduling_presets_override_report_context_field(
+        &mut extra_fields,
+        parts.pool_scheduling_presets_override,
+    );
     if let Some(epoch) = parts.scheduler_affinity_epoch {
         extra_fields.insert(
             SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD.to_string(),
@@ -220,6 +243,7 @@ fn merge_incoming_tls_fingerprint(extra_fields: &mut Map<String, Value>, incomin
 mod tests {
     use std::collections::BTreeMap;
 
+    use aether_routing_core::RoutingSchedulingPreset;
     use aether_scheduler_core::ClientSessionAffinity;
     use serde_json::{json, Map, Value};
 
@@ -276,6 +300,11 @@ mod tests {
             Some("codex".to_string()),
             Some("account=account-1;session=session-1".to_string()),
         );
+        let pool_scheduling_presets_override = vec![RoutingSchedulingPreset {
+            preset: "load_balance".to_string(),
+            enabled: true,
+            mode: None,
+        }];
         let billing_admission =
             aether_data_contracts::repository::billing::BillingRequestAdmissionInput {
                 request_id: String::new(),
@@ -314,6 +343,7 @@ mod tests {
                 mapped_model: None,
                 candidate_group_id: None,
                 pool_key_lease: None,
+                pool_scheduling_presets_override: Some(&pool_scheduling_presets_override),
                 ranking: None,
                 upstream_url: None,
                 header_rules: None,
@@ -358,6 +388,10 @@ mod tests {
         assert_eq!(report_context["request_path"], "/v1/chat/completions");
         assert_eq!(report_context["request_query_string"], "limit=10");
         assert_eq!(
+            report_context["pool_scheduling_presets_override"],
+            json!([{"preset": "load_balance", "enabled": true}])
+        );
+        assert_eq!(
             report_context["request_path_and_query"],
             "/v1/chat/completions?limit=10"
         );
@@ -401,6 +435,7 @@ mod tests {
                 mapped_model: None,
                 candidate_group_id: None,
                 pool_key_lease: None,
+                pool_scheduling_presets_override: None,
                 ranking: None,
                 upstream_url: None,
                 header_rules: None,
@@ -476,6 +511,7 @@ mod tests {
                 mapped_model: None,
                 candidate_group_id: None,
                 pool_key_lease: None,
+                pool_scheduling_presets_override: None,
                 ranking: None,
                 upstream_url: None,
                 header_rules: None,

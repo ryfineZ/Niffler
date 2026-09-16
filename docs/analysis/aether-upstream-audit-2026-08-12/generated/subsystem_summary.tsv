@@ -1,0 +1,18 @@
+group	niffler_only	aether_only	both_changed_same	both_changed_diverged	niffler_additions	niffler_deletions	aether_additions	aether_deletions
+auth_security	24	59		39	4833	773	13721	8284
+backend_shared	2	167		11	473	77	37010	14883
+billing_wallet	43	75		45	16124	3078	41076	31420
+build_dependencies	4	21		7	287	59	942	146
+data_storage	58	527		94	31273	828	169176	115564
+delivery_operations	45	20		11	7188	59	6517	2597
+documentation	58	8		5	6283	56	11070	671
+frontend_product	198	155		112	32379	7464	35105	8583
+gateway_other	44	91		84	24584	1675	47546	5722
+provider_protocol	67	452		118	14680	2886	136524	67063
+repository_other	6			2	2351	154	30	1
+routing_scheduler	5	104		50	5409	638	30291	9174
+runtime_performance	3	48		11	2127	275	38735	14907
+stream_execution	1	10		5	2012	145	19159	5536
+tests	10	32		36	5383	347	16679	2137
+tunnel_frontdoor	5	36		14	1348	117	7056	958
+usage_observability	61	172	1	54	13215	2178	65397	35449

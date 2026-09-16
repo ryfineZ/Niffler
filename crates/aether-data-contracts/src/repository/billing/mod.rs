@@ -6,5 +6,5 @@ pub use types::{
     BillingFundingSource, BillingPlanRecord, BillingPlanWriteInput, BillingReadRepository,
     BillingRequestAdmissionInput, BillingRequestAdmissionRecord, PaymentGatewayConfigRecord,
     PaymentGatewayConfigWriteInput, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
 };

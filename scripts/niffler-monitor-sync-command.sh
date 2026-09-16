@@ -14,7 +14,7 @@ case "$ORIGINAL_COMMAND" in
         if [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ]; then
             cat "$STATUS_FILE"
         else
-            echo "应用服务器（hd0526）"
+            echo "远程监控服务器"
             echo "状态：还没有生成监控结果，请稍后重试。"
         fi
         ;;

@@ -381,6 +381,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
             .and_then(|value| value.to_str().ok()),
         Some("text/event-stream")
     );
+    let request_id = super::response_request_id(&response);
     let response_text = response.text().await.expect("body should read");
     assert!(response_text.contains("event: image_generation.partial_image"));
     assert!(response_text.contains("\"type\":\"image_generation.partial_image\""));
@@ -426,7 +427,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
     );
     assert_eq!(
         seen_execution_runtime_request.x_client_request_id,
-        "trace-codex-image-stream-local-123"
+        request_id
     );
     assert_eq!(seen_execution_runtime_request.tool_type, "image_generation");
     assert_eq!(seen_execution_runtime_request.tool_action, "generate");
@@ -1092,11 +1093,12 @@ async fn gateway_routes_openai_chat_stream_image_intent_to_openai_image_plan_wit
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     let status = response.status();
     let response_text = response.text().await.expect("body should read");
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-chat-stream-image-bridge-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidates should read");
     assert_eq!(

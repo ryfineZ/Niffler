@@ -671,6 +671,16 @@ pub trait ProviderCatalogWriteRepository: Send + Sync {
 
     async fn delete_key(&self, key_id: &str) -> Result<bool, crate::DataLayerError>;
 
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, crate::DataLayerError> {
+        let mut deleted = 0u64;
+        for key_id in key_ids {
+            if self.delete_key(key_id).await? {
+                deleted = deleted.saturating_add(1);
+            }
+        }
+        Ok(deleted)
+    }
+
     async fn clear_key_oauth_invalid_marker(
         &self,
         key_id: &str,

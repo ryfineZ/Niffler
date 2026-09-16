@@ -20,6 +20,10 @@ use crate::ai_serving::planner::plan_builders::{
     build_openai_chat_stream_plan_from_decision, AiStreamAttempt,
 };
 use crate::ai_serving::planner::runtime_miss::apply_local_runtime_candidate_terminal_reason;
+use crate::orchestration::{
+    read_global_stream_failover_policy, LocalStreamFailoverPolicy, StreamFailoverAttemptAdmission,
+    StreamFailoverAttemptBudget,
+};
 
 pub(crate) struct LocalOpenAiChatStreamAttemptSource<'a> {
     state: &'a AppState,
@@ -28,6 +32,9 @@ pub(crate) struct LocalOpenAiChatStreamAttemptSource<'a> {
     body_json: serde_json::Value,
     input: LocalOpenAiChatDecisionInput,
     candidates: LocalOpenAiChatCandidateAttemptSource<'a>,
+    stream_failover_attempt_budget: StreamFailoverAttemptBudget,
+    global_policy: LocalStreamFailoverPolicy,
+    stream_failover_attempt_budget_enabled: bool,
 }
 
 pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
@@ -126,6 +133,9 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
             body_json: effective_body_json,
             input,
             candidates,
+            stream_failover_attempt_budget: StreamFailoverAttemptBudget::default(),
+            global_policy: read_global_stream_failover_policy(state).await,
+            stream_failover_attempt_budget_enabled: !image_generation_intent,
         },
         candidate_count,
     )))
@@ -135,6 +145,32 @@ pub(crate) async fn build_local_openai_chat_stream_attempt_source<'a>(
 impl LocalExecutionAttemptSource<AiStreamAttempt> for LocalOpenAiChatStreamAttemptSource<'_> {
     async fn next_execution_attempt(&mut self) -> Result<Option<AiStreamAttempt>, GatewayError> {
         while let Some(attempt) = self.candidates.next_attempt().await {
+            if self.stream_failover_attempt_budget_enabled
+                && crate::ai_serving::is_openai_responses_format(
+                    &attempt.eligible.provider_api_format,
+                )
+            {
+                let candidate = &attempt.eligible.candidate;
+                let admission = self.stream_failover_attempt_budget.admit_with_policy(
+                    &candidate.provider_id,
+                    &candidate.endpoint_id,
+                    &candidate.key_id,
+                    &self.global_policy,
+                );
+                if admission != StreamFailoverAttemptAdmission::Allowed {
+                    if let Some(lease) = attempt.eligible.orchestration.pool_key_lease.as_ref() {
+                        crate::handlers::shared::provider_pool::release_admin_provider_pool_key_lease(
+                            self.state.runtime_state.as_ref(), lease,
+                        )
+                        .await
+                        .map_err(|err| GatewayError::Internal(format!("failed to release unused pool key lease: {err:?}")))?;
+                    }
+                    if admission == StreamFailoverAttemptAdmission::BudgetExhausted {
+                        break;
+                    }
+                    continue;
+                }
+            }
             match self.build_stream_attempt(attempt).await? {
                 Some(attempt) => return Ok(Some(attempt)),
                 None => continue,

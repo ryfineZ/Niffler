@@ -267,11 +267,11 @@ SELECT
   'summary' AS api_key,
   NULL::text AS auth_config,
   note,
-  NULL::integer AS internal_priority,
+  internal_priority,
   rate_multipliers,
   global_priority_by_format,
   allowed_models,
-  NULL::bigint AS expires_at_unix_secs,
+  EXTRACT(EPOCH FROM expires_at)::bigint AS expires_at_unix_secs,
   NULL::integer AS cache_ttl_minutes,
   NULL::integer AS max_probe_interval_minutes,
   NULL::jsonb AS proxy,
@@ -293,7 +293,7 @@ SELECT
   NULL::bigint AS success_count,
   NULL::bigint AS error_count,
   NULL::bigint AS total_response_time_ms,
-  NULL::bigint AS last_used_at_unix_secs,
+  EXTRACT(EPOCH FROM last_used_at)::bigint AS last_used_at_unix_secs,
   auto_fetch_models,
   NULL::bigint AS last_models_fetch_at_unix_secs,
   NULL::text AS last_models_fetch_error,
@@ -304,7 +304,7 @@ SELECT
   EXTRACT(EPOCH FROM oauth_invalid_at)::bigint AS oauth_invalid_at_unix_secs,
   oauth_invalid_reason,
   status_snapshot,
-  NULL::bigint AS created_at_unix_ms,
+  EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_ms,
   NULL::bigint AS updated_at_unix_secs,
   health_by_format,
   NULL::jsonb AS circuit_breaker_by_format
@@ -1792,6 +1792,24 @@ WHERE id = $1
         Ok(rows_affected > 0)
     }
 
+    pub async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        if key_ids.is_empty() {
+            return Ok(0);
+        }
+        let rows_affected = sqlx::query(
+            r#"
+DELETE FROM provider_api_keys
+WHERE id = ANY($1)
+"#,
+        )
+        .bind(key_ids)
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?
+        .rows_affected();
+        Ok(rows_affected)
+    }
+
     pub async fn update_key_upstream_metadata(
         &self,
         key_id: &str,
@@ -2004,6 +2022,10 @@ impl ProviderCatalogWriteRepository for SqlxProviderCatalogReadRepository {
 
     async fn delete_key(&self, key_id: &str) -> Result<bool, DataLayerError> {
         Self::delete_key(self, key_id).await
+    }
+
+    async fn delete_keys(&self, key_ids: &[String]) -> Result<u64, DataLayerError> {
+        Self::delete_keys(self, key_ids).await
     }
 
     async fn clear_key_oauth_invalid_marker(&self, key_id: &str) -> Result<bool, DataLayerError> {
@@ -2481,6 +2503,50 @@ mod tests {
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
 
     #[tokio::test]
+    async fn postgres_key_summaries_preserve_pool_sort_fields_when_url_is_set() {
+        let Ok(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL") else {
+            eprintln!(
+                "skipping key summary sorting test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .unwrap();
+        // Keep fixtures on this connection; no production catalog rows are changed.
+        sqlx::raw_sql("CREATE TEMP TABLE provider_api_keys (LIKE public.provider_api_keys INCLUDING DEFAULTS);
+            INSERT INTO provider_api_keys (id, provider_id, name, api_key, created_at, last_used_at, internal_priority, total_tokens, total_cost_usd) VALUES
+            ('sort-old', 'sort-provider', 'old', 'secret', to_timestamp(1711000000), to_timestamp(1711000500), 3, 0, 0),
+            ('sort-fresh', 'sort-provider', 'fresh', 'secret', to_timestamp(1711002000), to_timestamp(1711000100), 1, 0, 0),
+            ('sort-active', 'sort-provider', 'active', 'secret', to_timestamp(1711001000), to_timestamp(1711003000), 2, 0, 0);")
+            .execute(&pool).await.unwrap();
+        let repository = SqlxProviderCatalogReadRepository::new(pool.clone());
+        let summaries = repository
+            .list_key_summaries_by_provider_ids(&["sort-provider".into()])
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 3);
+        for (id, created_at, last_used_at, priority) in [
+            ("sort-old", 1711000000, 1711000500, 3),
+            ("sort-fresh", 1711002000, 1711000100, 1),
+            ("sort-active", 1711001000, 1711003000, 2),
+        ] {
+            let key = summaries.iter().find(|key| key.id == id).unwrap();
+            assert_eq!(key.created_at_unix_ms, Some(created_at));
+            assert_eq!(key.last_used_at_unix_secs, Some(last_used_at));
+            assert_eq!(key.internal_priority, priority);
+            assert_eq!(key.encrypted_api_key.as_deref(), Some("summary"));
+            assert!(key.encrypted_auth_config.is_none());
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn repository_constructs_from_lazy_pool() {
         let factory = PostgresPoolFactory::new(PostgresPoolConfig {
             database_url: "postgres://localhost/aether".to_string(),
@@ -2532,6 +2598,14 @@ mod tests {
         assert!(super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX.contains("auto_fetch_models"));
         assert!(!super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
             .contains("FALSE AS auto_fetch_models"));
+    }
+
+    #[test]
+    fn provider_api_key_summary_queries_include_oauth_expiry_for_status_classification() {
+        assert!(super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
+            .contains("EXTRACT(EPOCH FROM expires_at)::bigint AS expires_at_unix_secs"));
+        assert!(!super::LIST_KEY_SUMMARIES_BY_PROVIDER_IDS_PREFIX
+            .contains("NULL::bigint AS expires_at_unix_secs"));
     }
 
     #[test]

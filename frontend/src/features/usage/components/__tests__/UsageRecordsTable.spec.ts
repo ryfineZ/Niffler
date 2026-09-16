@@ -248,6 +248,28 @@ describe('UsageRecordsTable', () => {
     expect(root.textContent).toContain('成本倍率 0.8x')
   })
 
+  it('uses discount terminology for dedicated portal usage records', () => {
+    const root = mountUsageRecordsTable([
+      buildRecord({
+        official_cost: 1,
+        cost: 1.2,
+        discount: 1.2,
+        charge_breakdown: {
+          official_cost: 1,
+          package_debit: 0,
+          package_multiplier: null,
+          wallet_debit: 1.2,
+          wallet_discount: 1.2,
+          user_debit: 1.2,
+        },
+      }),
+    ], { isAdmin: false, showActualCost: false })
+
+    expect(root.textContent).toContain('钱包扣除 $1.20')
+    expect(root.textContent).toContain('折扣 1.2')
+    expect(root.textContent).not.toContain('1.2x')
+  })
+
   it('shows package debit without applying wallet multiplier', () => {
     const root = mountUsageRecordsTable([
       buildRecord({

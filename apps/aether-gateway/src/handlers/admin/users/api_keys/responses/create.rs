@@ -12,6 +12,7 @@ use super::super::helpers::{
 use super::super::paths::admin_user_id_from_api_keys_path;
 
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
+use crate::handlers::public::resolve_user_portal;
 use crate::handlers::shared::normalize_optional_api_key_concurrent_limit;
 use crate::GatewayError;
 use axum::{
@@ -141,8 +142,13 @@ pub(crate) async fn build_admin_create_user_api_key_response(
             }
             group_id
         }
-        None => match state.effective_default_user_group_id().await? {
-            Some(group_id) => {
+        None => match resolve_user_portal(state.app(), &user_id).await? {
+            portal if portal.is_official_usd() => {
+                let Some(group_id) = portal.group_id else {
+                    return Ok(build_admin_users_bad_request_response(
+                        "专属门户用户组未配置",
+                    ));
+                };
                 if let Err(response) =
                     validate_admin_user_api_key_group_id(state, &user_id, &group_id).await?
                 {
@@ -150,11 +156,21 @@ pub(crate) async fn build_admin_create_user_api_key_response(
                 }
                 group_id
             }
-            None => {
-                return Ok(build_admin_users_bad_request_response(
-                    "当前没有可用分组，请先创建或设置默认分组",
-                ));
-            }
+            _ => match state.effective_default_user_group_id().await? {
+                Some(group_id) => {
+                    if let Err(response) =
+                        validate_admin_user_api_key_group_id(state, &user_id, &group_id).await?
+                    {
+                        return Ok(response);
+                    }
+                    group_id
+                }
+                None => {
+                    return Ok(build_admin_users_bad_request_response(
+                        "当前没有可用分组，请先创建或设置默认分组",
+                    ));
+                }
+            },
         },
     };
 

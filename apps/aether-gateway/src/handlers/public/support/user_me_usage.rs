@@ -28,8 +28,8 @@ use crate::GatewayError;
 
 use super::{
     admin_stats_bad_request_response, build_auth_error_response, build_auth_wallet_summary_payload,
-    parse_bounded_u32, query_param_value, resolve_authenticated_local_user, round_to,
-    unix_secs_to_rfc3339, AdminStatsTimeRange, AppState, GatewayPublicRequestContext,
+    parse_bounded_u32, query_param_value, resolve_authenticated_local_user, resolve_user_portal,
+    round_to, unix_secs_to_rfc3339, AdminStatsTimeRange, AppState, GatewayPublicRequestContext,
 };
 
 const USERS_ME_USAGE_DATA_UNAVAILABLE_DETAIL: &str = "用户用量数据暂不可用";
@@ -759,6 +759,23 @@ fn build_users_me_usage_active_payload(
     payload
 }
 
+fn apply_users_me_usage_discount_terms(payload: &mut serde_json::Value) {
+    let Some(record) = payload.as_object_mut() else {
+        return;
+    };
+    if let Some(value) = record.remove("sales_multiplier") {
+        record.insert("discount".to_string(), value);
+    }
+    if let Some(breakdown) = record
+        .get_mut("charge_breakdown")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        if let Some(value) = breakdown.remove("wallet_multiplier") {
+            breakdown.insert("wallet_discount".to_string(), value);
+        }
+    }
+}
+
 fn users_me_usage_is_failed(item: &StoredRequestUsageAudit) -> bool {
     let has_failure_signal = item.status_code.is_some_and(|value| value >= 400)
         || item
@@ -1053,6 +1070,16 @@ pub(super) async fn handle_users_me_usage_get(
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
+    };
+    let use_discount_terms = match resolve_user_portal(state, &auth.user.id).await {
+        Ok(portal) => portal.is_official_usd(),
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
     };
     let query = request_context.request_query_string.as_deref();
     let time_range = match AdminStatsTimeRange::resolve_optional(query) {
@@ -1403,6 +1430,9 @@ pub(super) async fn handle_users_me_usage_get(
                 &record_attempt_info_by_usage_id,
                 request_candidate_reader_available,
             );
+            if use_discount_terms {
+                apply_users_me_usage_discount_terms(&mut record);
+            }
             record
         })
         .collect::<Vec<_>>();
@@ -1452,6 +1482,16 @@ pub(super) async fn handle_users_me_usage_active_get(
     let auth = match resolve_authenticated_local_user(state, request_context, headers).await {
         Ok(value) => value,
         Err(response) => return response,
+    };
+    let use_discount_terms = match resolve_user_portal(state, &auth.user.id).await {
+        Ok(portal) => portal.is_official_usd(),
+        Err(err) => {
+            return build_auth_error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("user portal lookup failed: {err:?}"),
+                false,
+            )
+        }
     };
     let ids = parse_users_me_usage_ids(request_context.request_query_string.as_deref());
     // When polling for active (pending/streaming) requests without specific ids,
@@ -1518,7 +1558,13 @@ pub(super) async fn handle_users_me_usage_active_get(
     Json(json!({
         "requests": items
             .iter()
-            .map(|item| build_users_me_usage_active_payload(item, include_actual_cost))
+            .map(|item| {
+                let mut payload = build_users_me_usage_active_payload(item, include_actual_cost);
+                if use_discount_terms {
+                    apply_users_me_usage_discount_terms(&mut payload);
+                }
+                payload
+            })
             .collect::<Vec<_>>(),
     }))
     .into_response()
@@ -1714,10 +1760,34 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_users_me_usage_active_payload, build_users_me_usage_record_payload,
-        users_me_usage_client_is_stream, users_me_usage_is_failed,
-        users_me_usage_upstream_is_stream,
+        apply_users_me_usage_discount_terms, build_users_me_usage_active_payload,
+        build_users_me_usage_record_payload, users_me_usage_client_is_stream,
+        users_me_usage_is_failed, users_me_usage_upstream_is_stream,
     };
+
+    #[test]
+    fn dedicated_portal_usage_exposes_discount_terms_only() {
+        let mut payload = json!({
+            "sales_multiplier": 1.2,
+            "charge_breakdown": {
+                "package_multiplier": 1.0,
+                "wallet_multiplier": 1.2
+            }
+        });
+
+        apply_users_me_usage_discount_terms(&mut payload);
+
+        assert_eq!(payload["discount"], json!(1.2));
+        assert_eq!(payload["charge_breakdown"]["wallet_discount"], json!(1.2));
+        assert_eq!(
+            payload["charge_breakdown"]["package_multiplier"],
+            json!(1.0)
+        );
+        assert!(payload.get("sales_multiplier").is_none());
+        assert!(payload["charge_breakdown"]
+            .get("wallet_multiplier")
+            .is_none());
+    }
 
     fn sample_usage(status: &str) -> StoredRequestUsageAudit {
         StoredRequestUsageAudit::new(

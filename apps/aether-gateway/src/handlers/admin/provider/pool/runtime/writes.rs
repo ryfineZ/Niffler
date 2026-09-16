@@ -3,7 +3,9 @@ use super::keys::{
     pool_model_cooldown_index_key, pool_model_cooldown_key, pool_sticky_key,
     pool_stream_timeout_key,
 };
-use crate::handlers::admin::provider::pool::config::admin_provider_pool_cache_affinity_enabled;
+use crate::handlers::admin::provider::pool::config::{
+    admin_provider_pool_cache_affinity_enabled, admin_provider_pool_lru_runtime_enabled,
+};
 use crate::handlers::admin::provider::shared::support::{
     admin_provider_pool_quota_probe_active_members_key, AdminProviderPoolConfig,
     AdminProviderPoolUnschedulableRule,
@@ -73,7 +75,7 @@ fn enabled_pool_presets(pool_config: &AdminProviderPoolConfig) -> impl Iterator<
 }
 
 fn should_touch_lru(pool_config: &AdminProviderPoolConfig) -> bool {
-    pool_config.lru_enabled || enabled_pool_presets(pool_config).next().is_some()
+    admin_provider_pool_lru_runtime_enabled(pool_config)
 }
 
 fn should_record_latency(pool_config: &AdminProviderPoolConfig) -> bool {
@@ -991,7 +993,7 @@ mod tests {
         assert_eq!(runtime.sticky_sessions_by_key.get("key-1"), None);
         assert_eq!(runtime.cost_window_usage_by_key.get("key-1"), Some(&120));
         assert_eq!(runtime.latency_avg_ms_by_key.get("key-1"), Some(&80.0));
-        assert!(runtime.lru_score_by_key.contains_key("key-1"));
+        assert!(!runtime.lru_score_by_key.contains_key("key-1"));
     }
 
     #[tokio::test]

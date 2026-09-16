@@ -363,8 +363,10 @@ pub(super) async fn handle_epay_notify(
                 gateway_order_id: params.get("trade_no").cloned(),
                 amount_usd,
                 pay_amount: Some(pay_amount),
-                pay_currency: Some(config.pay_currency),
-                exchange_rate: Some(config.usd_exchange_rate),
+                // 易支付回调不返回币种。这里不能把回调时的最新配置币种
+                // 当作本次付款币种，数据层会使用订单保存的币种和汇率结算。
+                pay_currency: None,
+                exchange_rate: None,
                 payload_hash,
                 payload,
                 signature_valid: true,

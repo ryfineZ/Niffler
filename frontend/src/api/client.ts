@@ -182,8 +182,25 @@ class ApiClient {
       return Promise.reject(error)
     }
 
-    // 认证请求错误,直接返回
+    // Authentication failures must stay on the current page and must never use
+    // portal metadata to reveal whether an account exists on another host.
     if (isAuthRequest(originalRequest?.url)) {
+      return Promise.reject(error)
+    }
+
+    const responseData = error.response.data as Record<string, unknown> | undefined
+    if (error.response.status === 409 && responseData?.portal_mismatch === true) {
+      const canonicalUrl = responseData.canonical_url
+      if (typeof canonicalUrl === 'string' && canonicalUrl.trim()) {
+        try {
+          const target = new URL(canonicalUrl, window.location.origin)
+          if (target.protocol === 'https:' || target.protocol === 'http:') {
+            window.location.assign(target.toString())
+          }
+        } catch (redirectError) {
+          log.warn('Invalid account portal redirect URL', redirectError)
+        }
+      }
       return Promise.reject(error)
     }
 

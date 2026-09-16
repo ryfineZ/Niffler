@@ -19,7 +19,8 @@ pub(crate) use self::adaptive::{
 };
 pub(crate) use self::attempt::{
     attempt_identity_from_report_context, build_local_attempt_identities,
-    insert_pool_key_lease_report_context_fields, local_attempt_slot_count,
+    insert_pool_key_lease_report_context_fields,
+    insert_pool_scheduling_presets_override_report_context_field, local_attempt_slot_count,
     local_execution_candidate_metadata_from_report_context, ExecutionAttemptIdentity,
     LocalExecutionCandidateMetadata, SCHEDULER_AFFINITY_EPOCH_REPORT_FIELD,
 };
@@ -42,6 +43,7 @@ pub(crate) use self::policy::{
     local_stream_failover_policy_from_transport, resolve_local_failover_policy,
     resolve_local_stream_failover_policy, validate_endpoint_stream_failover_config,
     LocalFailoverPolicy, LocalFailoverRegexRule, LocalStreamFailoverPolicy,
+    StreamFailoverAttemptAdmission, StreamFailoverAttemptBudget,
 };
 pub(crate) use self::recovery::{
     analyze_local_failover, recover_local_failover_decision, LocalFailoverAnalysis,
@@ -247,3 +249,7 @@ fn trace_header_is_sensitive(name: &str) -> bool {
     .iter()
     .any(|candidate| name.trim().eq_ignore_ascii_case(candidate))
 }
+
+pub(crate) use policy::{
+    local_stream_failover_policy_to_value, read_global_stream_failover_policy,
+};

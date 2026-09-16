@@ -16,7 +16,9 @@ function mountSection(options: {
   document.body.appendChild(root)
   const onSave = vi.fn()
   const onUpdate = vi.fn()
+  const onTelemetryUpdate = vi.fn()
   const app = createApp(ProviderAdvancedSection, {
+    telemetryEnabled: false,
     enabled: options.enabled ?? false,
     loading: options.loading ?? false,
     saving: options.saving ?? false,
@@ -24,10 +26,11 @@ function mountSection(options: {
     hasChanges: options.hasChanges ?? true,
     onSave,
     'onUpdate:enabled': onUpdate,
+    'onUpdate:telemetryEnabled': onTelemetryUpdate,
   })
   app.mount(root)
   mountedApps.push({ app, root })
-  return { root, onSave, onUpdate }
+  return { root, onSave, onUpdate, onTelemetryUpdate }
 }
 
 afterEach(() => {
@@ -54,11 +57,21 @@ describe('ProviderAdvancedSection', () => {
     expect(onSave).toHaveBeenCalledOnce()
   })
 
+  it('keeps telemetry off by default and emits only its own change', async () => {
+    const { root, onUpdate, onTelemetryUpdate } = mountSection()
+    await nextTick()
+    const toggle = root.querySelector<HTMLButtonElement>('#codex-telemetry')!
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    toggle.click()
+    expect(onTelemetryUpdate).toHaveBeenCalledWith(true)
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
   it('blocks editing and reports the load error', async () => {
     const { root } = mountSection({ loadError: true })
     await nextTick()
 
-    expect(root.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(true)
+    expect(Array.from(root.querySelectorAll<HTMLButtonElement>('[role="switch"]')).every(button => button.disabled)).toBe(true)
     expect(root.querySelector('[role="alert"]')?.textContent).toContain('配置加载失败')
   })
 
@@ -68,6 +81,6 @@ describe('ProviderAdvancedSection', () => {
 
     expect(root.textContent).toContain('保存中')
     expect(root.querySelector<HTMLButtonElement>('button')?.disabled).toBe(true)
-    expect(root.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(true)
+    expect(Array.from(root.querySelectorAll<HTMLButtonElement>('[role="switch"]')).every(button => button.disabled)).toBe(true)
   })
 })

@@ -9,6 +9,7 @@ use super::{
 };
 use aether_data_contracts::repository::billing::{
     BillingReadRepository, StoredBillingModelContext, UserDailyQuotaAvailabilityRecord,
+    UserPlanEntitlementRecord, UserPlanQuotaSummaryRecord,
 };
 use aether_data_contracts::DataLayerError;
 
@@ -42,12 +43,139 @@ impl BillingReadRepository for StaticDailyQuotaBillingRepository {
     }
 }
 
+#[derive(Debug)]
+struct UnavailableQuotaSummaryBillingRepository {
+    entitlement: UserPlanEntitlementRecord,
+}
+
+#[async_trait::async_trait]
+impl BillingReadRepository for UnavailableQuotaSummaryBillingRepository {
+    async fn find_model_context(
+        &self,
+        provider_id: &str,
+        provider_api_key_id: Option<&str>,
+        global_model_name: &str,
+    ) -> Result<Option<StoredBillingModelContext>, DataLayerError> {
+        let _ = (provider_id, provider_api_key_id, global_model_name);
+        Ok(None)
+    }
+
+    async fn list_user_plan_entitlements(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<Vec<UserPlanEntitlementRecord>>, DataLayerError> {
+        let entitlements = if user_id == self.entitlement.user_id {
+            vec![self.entitlement.clone()]
+        } else {
+            Vec::new()
+        };
+        Ok(Some(entitlements))
+    }
+
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        _user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, DataLayerError> {
+        Err(DataLayerError::UnexpectedValue(
+            "simulated quota summary failure".to_string(),
+        ))
+    }
+}
+
 fn stable_dashboard_now() -> chrono::DateTime<Utc> {
     Utc::now()
         .date_naive()
         .and_hms_opt(12, 0, 0)
         .expect("stable dashboard test time should build")
         .and_utc()
+}
+
+#[tokio::test]
+async fn billing_entitlements_stay_available_when_quota_summary_fails() {
+    let now = Utc::now();
+    let user = sample_auth_user(now);
+    let access_token = build_test_auth_token(
+        "access",
+        serde_json::Map::from_iter([
+            ("user_id".to_string(), json!(user.id)),
+            ("role".to_string(), json!(user.role)),
+            (
+                "created_at".to_string(),
+                json!(user.created_at.map(|value| value.to_rfc3339())),
+            ),
+            (
+                "session_id".to_string(),
+                json!("session-billing-entitlements"),
+            ),
+        ]),
+        now + chrono::Duration::hours(1),
+    );
+    let entitlement = UserPlanEntitlementRecord {
+        id: "entitlement-1".to_string(),
+        user_id: user.id.clone(),
+        plan_id: "plan-1".to_string(),
+        payment_order_id: "order-1".to_string(),
+        status: "active".to_string(),
+        starts_at_unix_secs: (now - chrono::Duration::hours(1)).timestamp() as u64,
+        expires_at_unix_secs: (now + chrono::Duration::days(1)).timestamp() as u64,
+        allowed_provider_ids: vec!["provider-1".to_string()],
+        entitlements_snapshot: json!([{
+            "type": "daily_quota",
+            "daily_quota_usd": 10.0
+        }]),
+        created_at_unix_secs: now.timestamp() as u64,
+        updated_at_unix_secs: now.timestamp() as u64,
+    };
+    let billing_repository = Arc::new(UnavailableQuotaSummaryBillingRepository { entitlement });
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![
+        user.clone()
+    ]));
+    let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![sample_auth_wallet(
+        &user.id, now,
+    )]));
+    let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::default());
+    let session = sample_auth_session(
+        &user.id,
+        "session-billing-entitlements",
+        "device-billing-entitlements",
+        "refresh-billing-entitlements",
+        now,
+    );
+    let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
+        start_auth_gateway_with_builder(|| {
+            AppState::new()
+                .expect("gateway should build")
+                .with_data_state_for_tests(
+                    GatewayDataState::with_auth_billing_and_wallet_for_tests(
+                        auth_repository,
+                        billing_repository,
+                        wallet_repository,
+                    )
+                    .with_user_reader(user_repository),
+                )
+                .with_auth_sessions_for_tests([session])
+        })
+        .await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/billing/entitlements"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", "device-billing-entitlements")
+        .header("user-agent", "AetherTest/1.0")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(payload["items"][0]["id"], "entitlement-1");
+    assert_eq!(payload["quota_summary"], serde_json::Value::Null);
+    assert_eq!(payload["quota_summary_status"], "unavailable");
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
 }
 
 #[tokio::test]

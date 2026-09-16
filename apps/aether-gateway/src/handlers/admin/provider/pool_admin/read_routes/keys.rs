@@ -5,8 +5,7 @@ use super::{
     parse_admin_pool_status_filter, pool_payloads, pool_selection,
     read_admin_provider_pool_cooldown_key_ids, read_admin_provider_pool_runtime_state,
     AdminPoolKeySort, AdminPoolKeySortDirection, AdminPoolKeySortField,
-    AdminProviderPoolRuntimeState, ProviderCatalogKeyListOrder, ProviderCatalogKeyListQuery,
-    ADMIN_POOL_PROVIDER_CATALOG_READER_UNAVAILABLE_DETAIL,
+    AdminProviderPoolRuntimeState, ADMIN_POOL_PROVIDER_CATALOG_READER_UNAVAILABLE_DETAIL,
 };
 use crate::ai_serving::{provider_key_pool_score_id, provider_key_pool_score_scope};
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -16,7 +15,9 @@ use aether_admin::provider::pool as admin_provider_pool_pure;
 use aether_data_contracts::repository::pool_scores::{
     GetPoolMemberScoresByIdsQuery, PoolMemberIdentity, StoredPoolMemberScore,
 };
-use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
+use aether_data_contracts::repository::provider_catalog::{
+    ProviderCatalogKeyListOrder, ProviderCatalogKeyListQuery, StoredProviderCatalogKey,
+};
 use aether_data_contracts::repository::usage::StoredProviderApiKeyWindowUsageSummary;
 use axum::{
     body::Body,
@@ -29,7 +30,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tracing::warn;
 
@@ -180,14 +181,6 @@ fn admin_pool_key_summary_payload(
     })
 }
 
-fn admin_pool_current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
-}
-
 async fn read_admin_pool_scores_by_key_id(
     state: &AdminAppState<'_>,
     provider_id: &str,
@@ -288,7 +281,7 @@ fn admin_pool_sort_keys_for_request(keys: &mut [StoredProviderCatalogKey], sort:
                 .then(left.id.cmp(&right.id))
             });
         }
-        AdminPoolKeySortField::Score => {}
+        AdminPoolKeySortField::Score | AdminPoolKeySortField::Capacity => {}
     }
 }
 
@@ -323,7 +316,9 @@ fn admin_pool_repository_key_order(sort: AdminPoolKeySort) -> ProviderCatalogKey
         (AdminPoolKeySortField::LastUsedAt, AdminPoolKeySortDirection::Desc) => {
             ProviderCatalogKeyListOrder::LastUsedAtDesc
         }
-        (AdminPoolKeySortField::Score, _) => ProviderCatalogKeyListOrder::Name,
+        (AdminPoolKeySortField::Score | AdminPoolKeySortField::Capacity, _) => {
+            ProviderCatalogKeyListOrder::Name
+        }
     }
 }
 
@@ -346,7 +341,10 @@ fn admin_pool_can_use_repository_page(
         && quick_selectors.is_empty()
         && plan_filter == "all"
         && matches!(status, "all" | "active" | "inactive" | "disabled")
-        && !matches!(sort.field, AdminPoolKeySortField::Score)
+        && !matches!(
+            sort.field,
+            AdminPoolKeySortField::Score | AdminPoolKeySortField::Capacity
+        )
 }
 
 pub(super) async fn build_admin_pool_list_keys_response(
@@ -409,62 +407,128 @@ pub(super) async fn build_admin_pool_list_keys_response(
         }
     };
 
-    let Some(provider) = state
+    let providers = state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&provider_id))
-        .await?
-        .into_iter()
-        .next()
-    else {
+        .await?;
+    if providers.is_empty() {
         return Ok(build_admin_pool_error_response(
             http::StatusCode::NOT_FOUND,
-            format!("Provider {provider_id} 不存在"),
+            "提供商不存在",
         ));
+    }
+    let provider_ids = providers.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let now_ms = crate::clock::current_unix_ms();
+    let now_unix_secs = now_ms / 1000;
+    let (capacity, mut capacity_available) = match state
+        .app()
+        .data
+        .summarize_capacity_errors(&provider_ids, now_ms.saturating_sub(86_400_000), now_ms)
+        .await
+    {
+        Ok(capacity) => (capacity, true),
+        Err(error) => {
+            warn!(
+                event_name = "pool_capacity_statistics_unavailable",
+                ?error,
+                "capacity statistics unavailable"
+            );
+            (Vec::new(), false)
+        }
     };
-
-    let pool_config = admin_provider_pool_config(&provider);
-    let page_offset = page.saturating_sub(1).saturating_mul(page_size);
-    let sort_by_score = matches!(sort.field, AdminPoolKeySortField::Score);
-    let cooldown_key_ids =
-        read_admin_provider_pool_cooldown_key_ids(state.runtime_state(), &provider.id)
+    let mut capacity_by_key = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for model in capacity {
+        let ttl = match
+            crate::handlers::admin::provider::pool::runtime::read_capacity_model_cooldown_seconds(
+                state.runtime_state(),
+                &model.provider_id,
+                &model.key_id,
+                &model.model,
+            )
             .await
+        {
+            Ok(ttl) => ttl,
+            Err(error) => {
+                warn!(
+                    event_name = "pool_capacity_cooldown_unavailable",
+                    provider_id = %model.provider_id,
+                    key_id = %model.key_id,
+                    ?error,
+                    "capacity cooldown unavailable; returning ordinary account list without capacity data"
+                );
+                capacity_available = false;
+                capacity_by_key.clear();
+                break;
+            }
+        };
+        let mut payload =
+            serde_json::to_value(&model).map_err(|err| GatewayError::Internal(err.to_string()))?;
+        payload["cooldown_ttl_seconds"] = json!(ttl);
+        payload["cooldown_expires_at_ms"] = json!(now_ms.saturating_add(ttl.saturating_mul(1000)));
+        payload["state"] = json!(if ttl > 0 {
+            "cooldown"
+        } else if model.last_success_at_ms.is_some() {
+            "recovered"
+        } else {
+            "pending"
+        });
+        capacity_by_key
+            .entry(model.key_id)
+            .or_default()
+            .push(payload);
+    }
+    let capacity_count = |id: &str| -> u64 {
+        capacity_by_key
+            .get(id)
             .into_iter()
-            .collect::<BTreeSet<_>>();
-    let now_unix_secs = admin_pool_current_unix_secs();
-
-    let use_repository_page = admin_pool_can_use_repository_page(
-        search.as_deref(),
-        &quick_selectors,
-        &plan_filter,
-        &status,
-        sort,
-    );
-    let (summary, total, keys, preloaded_pool_scores_by_key_id) = if use_repository_page {
-        let summary_keys = state
-            .list_provider_catalog_key_summaries_by_provider_ids(std::slice::from_ref(&provider.id))
-            .await?;
-        let summary = admin_pool_key_summary_payload(
-            state,
-            &summary_keys,
-            &provider.provider_type,
-            &cooldown_key_ids,
-            now_unix_secs,
-        );
-        let key_page = state
-            .list_provider_catalog_key_page(&ProviderCatalogKeyListQuery {
-                provider_id: provider.id.clone(),
-                search: None,
-                is_active: admin_pool_repository_key_is_active_filter(&status),
-                offset: page_offset,
-                limit: page_size,
-                order: admin_pool_repository_key_order(sort),
-            })
-            .await?;
-        (summary, key_page.total, key_page.items, None)
-    } else {
-        let mut loaded_keys = state
-            .list_provider_catalog_keys_by_provider_ids(std::slice::from_ref(&provider.id))
+            .flatten()
+            .map(|m| m["count_24h"].as_u64().unwrap_or(0))
+            .sum()
+    };
+    let capacity_filter = crate::handlers::shared::query_param_value(query, "capacity");
+    if !matches!(
+        capacity_filter.as_deref(),
+        None | Some("all" | "recent" | "unresolved")
+    ) {
+        return Ok(build_admin_pool_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "容量筛选无效",
+        ));
+    }
+    if !capacity_available
+        && (matches!(sort.field, AdminPoolKeySortField::Capacity)
+            || matches!(capacity_filter.as_deref(), Some("recent" | "unresolved")))
+    {
+        return Ok(build_admin_pool_error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "容量统计暂不可用，请稍后重试",
+        ));
+    }
+    // Load compact summaries for aggregation; only hydrate credentials for the requested page.
+    let all_keys = if search.is_some() || !quick_selectors.is_empty() {
+        state
+            .list_provider_catalog_keys_by_provider_ids(&provider_ids)
             .await?
-            .into_iter()
+    } else {
+        state
+            .list_provider_catalog_key_summaries_by_provider_ids(&provider_ids)
+            .await?
+    };
+    let mut keys = Vec::new();
+    let mut by_plan = BTreeMap::<String, serde_json::Value>::new();
+    let mut by_status = BTreeMap::<String, serde_json::Value>::new();
+    let mut total_before_filters = 0;
+    let mut capacity_accounts = 0;
+    let mut capacity_total = 0u64;
+    let mut all_scores = BTreeMap::new();
+    for provider in &providers {
+        let cooldown_ids =
+            read_admin_provider_pool_cooldown_key_ids(state.runtime_state(), &provider.id)
+                .await
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+        let scoped = all_keys
+            .iter()
+            .filter(|key| key.provider_id == provider.id)
             .filter(|key| {
                 pool_selection::admin_pool_matches_search(
                     state,
@@ -474,65 +538,172 @@ pub(super) async fn build_admin_pool_list_keys_response(
                 )
             })
             .filter(|key| {
-                quick_selectors.iter().all(|selector| {
+                quick_selectors.iter().all(|q| {
                     pool_selection::admin_pool_matches_quick_selector(
                         state,
                         key,
                         &provider.provider_type,
-                        selector,
+                        q,
                     )
                 })
             })
+            .cloned()
             .collect::<Vec<_>>();
         let summary = admin_pool_key_summary_payload(
             state,
-            &loaded_keys,
+            &scoped,
             &provider.provider_type,
-            &cooldown_key_ids,
+            &cooldown_ids,
             now_unix_secs,
         );
-        loaded_keys.retain(|key| {
-            let plan_bucket =
-                pool_selection::admin_pool_key_plan_bucket(state, key, &provider.provider_type);
-            let status_bucket = pool_selection::admin_pool_key_status_bucket(
-                key,
-                &provider.provider_type,
-                &cooldown_key_ids,
-                now_unix_secs,
-            );
-            pool_selection::admin_pool_plan_filter_matches(&plan_filter, &plan_bucket)
-                && pool_selection::admin_pool_status_filter_matches(&status, status_bucket, key)
-        });
-        let preloaded_pool_scores_by_key_id = if sort_by_score {
-            let key_ids = loaded_keys
+        total_before_filters += scoped.len();
+        for (field, target) in [("plans", &mut by_plan), ("statuses", &mut by_status)] {
+            for bucket in summary[field].as_array().into_iter().flatten() {
+                let code = bucket["code"].as_str().unwrap_or_default().to_string();
+                let entry = target.entry(code).or_insert_with(
+                    || json!({"code": bucket["code"], "label": bucket["label"], "count": 0}),
+                );
+                entry["count"] = json!(
+                    entry["count"].as_u64().unwrap_or(0) + bucket["count"].as_u64().unwrap_or(0)
+                );
+            }
+        }
+        for key in scoped {
+            let count = capacity_count(&key.id);
+            if count > 0 {
+                capacity_accounts += 1;
+                capacity_total += count;
+            }
+            let matches_capacity = match capacity_filter.as_deref() {
+                Some("recent") => count > 0,
+                Some("unresolved") => capacity_by_key
+                    .get(&key.id)
+                    .is_some_and(|models| models.iter().any(|m| m["state"] != "recovered")),
+                _ => true,
+            };
+            if matches_capacity
+                && pool_selection::admin_pool_plan_filter_matches(
+                    &plan_filter,
+                    &pool_selection::admin_pool_key_plan_bucket(
+                        state,
+                        &key,
+                        &provider.provider_type,
+                    ),
+                )
+                && pool_selection::admin_pool_status_filter_matches(
+                    &status,
+                    pool_selection::admin_pool_key_status_bucket(
+                        &key,
+                        &provider.provider_type,
+                        &cooldown_ids,
+                        now_unix_secs,
+                    ),
+                    &key,
+                )
+            {
+                keys.push(key);
+            }
+        }
+        if matches!(sort.field, AdminPoolKeySortField::Score) {
+            let ids = keys
                 .iter()
-                .map(|key| key.id.clone())
+                .filter(|k| k.provider_id == provider.id)
+                .map(|k| k.id.clone())
                 .collect::<Vec<_>>();
-            let scores = read_admin_pool_scores_by_key_id(state, &provider.id, &key_ids)
-                .await
-                .unwrap_or_default();
-            admin_pool_sort_keys_by_score(&mut loaded_keys, &scores, sort.direction);
-            Some(scores)
-        } else {
-            admin_pool_sort_keys_for_request(&mut loaded_keys, sort);
-            None
-        };
-        let total = loaded_keys.len();
-        let keys = loaded_keys
-            .into_iter()
-            .skip(page_offset)
-            .take(page_size)
+            all_scores.extend(read_admin_pool_scores_by_key_id(state, &provider.id, &ids).await?);
+        }
+    }
+    let use_repository_page = matches!(capacity_filter.as_deref(), None | Some("all"))
+        && admin_pool_can_use_repository_page(
+            search.as_deref(),
+            &quick_selectors,
+            &plan_filter,
+            &status,
+            sort,
+        );
+    let (total, ids, page_keys) = if use_repository_page {
+        let key_page = state
+            .list_provider_catalog_key_page(&ProviderCatalogKeyListQuery {
+                provider_id: provider_id.clone(),
+                search: None,
+                is_active: admin_pool_repository_key_is_active_filter(&status),
+                offset: page.saturating_sub(1).saturating_mul(page_size),
+                limit: page_size,
+                order: admin_pool_repository_key_order(sort),
+            })
+            .await?;
+        let ids = key_page
+            .items
+            .iter()
+            .map(|key| key.id.clone())
             .collect::<Vec<_>>();
-        (summary, total, keys, preloaded_pool_scores_by_key_id)
+        (key_page.total, ids, key_page.items)
+    } else {
+        if matches!(sort.field, AdminPoolKeySortField::Capacity) {
+            keys.sort_by(|a, b| {
+                let cmp = capacity_count(&a.id).cmp(&capacity_count(&b.id));
+                (if sort.direction == AdminPoolKeySortDirection::Desc {
+                    cmp.reverse()
+                } else {
+                    cmp
+                })
+                .then(a.id.cmp(&b.id))
+            });
+        } else if matches!(sort.field, AdminPoolKeySortField::Score) {
+            admin_pool_sort_keys_by_score(&mut keys, &all_scores, sort.direction);
+        } else {
+            admin_pool_sort_keys_for_request(&mut keys, sort);
+        }
+        let total = keys.len();
+        let ids = keys
+            .into_iter()
+            .skip(page.saturating_sub(1).saturating_mul(page_size))
+            .take(page_size)
+            .map(|k| k.id)
+            .collect::<Vec<_>>();
+        let page_keys = state.read_provider_catalog_keys_by_ids(&ids).await?;
+        (total, ids, page_keys)
     };
+    let mut payloads = BTreeMap::<String, serde_json::Value>::new();
+    for provider in &providers {
+        let keys = page_keys
+            .iter()
+            .filter(|key| key.provider_id == provider.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            continue;
+        }
+        for mut payload in hydrate_pool_keys(state, provider, keys, now_unix_secs).await? {
+            let id = payload["key_id"].as_str().unwrap_or_default().to_string();
+            payload["provider_id"] = json!(provider.id);
+            payload["provider_name"] = json!(provider.name);
+            if capacity_available {
+                payload["capacity"] = json!({"count_24h": capacity_count(&id), "models": capacity_by_key.get(&id).cloned().unwrap_or_default()});
+            }
+            payloads.insert(id, payload);
+        }
+    }
+    let items = ids
+        .iter()
+        .filter_map(|id| payloads.remove(id))
+        .collect::<Vec<_>>();
+    Ok(Json(json!({"total": total, "page": page, "page_size": page_size,
+        "summary": {"total": total_before_filters, "plans": by_plan.into_values().collect::<Vec<_>>(),
+            "statuses": by_status.into_values().collect::<Vec<_>>(),
+            "capacity_available": capacity_available, "capacity_accounts": capacity_accounts, "capacity_count_24h": capacity_total}, "keys": items})).into_response())
+}
 
+async fn hydrate_pool_keys(
+    state: &AdminAppState<'_>,
+    provider: &aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider,
+    keys: Vec<StoredProviderCatalogKey>,
+    now_unix_secs: u64,
+) -> Result<Vec<serde_json::Value>, GatewayError> {
+    let pool_config = admin_provider_pool_config(provider);
     let key_ids = keys.iter().map(|key| key.id.clone()).collect::<Vec<_>>();
-    let pool_scores_by_key_id = match preloaded_pool_scores_by_key_id {
-        Some(scores) => scores,
-        None => read_admin_pool_scores_by_key_id(state, &provider.id, &key_ids)
-            .await
-            .unwrap_or_default(),
-    };
+    let pool_scores_by_key_id =
+        read_admin_pool_scores_by_key_id(state, &provider.id, &key_ids).await?;
     let endpoints = state
         .list_provider_catalog_endpoints_by_provider_ids(std::slice::from_ref(&provider.id))
         .await?;
@@ -590,12 +761,5 @@ pub(super) async fn build_admin_pool_list_keys_response(
         })
         .collect::<Vec<_>>();
 
-    Ok(Json(json!({
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "summary": summary,
-        "keys": items,
-    }))
-    .into_response())
+    Ok(items)
 }

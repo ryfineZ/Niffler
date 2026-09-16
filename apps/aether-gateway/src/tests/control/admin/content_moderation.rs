@@ -4,26 +4,26 @@ use aether_data::repository::auth::InMemoryAuthApiKeySnapshotRepository;
 use aether_data::repository::content_moderation_evidence::InsertContentModerationEvidenceRecord;
 use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
 use aether_data::repository::users::{InMemoryUserReadRepository, StoredUserAuthRecord};
-use aether_data::{DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
 use serde_json::json;
 
 use super::super::{
     build_router_with_state, sample_currently_usable_auth_snapshot, sample_endpoint, sample_key,
-    sample_provider, start_server, AppState,
+    sample_provider, start_server,
 };
 use crate::constants::{
     GATEWAY_HEADER, TRUSTED_ADMIN_SESSION_ID_HEADER, TRUSTED_ADMIN_USER_ID_HEADER,
     TRUSTED_ADMIN_USER_ROLE_HEADER,
 };
-use crate::data::{GatewayDataConfig, GatewayDataState};
 
 #[tokio::test]
-async fn gateway_returns_readable_names_for_content_moderation_evidence() {
-    let mut pool = SqlPoolConfig::default();
-    pool.min_connections = 0;
-    pool.max_connections = 1;
-    let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)
-        .expect("sqlite config should build");
+async fn gateway_returns_readable_names_for_content_moderation_evidence_when_url_is_set() {
+    let Some(state) = crate::data::tests::postgres_app_state_when_url_is_set(
+        "gateway_returns_readable_names_for_content_moderation_evidence",
+    )
+    .await
+    else {
+        return;
+    };
 
     let user = sample_content_moderation_user("user-content-moderation", "alice-review");
     let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users([user]));
@@ -59,24 +59,12 @@ async fn gateway_returns_readable_names_for_content_moderation_evidence() {
         vec![upstream_key],
     ));
 
-    let data_state =
-        GatewayDataState::from_config(GatewayDataConfig::from_database_config(database))
-            .expect("data state should build")
-            .with_user_reader(user_repository)
-            .with_auth_api_key_reader(auth_repository)
-            .attach_provider_catalog_repository_for_tests(provider_catalog_repository);
-    let state = AppState::new()
-        .expect("gateway should build")
-        .with_data_state_for_tests(data_state);
-
-    state
-        .prepare_database_for_startup()
-        .await
-        .expect("sqlite startup preparation should succeed");
-    state
-        .run_database_migrations()
-        .await
-        .expect("sqlite migrations should run");
+    let data_state = (*state.data)
+        .clone()
+        .with_user_reader(user_repository)
+        .with_auth_api_key_reader(auth_repository)
+        .attach_provider_catalog_repository_for_tests(provider_catalog_repository);
+    let state = state.with_data_state_for_tests(data_state);
     state
         .data
         .insert_content_moderation_evidence(InsertContentModerationEvidenceRecord {

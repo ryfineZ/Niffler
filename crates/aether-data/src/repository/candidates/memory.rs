@@ -54,6 +54,32 @@ impl InMemoryRequestCandidateRepository {
 
 #[async_trait]
 impl RequestCandidateReadRepository for InMemoryRequestCandidateRepository {
+    async fn summarize_capacity_errors(
+        &self,
+        provider_ids: &[String],
+        since_ms: u64,
+        until_ms: u64,
+    ) -> Result<
+        Vec<aether_data_contracts::repository::candidates::CapacityModelSummary>,
+        DataLayerError,
+    > {
+        let rows = self
+            .by_id
+            .read()
+            .expect("candidate repository lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(
+            aether_data_contracts::repository::candidates::summarize_capacity_candidates(
+                &rows,
+                provider_ids,
+                since_ms,
+                until_ms,
+            ),
+        )
+    }
+
     async fn find_billing_admission(
         &self,
         request_id: &str,
@@ -448,7 +474,7 @@ impl RequestCandidateWriteRepository for InMemoryRequestCandidateRepository {
         candidate: UpsertRequestCandidateRecord,
         admission: BillingRequestAdmissionInput,
     ) -> Result<(StoredRequestCandidate, BillingRequestAdmissionRecord), DataLayerError> {
-        super::admission::validate_candidate_admission(&candidate, &admission)?;
+        super::admission::validate_candidate_admission_identity(&candidate, &admission)?;
         let created_at_unix_ms = super::admission::current_unix_ms();
         let record = {
             let mut admissions = self
@@ -457,8 +483,10 @@ impl RequestCandidateWriteRepository for InMemoryRequestCandidateRepository {
                 .expect("billing admission repository lock");
             if let Some(stored) = admissions.get(&admission.request_id) {
                 super::admission::validate_stored_admission_matches_input(stored, &admission)?;
+                super::admission::validate_candidate_provider(&candidate, &stored.to_input())?;
                 stored.clone()
             } else {
+                super::admission::validate_candidate_provider(&candidate, &admission)?;
                 let record = super::admission::admission_record_from_input(
                     admission.clone(),
                     created_at_unix_ms,

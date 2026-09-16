@@ -1463,6 +1463,8 @@ pub fn is_sensitive_admin_system_config_key(key: &str) -> bool {
 
 pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value> {
     match key {
+        "request_failover" => Some(json!({"enabled": true, "max_account_switches": 2,
+            "max_wait_ms": 5000, "max_buffer_bytes": 65536, "cooldown_seconds": 30})),
         "site_name" => Some(json!("Aether")),
         "site_subtitle" => Some(json!("AI Gateway")),
         "default_user_initial_gift_usd" => Some(json!(10.0)),
@@ -1489,6 +1491,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "header_retention_days" => Some(json!(30)),
         "log_retention_days" => Some(json!(365)),
         "enable_auto_cleanup" => Some(json!(true)),
+        "enable_usage_detail_cleanup" => Some(json!(true)),
         "cleanup_batch_size" => Some(json!(1000)),
         "request_candidates_retention_days" => Some(json!(30)),
         "request_candidates_cleanup_batch_size" => Some(json!(5000)),
@@ -1508,7 +1511,9 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "email_suffix_list" => Some(json!([])),
         "enable_format_conversion" => Some(json!(false)),
         "enable_model_directives" => Some(json!(false)),
-        "codex_oauth_identity_convergence_enabled" => Some(json!(false)),
+        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
+            Some(json!(false))
+        }
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1758,6 +1763,32 @@ pub fn parse_admin_system_config_update(
         }
     };
 
+    if normalized_key == "request_failover" {
+        let valid = value.as_object().is_some_and(|o| {
+            o.get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .is_some()
+                && [
+                    ("max_account_switches", 0, 999),
+                    ("max_wait_ms", 250, 30000),
+                    ("max_buffer_bytes", 16384, 1048576),
+                    ("cooldown_seconds", 1, 1920),
+                ]
+                .iter()
+                .all(|(key, min, max)| {
+                    o.get(*key)
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|n| n >= *min && n <= *max)
+                })
+        });
+        if !valid {
+            return Err((
+                http::StatusCode::BAD_REQUEST,
+                json!({"detail": "自动换号配置无效，请检查开关和参数范围"}),
+            ));
+        }
+    }
+
     if normalized_key == "password_policy_level" {
         match value.as_str().map(str::trim) {
             Some("weak" | "medium" | "strong") => {
@@ -1782,16 +1813,18 @@ pub fn parse_admin_system_config_update(
     }
 
     match normalized_key.as_str() {
-        "codex_oauth_identity_convergence_enabled" => match value.as_bool() {
-            Some(enabled) => value = json!(enabled),
-            None if value.is_null() => value = json!(false),
-            None => {
-                return Err((
-                    http::StatusCode::BAD_REQUEST,
-                    json!({ "detail": "请求数据验证失败" }),
-                ));
+        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
+            match value.as_bool() {
+                Some(enabled) => value = json!(enabled),
+                None if value.is_null() => value = json!(false),
+                None => {
+                    return Err((
+                        http::StatusCode::BAD_REQUEST,
+                        json!({ "detail": "请求数据验证失败" }),
+                    ));
+                }
             }
-        },
+        }
         "module.chat_pii_redaction.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
@@ -2627,6 +2660,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn global_capacity_failover_config_validates_defaults_and_bounds() {
+        let defaults = admin_system_config_default_value("request_failover").unwrap();
+        assert_eq!(defaults["enabled"], true);
+        assert_eq!(defaults["max_account_switches"], 2);
+        let parse = |value: Value| {
+            parse_admin_system_config_update(
+                "request_failover",
+                &serde_json::to_vec(&json!({"value": value})).unwrap(),
+            )
+        };
+        assert!(parse(defaults.clone()).is_ok());
+        let mut disabled = defaults.clone();
+        disabled["enabled"] = json!(false);
+        disabled["max_account_switches"] = json!(0);
+        assert!(parse(disabled).is_ok());
+        for (field, invalid) in [
+            ("enabled", json!("true")),
+            ("max_account_switches", json!(-1)),
+            ("max_account_switches", json!(1000)),
+            ("max_wait_ms", json!(249)),
+            ("max_wait_ms", json!(30001)),
+            ("max_buffer_bytes", json!(16383)),
+            ("max_buffer_bytes", json!(1048577)),
+            ("cooldown_seconds", json!(0)),
+            ("cooldown_seconds", json!(1921)),
+            ("cooldown_seconds", json!(1.5)),
+        ] {
+            let mut invalid_value = defaults.clone();
+            invalid_value[field] = invalid;
+            assert_eq!(
+                parse(invalid_value).unwrap_err().0,
+                http::StatusCode::BAD_REQUEST,
+                "{field}"
+            );
+        }
+        assert!(parse(json!({"enabled": true})).is_err());
+    }
+
+    #[test]
     fn admin_system_config_defaults_keep_request_body_capture_safe() {
         assert_eq!(
             admin_system_config_default_value("request_record_level"),
@@ -2653,9 +2725,32 @@ mod tests {
             Some(json!(30))
         );
         assert_eq!(
+            admin_system_config_default_value("enable_usage_detail_cleanup"),
+            Some(json!(true))
+        );
+        assert_eq!(
             admin_system_config_default_value("codex_oauth_identity_convergence_enabled"),
             Some(json!(false))
         );
+    }
+
+    #[test]
+    fn codex_telemetry_config_is_opt_in_and_boolean() {
+        assert_eq!(
+            admin_system_config_default_value("codex_telemetry_enabled"),
+            Some(json!(false))
+        );
+        for raw in [
+            br#"{"value":true}"#.as_slice(),
+            br#"{"value":false}"#.as_slice(),
+        ] {
+            assert!(parse_admin_system_config_update("codex_telemetry_enabled", raw).is_ok());
+        }
+        assert!(parse_admin_system_config_update(
+            "codex_telemetry_enabled",
+            br#"{"value":"true"}"#
+        )
+        .is_err());
     }
 
     #[test]

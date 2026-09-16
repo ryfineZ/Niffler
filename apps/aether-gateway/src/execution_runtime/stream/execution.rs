@@ -21,8 +21,8 @@ use aether_scheduler_core::{
 use aether_usage_runtime::{
     build_lifecycle_usage_seed, build_stream_terminal_usage_payload_seed,
     build_sync_terminal_usage_payload_seed, build_terminal_usage_context_seed,
-    UsageBodyCapturePolicy, UsageRequestRecordLevel, UsageRuntimeAccess,
-    DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+    build_usage_event_data_seed, UsageBodyCapturePolicy, UsageEvent, UsageEventType,
+    UsageRequestRecordLevel, UsageRuntimeAccess, DEFAULT_USAGE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
 };
 use async_stream::stream;
 use axum::body::{Body, Bytes};
@@ -111,14 +111,38 @@ use crate::provider_pool_demand::{
     acquire_provider_pool_in_flight_guard, ProviderPoolInFlightGuard,
 };
 use crate::request_candidate_runtime::{
-    ensure_execution_request_candidate_slot, snapshot_local_request_candidate_status,
-    submit_local_request_candidate_status, submit_local_request_candidate_status_snapshot,
+    bind_execution_plan_to_request_id, ensure_execution_request_candidate_slot,
+    snapshot_local_request_candidate_status, submit_local_request_candidate_status,
+    submit_local_request_candidate_status_snapshot,
 };
 use crate::usage::submit_stream_report;
 use crate::usage::{GatewayStreamReportRequest, GatewaySyncReportRequest};
 use crate::{
     AppState, GatewayError, GEMINI_FILES_DOWNLOAD_PLAN_KIND, OPENAI_VIDEO_CONTENT_PLAN_KIND,
 };
+
+fn merge_stream_usage_report_context(context: Option<Value>, plan: &ExecutionPlan) -> Value {
+    let mut context = context.unwrap_or_else(|| json!({}));
+    if !context.is_object() {
+        context = json!({});
+    }
+    let object = context
+        .as_object_mut()
+        .expect("stream usage report context must be an object");
+    for (key, value) in [
+        ("provider_api_format", plan.provider_api_format.as_str()),
+        ("client_api_format", plan.client_api_format.as_str()),
+    ] {
+        let missing = object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty());
+        if missing && !value.trim().is_empty() {
+            object.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    context
+}
 
 const OPENAI_IMAGE_STREAM_PLAN_KIND: &str = "openai_image_stream";
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -129,6 +153,56 @@ const REWRITTEN_STREAM_PREFETCH_TIMEOUT: Duration = Duration::from_millis(750);
 const OPENAI_IMAGE_STREAM_DEFAULT_TOTAL_TIMEOUT_MS: u64 = 900_000;
 const STREAM_FAILOVER_EXECUTION_FRAME_MAX_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_EXECUTION_FRAME_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+async fn record_stream_candidate_preparation_failure(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    report_context: Option<&Value>,
+    started_at_unix_ms: u64,
+    error: &GatewayError,
+) {
+    let finished_at_unix_ms = current_request_candidate_unix_ms();
+    let latency_ms = finished_at_unix_ms.saturating_sub(started_at_unix_ms);
+    let error_message = format!("Local stream candidate preparation failed: {error:?}");
+    submit_local_request_candidate_status(
+        state,
+        plan,
+        report_context,
+        SchedulerRequestCandidateStatusUpdate {
+            status: RequestCandidateStatus::Failed,
+            status_code: Some(http::StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
+            error_type: Some("execution_candidate_preparation_failed".to_string()),
+            error_message: Some(error_message.clone()),
+            latency_ms: Some(latency_ms),
+            started_at_unix_ms: Some(started_at_unix_ms),
+            finished_at_unix_ms: Some(finished_at_unix_ms),
+        },
+    )
+    .await;
+
+    if state.usage_runtime.is_enabled() {
+        let mut data = build_usage_event_data_seed(plan, report_context);
+        data.status_code = Some(http::StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        data.error_message = Some(error_message.clone());
+        data.error_category = Some("server_error".to_string());
+        data.response_time_ms = Some(latency_ms);
+        let error_body = json!({
+            "error": {
+                "type": "execution_candidate_preparation_failed",
+                "message": error_message,
+                "code": http::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            }
+        });
+        data.response_headers = Some(json!({"content-type": "application/json"}));
+        data.response_body = Some(error_body.clone());
+        data.client_response_headers = Some(json!({"content-type": "application/json"}));
+        data.client_response_body = Some(error_body);
+        state.usage_runtime.submit_terminal_event(
+            state.data.as_ref(),
+            UsageEvent::new(UsageEventType::Failed, plan.request_id.clone(), data),
+        );
+    }
+}
 
 fn execution_frame_max_bytes(stream_failover_enabled: bool, provider_api_format: &str) -> usize {
     if stream_failover_enabled && crate::ai_serving::is_openai_responses_format(provider_api_format)
@@ -408,20 +482,28 @@ fn attach_stream_body_object_descriptors(
     };
     let mut objects = serde_json::Map::new();
     if let Some(descriptor) = provider_descriptor {
-        if let Some(body_ref) = descriptor.get("body_ref").and_then(Value::as_str) {
-            context.insert(
-                "response_body_ref".to_string(),
-                Value::String(body_ref.to_string()),
-            );
+        if descriptor.get("storage_status").and_then(Value::as_str) == Some("available") {
+            if let Some(body_ref) = descriptor.get("body_ref").and_then(Value::as_str) {
+                context.insert(
+                    "response_body_ref".to_string(),
+                    Value::String(body_ref.to_string()),
+                );
+            }
+        } else {
+            context.remove("response_body_ref");
         }
         objects.insert("response_body".to_string(), descriptor);
     }
     if let Some(descriptor) = client_descriptor {
-        if let Some(body_ref) = descriptor.get("body_ref").and_then(Value::as_str) {
-            context.insert(
-                "client_response_body_ref".to_string(),
-                Value::String(body_ref.to_string()),
-            );
+        if descriptor.get("storage_status").and_then(Value::as_str) == Some("available") {
+            if let Some(body_ref) = descriptor.get("body_ref").and_then(Value::as_str) {
+                context.insert(
+                    "client_response_body_ref".to_string(),
+                    Value::String(body_ref.to_string()),
+                );
+            }
+        } else {
+            context.remove("client_response_body_ref");
         }
         objects.insert("client_response_body".to_string(), descriptor);
     }
@@ -431,7 +513,17 @@ fn attach_stream_body_object_descriptors(
 fn build_stream_body_capture(
     body: &[u8],
     state: UsageBodyCaptureState,
+    body_truncated: bool,
 ) -> (Option<String>, Option<UsageBodyCaptureState>) {
+    let state = if !body.is_empty() && state == UsageBodyCaptureState::Unavailable {
+        if body_truncated {
+            UsageBodyCaptureState::Truncated
+        } else {
+            UsageBodyCaptureState::Inline
+        }
+    } else {
+        state
+    };
     let body_base64 = (!body.is_empty()
         && matches!(
             state,
@@ -502,15 +594,17 @@ fn build_stream_usage_payload(
     headers: BTreeMap<String, String>,
     provider_body: &[u8],
     provider_body_state: UsageBodyCaptureState,
+    provider_body_truncated: bool,
     client_body: &[u8],
     client_body_state: UsageBodyCaptureState,
+    client_body_truncated: bool,
     terminal_summary: Option<ExecutionStreamTerminalSummary>,
     telemetry: Option<ExecutionTelemetry>,
 ) -> GatewayStreamReportRequest {
     let (provider_body_base64, provider_body_state) =
-        build_stream_body_capture(provider_body, provider_body_state);
+        build_stream_body_capture(provider_body, provider_body_state, provider_body_truncated);
     let (client_body_base64, client_body_state) =
-        build_stream_body_capture(client_body, client_body_state);
+        build_stream_body_capture(client_body, client_body_state, client_body_truncated);
     GatewayStreamReportRequest {
         trace_id,
         report_kind,
@@ -911,16 +1005,30 @@ async fn execute_in_process_stream(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
-    if let Some(execution) = execute_stream_plan_via_local_tunnel(state, plan).await? {
-        return Ok(execution);
-    }
-
-    match DirectSyncExecutionRuntime::new().execute_stream(plan).await {
-        Ok(execution) => {
-            record_manual_proxy_request_success(state, plan).await;
+    let mut observation =
+        crate::execution_runtime::codex_telemetry::Observation::begin(state, plan).await;
+    let tunnel_result = execute_stream_plan_via_local_tunnel(state, plan).await;
+    let is_local_tunnel = matches!(&tunnel_result, Ok(Some(_)));
+    let result = match tunnel_result {
+        Ok(Some(execution)) => Ok(execution),
+        Ok(None) => DirectSyncExecutionRuntime::new().execute_stream(plan).await,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(mut execution) => {
+            if let Some(observation) = observation.as_mut() {
+                observation.http_status(execution.status_code);
+            }
+            execution.codex_telemetry = observation;
+            if !is_local_tunnel {
+                record_manual_proxy_request_success(state, plan).await;
+            }
             Ok(execution)
         }
         Err(error) => {
+            if let Some(observation) = observation.as_mut() {
+                observation.fail();
+            }
             record_manual_proxy_request_failure(state, plan).await;
             Err(error)
         }
@@ -956,15 +1064,28 @@ pub(crate) async fn execute_execution_runtime_stream(
     mut report_context: Option<serde_json::Value>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let stream_started_at = Instant::now();
-    ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await?;
-    seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+    bind_execution_plan_to_request_id(&mut plan, &mut report_context, trace_id);
+    let candidate_started_unix_secs = current_request_candidate_unix_ms();
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
-    let request_candidate_status_snapshot =
-        snapshot_local_request_candidate_status(&plan, report_context.as_ref());
     state
         .usage_runtime
-        .record_pending(state.data.as_ref(), lifecycle_seed.clone());
-    let candidate_started_unix_secs = current_request_candidate_unix_ms();
+        .record_pending(state.data.as_ref(), lifecycle_seed);
+    if let Err(error) =
+        ensure_execution_request_candidate_slot(state, &mut plan, &mut report_context).await
+    {
+        record_stream_candidate_preparation_failure(
+            state,
+            &plan,
+            report_context.as_ref(),
+            candidate_started_unix_secs,
+            &error,
+        )
+        .await;
+        return Err(error);
+    }
+    seed_kiro_report_context_input_tokens(&plan, &mut report_context);
+    let request_candidate_status_snapshot =
+        snapshot_local_request_candidate_status(&plan, report_context.as_ref());
     if let Some(snapshot) = request_candidate_status_snapshot.clone() {
         submit_local_request_candidate_status_snapshot(
             state,
@@ -1284,10 +1405,18 @@ pub(crate) async fn execute_execution_runtime_stream(
             .await;
         }
 
+        let execution_trace_id = report_context
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|context| context.get("trace_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(trace_id);
         let response = match post_stream_plan_to_remote_execution_runtime(
             state,
             remote_execution_runtime_base_url,
-            Some(trace_id),
+            Some(execution_trace_id),
             &plan,
         )
         .await
@@ -2956,18 +3085,15 @@ async fn execute_stream_from_frame_stream(
         } else {
             maybe_build_provider_private_stream_normalizer(report_context_owned.as_ref())
         };
+        let stream_usage_report_context = Some(merge_stream_usage_report_context(
+            normalized_stream_report_context_owned,
+            &plan_for_report,
+        ));
         let mut local_stream_rewriter = if sync_json_stream_bridge_active_for_report {
             None
         } else {
-            maybe_build_stream_response_rewriter(normalized_stream_report_context_owned.as_ref())
+            maybe_build_stream_response_rewriter(stream_usage_report_context.as_ref())
         };
-        let stream_usage_report_context =
-            normalized_stream_report_context_owned.clone().or_else(|| {
-                Some(serde_json::json!({
-                    "provider_api_format": plan_for_report.provider_api_format.as_str(),
-                    "client_api_format": plan_for_report.client_api_format.as_str(),
-                }))
-            });
         let mut stream_usage_observer = stream_usage_report_context
             .as_ref()
             .filter(|_| !sync_json_stream_bridge_active_for_report)
@@ -3820,8 +3946,10 @@ async fn execute_stream_from_frame_stream(
                 headers_for_report,
                 &provider_buffered_body,
                 provider_body_state,
+                provider_body_truncated,
                 &buffered_body,
                 client_body_state,
+                client_body_truncated,
                 stream_terminal_summary,
                 terminal_telemetry,
             );
@@ -3898,8 +4026,10 @@ async fn execute_stream_from_frame_stream(
             headers_for_report,
             &provider_buffered_body,
             provider_body_state,
+            provider_body_truncated,
             &buffered_body,
             client_body_state,
+            client_body_truncated,
             stream_terminal_summary,
             terminal_telemetry,
         );
@@ -4049,13 +4179,13 @@ mod tests {
     use tokio::sync::{mpsc, watch, Notify};
 
     use super::{
-        build_sse_body_stream, encode_openai_responses_failed_event,
-        execute_execution_runtime_stream, execute_stream_from_frame_stream,
-        execution_frame_max_bytes, extend_bounded,
+        attach_stream_body_object_descriptors, build_sse_body_stream, build_stream_body_capture,
+        encode_openai_responses_failed_event, execute_execution_runtime_stream,
+        execute_stream_from_frame_stream, execution_frame_max_bytes, extend_bounded,
         maybe_apply_kiro_prompt_cache_usage_to_stream_summary, merge_stream_terminal_summary,
-        should_limit_direct_finalize_prefetch, should_probe_success_failover_before_stream,
-        should_skip_direct_finalize_prefetch, OpenAiResponsesImageTerminalTracker,
-        StreamObjectCapture,
+        merge_stream_usage_report_context, should_limit_direct_finalize_prefetch,
+        should_probe_success_failover_before_stream, should_skip_direct_finalize_prefetch,
+        OpenAiResponsesImageTerminalTracker, StreamObjectCapture,
     };
     use crate::control::GatewayControlDecision;
     use crate::request_candidate_runtime::flush_request_candidate_status_writes;
@@ -4085,6 +4215,21 @@ mod tests {
         assert_eq!(buffer, b"1234567");
         extend_bounded(&mut buffer, b"ignored", 7);
         assert_eq!(buffer, b"1234567");
+    }
+
+    #[test]
+    fn stream_usage_report_context_falls_back_to_execution_plan_formats() {
+        let plan = openai_responses_stream_failover_test_plan("req-context-fallback-1");
+        let context = merge_stream_usage_report_context(Some(json!({})), &plan);
+
+        assert_eq!(
+            context.get("provider_api_format").and_then(Value::as_str),
+            Some("openai:responses")
+        );
+        assert_eq!(
+            context.get("client_api_format").and_then(Value::as_str),
+            Some("openai:responses")
+        );
     }
 
     fn test_decision() -> GatewayControlDecision {
@@ -4138,7 +4283,7 @@ mod tests {
             "provider_api_format": "openai:responses",
             "client_api_format": "openai:responses",
             "local_failover_policy": {},
-            "stream_failover_policy": {
+            "global_stream_failover_policy": {
                 "enabled": true,
                 "max_wait_ms": 5000,
                 "max_buffer_bytes": 65536,
@@ -4202,6 +4347,63 @@ mod tests {
             .await
             .expect("delete stream object");
         std::fs::remove_dir_all(root).expect("remove stream object store");
+    }
+
+    #[test]
+    fn unavailable_stream_object_capture_falls_back_to_complete_inline_body() {
+        let (body_base64, state) = build_stream_body_capture(
+            b"complete response",
+            UsageBodyCaptureState::Unavailable,
+            false,
+        );
+
+        assert_eq!(body_base64.as_deref(), Some("Y29tcGxldGUgcmVzcG9uc2U="));
+        assert_eq!(state, Some(UsageBodyCaptureState::Inline));
+    }
+
+    #[test]
+    fn unavailable_stream_object_capture_falls_back_to_truncated_inline_body() {
+        let (body_base64, state) = build_stream_body_capture(
+            b"partial response",
+            UsageBodyCaptureState::Unavailable,
+            true,
+        );
+
+        assert_eq!(body_base64.as_deref(), Some("cGFydGlhbCByZXNwb25zZQ=="));
+        assert_eq!(state, Some(UsageBodyCaptureState::Truncated));
+    }
+
+    #[test]
+    fn unavailable_stream_object_descriptor_does_not_override_inline_fallback() {
+        let mut context = Some(json!({
+            "response_body_ref": "usage://request/stale/response_body",
+            "client_response_body_ref": "usage://request/stale/client_response_body"
+        }));
+        attach_stream_body_object_descriptors(
+            &mut context,
+            Some(json!({
+                "body_ref": "usage://request/current/response_body",
+                "storage_status": "unavailable",
+                "error_message": "usage object store is not configured"
+            })),
+            Some(json!({
+                "body_ref": "usage://request/current/client_response_body",
+                "storage_status": "unavailable",
+                "error_message": "usage object store is not configured"
+            })),
+        );
+
+        let context = context.expect("report context should exist");
+        assert!(context.get("response_body_ref").is_none());
+        assert!(context.get("client_response_body_ref").is_none());
+        assert_eq!(
+            context["usage_body_objects"]["response_body"]["storage_status"],
+            json!("unavailable")
+        );
+        assert_eq!(
+            context["usage_body_objects"]["client_response_body"]["storage_status"],
+            json!("unavailable")
+        );
     }
 
     #[test]
@@ -5811,7 +6013,7 @@ event: response.completed
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let live_usage = loop {
             let usage = usage_repository
-                .find_by_request_id("req-live-stream-first-data")
+                .find_by_request_id("trace-live-stream-first-data")
                 .await
                 .expect("usage should read");
             if usage.as_ref().is_some_and(|usage| {
@@ -6087,7 +6289,7 @@ event: response.completed
         let usage = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Some(usage) = usage_repository
-                    .find_by_request_id("req-remote-runtime-stream-redirect")
+                    .find_by_request_id("trace-remote-runtime-stream-redirect")
                     .await
                     .expect("usage should read")
                     .filter(|usage| usage.status == "failed")
@@ -6130,7 +6332,7 @@ event: response.completed
         );
         flush_request_candidate_status_writes(&state).await;
         let candidates = request_candidate_repository
-            .list_by_request_id("req-remote-runtime-stream-redirect")
+            .list_by_request_id("trace-remote-runtime-stream-redirect")
             .await
             .expect("candidate trace should read");
         let candidate_extra = candidates

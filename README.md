@@ -48,18 +48,15 @@ cp .env.example .env
 ./generate_keys.sh
 # 编辑 .env 设置 ADMIN_PASSWORD
 
-# 3. 首次部署 / 更新 (从以下部署形态任选其一)
-# Postgres + Redis (适用于企业或多人使用)
+# 3. 首次部署 / 更新（Postgres + Redis）
 docker compose pull && docker compose up -d
-# Single Node (适用于个人用户或朋友分享)
-docker compose -f docker-compose.single-node.yml pull && docker compose -f docker-compose.single-node.yml up -d
 ```
 
 生产发布使用 CI 预构建镜像。推送到 `main` 后，GitHub Actions 会构建镜像并上传
 `niffler-app-linux-amd64` 产物；执行 `scripts/deploy-ci-artifact.sh` 会把镜像文件传到服务器，
 服务器只加载镜像并重启容器，不会编译 Rust、构建前端或执行 `docker build`。
 
-### 一键安装（默认 Single Node：Linux systemd / macOS launchd + SQLite）
+### 一键安装（Docker Compose：Postgres + Redis）
 
 ```bash
 cd Niffler
@@ -102,9 +99,9 @@ Niffler Tunnel 是配套的正向代理节点，部署在海外 VPS 上，为墙
 ## 环境变量
 
 - `APP_PORT`：`aether-gateway` 唯一监听端口，固定绑定 `0.0.0.0:${APP_PORT}`
-- `DATABASE_URL`：数据库连接串；SQLite 例如 `sqlite:///opt/aether/data/aether.db`，Postgres 例如 `postgresql://postgres:aether@postgres:5432/aether`
-- `REDIS_URL`：Redis 连接串；仅 Postgres + Redis 的 Docker Compose 部署需要配置
-- `AETHER_RUNTIME_BACKEND=memory|redis`：运行时缓存/协调后端。SQLite 默认用 `memory`，不会连接 Redis
+- `DATABASE_URL`：Postgres 数据库连接串，例如 `postgresql://postgres:aether@postgres:5432/aether`
+- `REDIS_URL`：Redis 连接串；Docker Compose 部署需要配置
+- `AETHER_RUNTIME_BACKEND=memory|redis`：运行时缓存/协调后端；Docker Compose 默认使用 `redis`
 - `AETHER_GATEWAY_AUTO_PREPARE_DATABASE`：常规启动前自动执行挂起的 schema migration 和 backfill；仓库自带的 `docker-compose.yml` 默认开启
 - `JWT_SECRET_KEY` / `ENCRYPTION_KEY`：认证和敏感数据加密所需密钥
 - `API_KEY_PREFIX`：用户和管理员新建 API Key 时使用的前缀，默认 `sk`

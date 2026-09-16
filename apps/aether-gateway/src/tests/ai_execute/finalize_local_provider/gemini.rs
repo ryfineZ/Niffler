@@ -3,6 +3,7 @@ use super::{
     to_bytes, Arc, Body, Bytes, HeaderName, HeaderValue, Json, Mutex, Request, Response, Router,
     StatusCode, TRACE_ID_HEADER,
 };
+use crate::constants::CONTROL_REQUEST_ID_HEADER;
 use crate::data::GatewayDataState;
 use aether_crypto::{encrypt_python_fernet_plaintext, DEVELOPMENT_ENCRYPTION_KEY};
 use aether_data::repository::auth::{
@@ -24,6 +25,15 @@ use aether_data_contracts::repository::provider_catalog::{
 use sha2::{Digest, Sha256};
 
 const GEMINI_PROVIDER_FINALIZE_TEST_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
 
 fn run_gemini_provider_finalize_test<F, Fut>(test_name: &'static str, make_future: F)
 where
@@ -453,6 +463,7 @@ async fn gateway_executes_gemini_chat_sync_same_format_via_local_finalize_respon
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -491,10 +502,7 @@ async fn gateway_executes_gemini_chat_sync_same_format_via_local_finalize_respon
         seen_remote_execution_runtime_request.trace_id,
         "trace-gemini-chat-sync-local-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-gemini-chat-sync-local-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent?alt=sse"
@@ -520,7 +528,7 @@ async fn gateway_executes_gemini_chat_sync_same_format_via_local_finalize_respon
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-gemini-chat-sync-local-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -946,6 +954,7 @@ async fn gateway_executes_gemini_chat_sync_upstream_stream_via_local_finalize_re
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -985,10 +994,7 @@ async fn gateway_executes_gemini_chat_sync_upstream_stream_via_local_finalize_re
         seen_remote_execution_runtime_request.trace_id,
         "trace-gemini-chat-stream-sync-direct-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-gemini-chat-stream-sync-direct-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent?alt=sse"
@@ -1014,7 +1020,7 @@ async fn gateway_executes_gemini_chat_sync_upstream_stream_via_local_finalize_re
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-gemini-chat-stream-sync-direct-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -1442,6 +1448,7 @@ async fn gateway_executes_gemini_cli_sync_upstream_stream_via_local_finalize_res
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -1481,10 +1488,7 @@ async fn gateway_executes_gemini_cli_sync_upstream_stream_via_local_finalize_res
         seen_remote_execution_runtime_request.trace_id,
         "trace-gemini-cli-stream-sync-direct-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-gemini-cli-stream-sync-direct-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-cli-upstream:generateContent"
@@ -1510,7 +1514,7 @@ async fn gateway_executes_gemini_cli_sync_upstream_stream_via_local_finalize_res
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-gemini-cli-stream-sync-direct-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -2023,6 +2027,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_upstream_stream_via_local_
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -2133,10 +2138,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_upstream_stream_via_local_
         seen_remote_execution_runtime_request.project,
         "project-antigravity-local-1"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-antigravity-cli-stream-sync-direct-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.model,
         "claude-sonnet-4-5"
@@ -2153,7 +2155,7 @@ async fn gateway_executes_antigravity_gemini_cli_sync_upstream_stream_via_local_
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-antigravity-cli-stream-sync-direct-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1

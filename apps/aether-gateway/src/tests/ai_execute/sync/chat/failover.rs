@@ -355,6 +355,7 @@ async fn gateway_skips_unsupported_local_openai_chat_sync_candidate_before_tryin
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -390,7 +391,7 @@ async fn gateway_skips_unsupported_local_openai_chat_sync_candidate_before_tryin
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-openai-chat-skip-local-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 2);
@@ -638,6 +639,7 @@ async fn gateway_surfaces_local_execution_runtime_miss_reason_when_all_openai_ch
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
@@ -662,7 +664,7 @@ async fn gateway_surfaces_local_execution_runtime_miss_reason_when_all_openai_ch
     );
 
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-openai-chat-local-miss-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 1);
@@ -1092,6 +1094,7 @@ async fn gateway_retries_next_local_openai_chat_sync_candidate_after_auth_failur
         .send()
         .await
         .expect("request should succeed");
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1134,7 +1137,7 @@ async fn gateway_retries_next_local_openai_chat_sync_candidate_after_auth_failur
         "Bearer sk-upstream-openai-backup"
     );
     let stored_candidates = request_candidate_repository
-        .list_by_request_id("trace-openai-chat-local-failover-123")
+        .list_by_request_id(&request_id)
         .await
         .expect("request candidate trace should read");
     assert_eq!(stored_candidates.len(), 2);

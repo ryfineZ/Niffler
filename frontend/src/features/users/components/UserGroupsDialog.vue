@@ -148,14 +148,14 @@
               </div>
 
               <div class="space-y-2">
-                <Label class="text-sm font-medium">{{ t('userGroups.defaultMultiplier') }}</Label>
+                <Label class="text-sm font-medium">{{ t('userGroupDiscount.defaultDiscount') }}</Label>
                 <Input
                   :model-value="form.sales_multiplier"
                   type="number"
                   min="0"
                   step="0.01"
                   class="h-10"
-                  :placeholder="t('userGroups.multiplierPlaceholder')"
+                  :placeholder="t('userGroupDiscount.discountPlaceholder')"
                   @update:model-value="(value) => form.sales_multiplier = parseNumberInput(value, { allowFloat: true, min: 0, max: 100 }) ?? 1"
                 />
               </div>
@@ -168,7 +168,7 @@
 
             <div class="space-y-2">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <Label class="text-sm font-medium">{{ t('userGroups.modelMultiplier') }}</Label>
+                <Label class="text-sm font-medium">{{ t('userGroupDiscount.modelDiscount') }}</Label>
                 <Button
                   type="button"
                   variant="outline"
@@ -186,7 +186,7 @@
                   v-if="modelSalesMultiplierRows.length === 0"
                   class="px-3 py-4 text-sm text-muted-foreground"
                 >
-                  {{ t('userGroups.modelMultiplierHint') }}
+                  {{ t('userGroupDiscount.modelDiscountHint') }}
                 </div>
                 <div
                   v-for="row in modelSalesMultiplierRows"
@@ -214,7 +214,7 @@
                     min="0"
                     step="0.01"
                     class="h-9"
-                    :placeholder="t('userGroups.multiplier')"
+                    :placeholder="t('userGroupDiscount.discount')"
                     @update:model-value="(value) => row.multiplier = parseNumberInput(value, { allowFloat: true, min: 0, max: 100 }) ?? undefined"
                   />
                   <Button
@@ -269,7 +269,7 @@
                 </div>
               </div>
               <p class="text-xs text-muted-foreground">
-                {{ t('userGroups.modelMultiplierBatchHint') }}
+                {{ t('userGroupDiscount.modelDiscountBatchHint') }}
               </p>
             </div>
 
@@ -978,10 +978,10 @@ function parseModelSalesMultipliers(): Record<string, number> | null {
   for (const row of modelSalesMultiplierRows.value) {
     const modelId = row.modelId.trim()
     if (!modelId && row.multiplier === undefined) continue
-    if (!modelId) throw new Error(t('userGroupActions.modelRequired'))
-    if (seenModelIds.has(modelId)) throw new Error(t('userGroupActions.duplicateModel'))
+    if (!modelId) throw new Error(t('userGroupDiscount.modelRequired'))
+    if (seenModelIds.has(modelId)) throw new Error(t('userGroupDiscount.duplicateModel'))
     if (row.multiplier === undefined || !Number.isFinite(row.multiplier) || row.multiplier < 0) {
-      throw new Error(t('userGroupActions.invalidMultiplier'))
+      throw new Error(t('userGroupDiscount.invalidDiscount'))
     }
     seenModelIds.add(modelId)
     result[modelId] = row.multiplier
@@ -1017,7 +1017,7 @@ function setProviderBatchSalesMultiplier(providerId: string, value: string | num
 function applyProviderSalesMultiplier(provider: ProviderModelMultiplierSource): void {
   const multiplier = getProviderBatchSalesMultiplier(provider.id)
   if (multiplier === undefined) {
-    error(t('userGroupActions.providerMultiplierRequired'))
+    error(t('userGroupDiscount.providerDiscountRequired'))
     return
   }
   const nextByModelId = new Map<string, number>()

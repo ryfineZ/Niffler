@@ -12,6 +12,7 @@ use aether_data_query::{push_eq, push_limit, push_limit_offset, WhereClause};
 const ANNOUNCEMENT_SELECT: &str = r#"
 SELECT
   a.id,
+  a.portal_id,
   a.title,
   a.content,
   a.type,
@@ -32,6 +33,7 @@ LEFT JOIN users u ON u.id = a.author_id
 const LIST_REQUIRED_UNREAD_ACTIVE_ANNOUNCEMENTS_SQL: &str = r#"
 SELECT
   a.id,
+  a.portal_id,
   a.title,
   a.content,
   a.type,
@@ -47,23 +49,25 @@ SELECT
   EXTRACT(EPOCH FROM a.updated_at)::bigint AS updated_at_unix_secs
 FROM announcements a
 LEFT JOIN users u ON u.id = a.author_id
-WHERE a.is_active = TRUE
+WHERE a.portal_id = $1
+  AND a.is_active = TRUE
   AND a.requires_ack = TRUE
-  AND (a.start_time IS NULL OR a.start_time <= TO_TIMESTAMP($2::double precision))
-  AND (a.end_time IS NULL OR a.end_time >= TO_TIMESTAMP($2::double precision))
+  AND (a.start_time IS NULL OR a.start_time <= TO_TIMESTAMP($3::double precision))
+  AND (a.end_time IS NULL OR a.end_time >= TO_TIMESTAMP($3::double precision))
   AND NOT EXISTS (
     SELECT 1
     FROM announcement_reads r
-    WHERE r.user_id = $1
+    WHERE r.user_id = $2
       AND r.announcement_id = a.id
   )
 ORDER BY a.is_pinned DESC, a.priority DESC, a.created_at DESC, a.id ASC
-LIMIT $3
+LIMIT $4
 "#;
 
 const CREATE_ANNOUNCEMENT_SQL: &str = r#"
 INSERT INTO announcements (
   id,
+  portal_id,
   title,
   content,
   type,
@@ -84,16 +88,18 @@ VALUES (
   $4,
   $5,
   $6,
-  TRUE,
   $7,
+  TRUE,
   $8,
   $9,
   $10,
+  $11,
   NOW(),
   NOW()
 )
 RETURNING
   id,
+  portal_id,
   title,
   content,
   type,
@@ -112,19 +118,20 @@ RETURNING
 const UPDATE_ANNOUNCEMENT_SQL: &str = r#"
 UPDATE announcements
 SET
-  title = COALESCE($2, title),
-  content = COALESCE($3, content),
-  type = COALESCE($4, type),
-  priority = COALESCE($5, priority),
-  is_active = COALESCE($6, is_active),
-  is_pinned = COALESCE($7, is_pinned),
-  requires_ack = COALESCE($8, requires_ack),
-  start_time = COALESCE($9, start_time),
-  end_time = COALESCE($10, end_time),
+  title = COALESCE($3, title),
+  content = COALESCE($4, content),
+  type = COALESCE($5, type),
+  priority = COALESCE($6, priority),
+  is_active = COALESCE($7, is_active),
+  is_pinned = COALESCE($8, is_pinned),
+  requires_ack = COALESCE($9, requires_ack),
+  start_time = COALESCE($10, start_time),
+  end_time = COALESCE($11, end_time),
   updated_at = NOW()
-WHERE id = $1
+WHERE id = $1 AND portal_id = $2
 RETURNING
   id,
+  portal_id,
   title,
   content,
   type,
@@ -142,7 +149,7 @@ RETURNING
 
 const DELETE_ANNOUNCEMENT_SQL: &str = r#"
 DELETE FROM announcements
-WHERE id = $1
+WHERE id = $1 AND portal_id = $2
 "#;
 const DELETE_ANNOUNCEMENT_READS_SQL: &str = r#"
 DELETE FROM announcement_reads
@@ -156,12 +163,13 @@ INSERT INTO announcement_reads (
   announcement_id,
   read_at
 )
-VALUES (
+SELECT
   $1,
   $2,
-  $3,
+  a.id,
   TO_TIMESTAMP($4::double precision)
-)
+FROM announcements a
+WHERE a.id = $3 AND a.portal_id = $5
 ON CONFLICT (user_id, announcement_id) DO NOTHING
 "#;
 
@@ -193,16 +201,29 @@ impl SqlxAnnouncementReadRepository {
             .push_bind(now_unix_secs as f64)
             .push("::double precision))");
     }
+
+    fn apply_portal_filter(
+        builder: &mut QueryBuilder<'_, Postgres>,
+        where_clause: &mut WhereClause,
+        portal_id: &str,
+    ) {
+        where_clause.push_next(builder);
+        builder
+            .push("a.portal_id = ")
+            .push_bind(portal_id.to_string());
+    }
 }
 
 #[async_trait]
 impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
-    async fn find_by_id(
+    async fn find_by_id_for_portal(
         &self,
+        portal_id: &str,
         announcement_id: &str,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         let mut builder = QueryBuilder::<Postgres>::new(ANNOUNCEMENT_SELECT);
         let mut where_clause = WhereClause::new();
+        Self::apply_portal_filter(&mut builder, &mut where_clause, portal_id);
         push_eq(
             &mut builder,
             &mut where_clause,
@@ -218,14 +239,16 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
         row.as_ref().map(map_announcement_row).transpose()
     }
 
-    async fn list_announcements(
+    async fn list_announcements_for_portal(
         &self,
+        portal_id: &str,
         query: &AnnouncementListQuery,
     ) -> Result<StoredAnnouncementPage, DataLayerError> {
         let now_unix_secs = query.now_unix_secs.unwrap_or_else(current_unix_secs);
         let mut count_builder =
             QueryBuilder::<Postgres>::new("SELECT COUNT(a.id) AS total FROM announcements a");
         let mut count_where = WhereClause::new();
+        Self::apply_portal_filter(&mut count_builder, &mut count_where, portal_id);
         Self::apply_active_filter(
             &mut count_builder,
             &mut count_where,
@@ -241,6 +264,7 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
 
         let mut list_builder = QueryBuilder::<Postgres>::new(ANNOUNCEMENT_SELECT);
         let mut list_where = WhereClause::new();
+        Self::apply_portal_filter(&mut list_builder, &mut list_where, portal_id);
         Self::apply_active_filter(
             &mut list_builder,
             &mut list_where,
@@ -263,14 +287,16 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
         Ok(StoredAnnouncementPage { items, total })
     }
 
-    async fn count_unread_active_announcements(
+    async fn count_unread_active_announcements_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
     ) -> Result<u64, DataLayerError> {
         let mut builder =
             QueryBuilder::<Postgres>::new("SELECT COUNT(a.id) AS total FROM announcements a");
         let mut where_clause = WhereClause::new();
+        Self::apply_portal_filter(&mut builder, &mut where_clause, portal_id);
         Self::apply_active_filter(&mut builder, &mut where_clause, true, now_unix_secs);
         where_clause.push_next(&mut builder);
         builder
@@ -286,13 +312,15 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
         Ok(total)
     }
 
-    async fn list_required_unread_active_announcements(
+    async fn list_required_unread_active_announcements_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         now_unix_secs: u64,
         limit: usize,
     ) -> Result<Vec<StoredAnnouncement>, DataLayerError> {
         let rows = sqlx::query(LIST_REQUIRED_UNREAD_ACTIVE_ANNOUNCEMENTS_SQL)
+            .bind(portal_id)
             .bind(user_id)
             .bind(now_unix_secs as f64)
             .bind(limit as i64)
@@ -305,13 +333,15 @@ impl AnnouncementReadRepository for SqlxAnnouncementReadRepository {
 
 #[async_trait]
 impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
-    async fn create_announcement(
+    async fn create_announcement_for_portal(
         &self,
+        portal_id: &str,
         record: CreateAnnouncementRecord,
     ) -> Result<StoredAnnouncement, DataLayerError> {
         record.validate()?;
         let row = sqlx::query(CREATE_ANNOUNCEMENT_SQL)
             .bind(uuid::Uuid::new_v4().to_string())
+            .bind(portal_id)
             .bind(record.title)
             .bind(record.content)
             .bind(record.kind)
@@ -327,13 +357,15 @@ impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
         map_announcement_row(&row)
     }
 
-    async fn update_announcement(
+    async fn update_announcement_for_portal(
         &self,
+        portal_id: &str,
         record: UpdateAnnouncementRecord,
     ) -> Result<Option<StoredAnnouncement>, DataLayerError> {
         record.validate()?;
         let row = sqlx::query(UPDATE_ANNOUNCEMENT_SQL)
             .bind(record.announcement_id)
+            .bind(portal_id)
             .bind(record.title)
             .bind(record.content)
             .bind(record.kind)
@@ -349,24 +381,32 @@ impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
         row.as_ref().map(map_announcement_row).transpose()
     }
 
-    async fn delete_announcement(&self, announcement_id: &str) -> Result<bool, DataLayerError> {
+    async fn delete_announcement_for_portal(
+        &self,
+        portal_id: &str,
+        announcement_id: &str,
+    ) -> Result<bool, DataLayerError> {
         let mut tx = self.pool.begin().await.map_postgres_err()?;
-        sqlx::query(DELETE_ANNOUNCEMENT_READS_SQL)
-            .bind(announcement_id)
-            .execute(&mut *tx)
-            .await
-            .map_postgres_err()?;
         let result = sqlx::query(DELETE_ANNOUNCEMENT_SQL)
             .bind(announcement_id)
+            .bind(portal_id)
             .execute(&mut *tx)
             .await
             .map_postgres_err()?;
+        if result.rows_affected() > 0 {
+            sqlx::query(DELETE_ANNOUNCEMENT_READS_SQL)
+                .bind(announcement_id)
+                .execute(&mut *tx)
+                .await
+                .map_postgres_err()?;
+        }
         tx.commit().await.map_postgres_err()?;
         Ok(result.rows_affected() > 0)
     }
 
-    async fn mark_announcement_as_read(
+    async fn mark_announcement_as_read_for_portal(
         &self,
+        portal_id: &str,
         user_id: &str,
         announcement_id: &str,
         read_at_unix_secs: u64,
@@ -376,6 +416,7 @@ impl AnnouncementWriteRepository for SqlxAnnouncementReadRepository {
             .bind(user_id)
             .bind(announcement_id)
             .bind(read_at_unix_secs as f64)
+            .bind(portal_id)
             .execute(&self.pool)
             .await
             .map_postgres_err()?;
@@ -399,8 +440,9 @@ fn current_unix_secs() -> u64 {
 }
 
 fn map_announcement_row(row: &PgRow) -> Result<StoredAnnouncement, DataLayerError> {
-    StoredAnnouncement::new(
+    StoredAnnouncement::new_for_portal(
         row.try_get("id").map_postgres_err()?,
+        row.try_get("portal_id").map_postgres_err()?,
         row.try_get("title").map_postgres_err()?,
         row.try_get("content").map_postgres_err()?,
         row.try_get("type").map_postgres_err()?,

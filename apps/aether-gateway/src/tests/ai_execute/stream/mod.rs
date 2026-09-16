@@ -10,10 +10,11 @@ use http::StatusCode;
 use serde_json::json;
 
 use crate::constants::{
-    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, DEPENDENCY_REASON_HEADER,
-    EXECUTION_PATH_EXECUTION_RUNTIME_STREAM, EXECUTION_PATH_EXECUTION_RUNTIME_SYNC,
-    EXECUTION_PATH_HEADER, EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS,
-    LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER, TRACE_ID_HEADER,
+    CONTROL_EXECUTED_HEADER, CONTROL_EXECUTE_FALLBACK_HEADER, CONTROL_REQUEST_ID_HEADER,
+    DEPENDENCY_REASON_HEADER, EXECUTION_PATH_EXECUTION_RUNTIME_STREAM,
+    EXECUTION_PATH_EXECUTION_RUNTIME_SYNC, EXECUTION_PATH_HEADER,
+    EXECUTION_PATH_LOCAL_EXECUTION_RUNTIME_MISS, LOCAL_EXECUTION_RUNTIME_MISS_REASON_HEADER,
+    TRACE_ID_HEADER,
 };
 
 use super::{
@@ -23,6 +24,15 @@ use super::{
     FrontdoorUserRpmConfig, GatewayFallbackMetricKind, GatewayFallbackReason, UsageRuntimeConfig,
     VideoTaskTruthSourceMode,
 };
+
+fn response_request_id(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(CONTROL_REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("response should expose the server request id")
+        .to_string()
+}
 
 mod decision;
 mod image;

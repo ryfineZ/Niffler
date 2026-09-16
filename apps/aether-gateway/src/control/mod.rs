@@ -24,7 +24,10 @@ pub(crate) use management_token_permissions::{
     management_token_required_permission, normalize_assignable_management_token_permissions,
     read_only_management_token_permissions, validate_management_token_admin_route_permission,
 };
-pub(crate) use public::{resolve_public_request_context, GatewayPublicRequestContext};
+pub(crate) use public::{
+    resolve_public_request_context, resolve_public_request_context_with_request_id,
+    GatewayPublicRequestContext,
+};
 pub(crate) use route::{classify_control_route, resolve_control_route, GatewayControlDecision};
 
 #[cfg(test)]

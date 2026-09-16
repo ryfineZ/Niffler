@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
+use super::UserPlanQuotaSummaryRecord;
 use crate::DataLayerError;
 
 pub(crate) const QUOTA_SCOPE_DAILY: &str = "daily";
@@ -36,12 +39,115 @@ pub(crate) struct StoredUsageQuotaWindow {
     pub window_ends_at: DateTime<Utc>,
 }
 
+pub(crate) type StoredUsageQuotaWindows = BTreeMap<String, StoredUsageQuotaWindow>;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct UsageQuotaSummary {
+    pub quota_total_usd: f64,
+    pub quota_used_usd: f64,
+    pub quota_remaining_usd: f64,
+    pub daily_total_usd: Option<f64>,
+    pub daily_used_usd: Option<f64>,
+    pub daily_remaining_usd: Option<f64>,
+    pub daily_window_started_at: Option<DateTime<Utc>>,
+    pub daily_window_ends_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedUserPlanQuotaSummary {
+    pub user_id: String,
+    pub entitlement_id: String,
+    pub plan_id: String,
+    pub plan_title: String,
+    pub starts_at_unix_secs: u64,
+    pub expires_at_unix_secs: u64,
+    pub grants: Vec<UsageQuotaGrant>,
+    pub usage_by_window: BTreeMap<(String, String), f64>,
+}
+
+impl LoadedUserPlanQuotaSummary {
+    pub(crate) fn into_record(self) -> UserPlanQuotaSummaryRecord {
+        let summary = summarize_usage_quota_grants(&self.grants, |grant| {
+            self.usage_by_window
+                .get(&(grant.scope.to_string(), grant.window_key.clone()))
+                .copied()
+                .unwrap_or(0.0)
+        })
+        .unwrap_or_default();
+        UserPlanQuotaSummaryRecord {
+            user_id: self.user_id,
+            entitlement_id: self.entitlement_id,
+            plan_id: self.plan_id,
+            plan_title: self.plan_title,
+            starts_at_unix_secs: self.starts_at_unix_secs,
+            expires_at_unix_secs: self.expires_at_unix_secs,
+            quota_total_usd: summary.quota_total_usd,
+            quota_used_usd: summary.quota_used_usd,
+            quota_remaining_usd: summary.quota_remaining_usd,
+            daily_total_usd: summary.daily_total_usd,
+            daily_used_usd: summary.daily_used_usd,
+            daily_remaining_usd: summary.daily_remaining_usd,
+            daily_window_started_at_unix_secs: summary
+                .daily_window_started_at
+                .map(|value| value.timestamp().max(0) as u64),
+            daily_window_ends_at_unix_secs: summary
+                .daily_window_ends_at
+                .map(|value| value.timestamp().max(0) as u64),
+        }
+    }
+}
+
+pub(crate) fn summarize_usage_quota_grants(
+    grants: &[UsageQuotaGrant],
+    mut used_usd_for_grant: impl FnMut(&UsageQuotaGrant) -> f64,
+) -> Option<UsageQuotaSummary> {
+    let mut quota_total_usd: Option<f64> = None;
+    let mut quota_remaining_usd: Option<f64> = None;
+    let mut daily_total_usd: Option<f64> = None;
+    let mut daily_remaining_usd: Option<f64> = None;
+    let mut daily_window_started_at = None;
+    let mut daily_window_ends_at = None;
+
+    for grant in grants {
+        let used_usd = used_usd_for_grant(grant).max(0.0);
+        let remaining_usd = (grant.limit_usd - used_usd).max(0.0);
+        quota_total_usd =
+            Some(quota_total_usd.map_or(grant.limit_usd, |value| value.min(grant.limit_usd)));
+        quota_remaining_usd =
+            Some(quota_remaining_usd.map_or(remaining_usd, |value| value.min(remaining_usd)));
+
+        if grant.scope == QUOTA_SCOPE_DAILY
+            && daily_total_usd.is_none_or(|value| grant.limit_usd < value)
+        {
+            daily_total_usd = Some(grant.limit_usd);
+            daily_remaining_usd = Some(remaining_usd);
+            daily_window_started_at = Some(grant.window_started_at);
+            daily_window_ends_at = Some(grant.window_ends_at);
+        }
+    }
+
+    let quota_total_usd = quota_total_usd?;
+    let quota_remaining_usd = quota_remaining_usd.unwrap_or_default();
+    Some(UsageQuotaSummary {
+        quota_total_usd,
+        quota_used_usd: (quota_total_usd - quota_remaining_usd).max(0.0),
+        quota_remaining_usd,
+        daily_total_usd,
+        daily_used_usd: daily_total_usd
+            .zip(daily_remaining_usd)
+            .map(|(total, remaining)| (total - remaining).max(0.0)),
+        daily_remaining_usd,
+        daily_window_started_at,
+        daily_window_ends_at,
+    })
+}
+
 pub(crate) fn usage_quota_grants_from_entitlement(
     entitlement_id: &str,
     entitlements: &Value,
     now: DateTime<Utc>,
     entitlement_started_at: DateTime<Utc>,
-    stored_five_hour: Option<&StoredUsageQuotaWindow>,
+    stored_windows: Option<&StoredUsageQuotaWindows>,
 ) -> Result<Vec<UsageQuotaGrant>, DataLayerError> {
     let mut grants = Vec::new();
     for item in usage_quota_items(entitlements) {
@@ -58,11 +164,12 @@ pub(crate) fn usage_quota_grants_from_entitlement(
             entitlement_id,
             quota_value(item, limits, "daily_quota_usd", "daily_limit_usd"),
             quota_multiplier,
-            rolling_window(
+            effective_rolling_window(
                 now,
                 entitlement_started_at,
                 Duration::days(1),
                 QUOTA_SCOPE_DAILY,
+                stored_windows.and_then(|windows| windows.get(QUOTA_SCOPE_DAILY)),
             ),
             allow_wallet_overage,
             allowed_global_model_ids.as_deref(),
@@ -72,7 +179,10 @@ pub(crate) fn usage_quota_grants_from_entitlement(
             entitlement_id,
             quota_value(item, limits, "five_hour_quota_usd", "five_hour_limit_usd"),
             quota_multiplier,
-            five_hour_window(now, stored_five_hour),
+            five_hour_window(
+                now,
+                stored_windows.and_then(|windows| windows.get(QUOTA_SCOPE_FIVE_HOUR)),
+            ),
             allow_wallet_overage,
             allowed_global_model_ids.as_deref(),
         );
@@ -81,11 +191,12 @@ pub(crate) fn usage_quota_grants_from_entitlement(
             entitlement_id,
             quota_value(item, limits, "weekly_quota_usd", "weekly_limit_usd"),
             quota_multiplier,
-            rolling_window(
+            effective_rolling_window(
                 now,
                 entitlement_started_at,
                 Duration::weeks(1),
                 QUOTA_SCOPE_WEEKLY,
+                stored_windows.and_then(|windows| windows.get(QUOTA_SCOPE_WEEKLY)),
             ),
             allow_wallet_overage,
             allowed_global_model_ids.as_deref(),
@@ -95,11 +206,12 @@ pub(crate) fn usage_quota_grants_from_entitlement(
             entitlement_id,
             quota_value(item, limits, "monthly_quota_usd", "monthly_limit_usd"),
             quota_multiplier,
-            rolling_window(
+            effective_rolling_window(
                 now,
                 entitlement_started_at,
                 Duration::days(30),
                 QUOTA_SCOPE_MONTHLY,
+                stored_windows.and_then(|windows| windows.get(QUOTA_SCOPE_MONTHLY)),
             ),
             allow_wallet_overage,
             allowed_global_model_ids.as_deref(),
@@ -291,6 +403,26 @@ fn five_hour_window(
     }
 }
 
+fn effective_rolling_window(
+    now: DateTime<Utc>,
+    entitlement_started_at: DateTime<Utc>,
+    duration: Duration,
+    scope: &'static str,
+    stored: Option<&StoredUsageQuotaWindow>,
+) -> UsageQuotaWindow {
+    if let Some(stored) = stored {
+        if stored.window_ends_at > now {
+            return UsageQuotaWindow {
+                scope,
+                key: stored.window_key.clone(),
+                started_at: stored.window_started_at,
+                ends_at: stored.window_ends_at,
+            };
+        }
+    }
+    rolling_window(now, entitlement_started_at, duration, scope)
+}
+
 fn rolling_window(
     now: DateTime<Utc>,
     entitlement_started_at: DateTime<Utc>,
@@ -322,8 +454,9 @@ mod tests {
 
     use super::{
         entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
-        usage_quota_grants_from_entitlement, StoredUsageQuotaWindow, QUOTA_SCOPE_DAILY,
-        QUOTA_SCOPE_FIVE_HOUR, QUOTA_SCOPE_MONTHLY, QUOTA_SCOPE_WEEKLY,
+        summarize_usage_quota_grants, usage_quota_grants_from_entitlement, StoredUsageQuotaWindow,
+        StoredUsageQuotaWindows, QUOTA_SCOPE_DAILY, QUOTA_SCOPE_FIVE_HOUR, QUOTA_SCOPE_MONTHLY,
+        QUOTA_SCOPE_WEEKLY,
     };
 
     #[test]
@@ -409,11 +542,14 @@ mod tests {
     fn five_hour_window_reuses_active_user_window() {
         let now = chrono::Utc.with_ymd_and_hms(2026, 5, 28, 10, 0, 0).unwrap();
         let started_at = chrono::Utc.with_ymd_and_hms(2026, 5, 28, 8, 0, 0).unwrap();
-        let stored = StoredUsageQuotaWindow {
-            window_key: "fh-existing".to_string(),
-            window_started_at: started_at,
-            window_ends_at: started_at + chrono::Duration::hours(5),
-        };
+        let stored = StoredUsageQuotaWindows::from([(
+            QUOTA_SCOPE_FIVE_HOUR.to_string(),
+            StoredUsageQuotaWindow {
+                window_key: "fh-existing".to_string(),
+                window_started_at: started_at,
+                window_ends_at: started_at + chrono::Duration::hours(5),
+            },
+        )]);
         let grants = usage_quota_grants_from_entitlement(
             "ent-1",
             &json!([{"type":"daily_quota","five_hour_quota_usd":20.0}]),
@@ -429,6 +565,41 @@ mod tests {
             .expect("five hour grant should exist");
         assert_eq!(grant.window_key, "fh-existing");
         assert_eq!(grant.window_started_at, started_at);
+    }
+
+    #[test]
+    fn daily_window_reuses_active_database_window_after_entitlement_start_changes() {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
+        let stored_started_at = chrono::Utc.with_ymd_and_hms(2026, 8, 15, 8, 0, 0).unwrap();
+        let edited_entitlement_start = chrono::Utc.with_ymd_and_hms(2026, 8, 15, 10, 0, 0).unwrap();
+        let stored = StoredUsageQuotaWindows::from([(
+            QUOTA_SCOPE_DAILY.to_string(),
+            StoredUsageQuotaWindow {
+                window_key: "day-original".to_string(),
+                window_started_at: stored_started_at,
+                window_ends_at: stored_started_at + chrono::Duration::days(1),
+            },
+        )]);
+
+        let grants = usage_quota_grants_from_entitlement(
+            "ent-1",
+            &json!([{"type":"daily_quota","daily_quota_usd":20.0}]),
+            now,
+            edited_entitlement_start,
+            Some(&stored),
+        )
+        .expect("quota grants should parse");
+        let daily = grants
+            .iter()
+            .find(|grant| grant.scope == QUOTA_SCOPE_DAILY)
+            .expect("daily grant should exist");
+
+        assert_eq!(daily.window_key, "day-original");
+        assert_eq!(daily.window_started_at, stored_started_at);
+        assert_eq!(
+            daily.window_ends_at,
+            stored_started_at + chrono::Duration::days(1)
+        );
     }
 
     #[test]
@@ -486,5 +657,78 @@ mod tests {
             monthly.window_ends_at,
             entitlement_started_at + chrono::Duration::days(30)
         );
+    }
+
+    #[test]
+    fn quota_summary_keeps_daily_window_and_uses_the_tightest_limit() {
+        let entitlement_started_at = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 15, 13, 35, 29)
+            .unwrap();
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 15, 14, 5, 29)
+            .unwrap();
+        let grants = usage_quota_grants_from_entitlement(
+            "ent-1",
+            &json!([{
+                "type":"usage_quota",
+                "daily_quota_usd":80.0,
+                "monthly_quota_usd":2400.0
+            }]),
+            now,
+            entitlement_started_at,
+            None,
+        )
+        .expect("quota grants should parse");
+
+        let summary = summarize_usage_quota_grants(&grants, |grant| match grant.scope {
+            QUOTA_SCOPE_DAILY => 80.0,
+            QUOTA_SCOPE_MONTHLY => 1_465.824_454_4,
+            _ => 0.0,
+        })
+        .expect("summary should exist");
+
+        assert_eq!(summary.quota_total_usd, 80.0);
+        assert_eq!(summary.quota_used_usd, 80.0);
+        assert_eq!(summary.quota_remaining_usd, 0.0);
+        assert_eq!(summary.daily_total_usd, Some(80.0));
+        assert_eq!(summary.daily_used_usd, Some(80.0));
+        assert_eq!(summary.daily_remaining_usd, Some(0.0));
+        assert_eq!(
+            summary.daily_window_started_at,
+            Some(entitlement_started_at)
+        );
+        assert_eq!(
+            summary.daily_window_ends_at,
+            Some(entitlement_started_at + chrono::Duration::days(1))
+        );
+    }
+
+    #[test]
+    fn quota_summary_reports_monthly_exhaustion_as_actual_remaining() {
+        let entitlement_started_at = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 15, 13, 35, 29)
+            .unwrap();
+        let grants = usage_quota_grants_from_entitlement(
+            "ent-1",
+            &json!([{
+                "type":"usage_quota",
+                "daily_quota_usd":80.0,
+                "monthly_quota_usd":100.0
+            }]),
+            entitlement_started_at,
+            entitlement_started_at,
+            None,
+        )
+        .expect("quota grants should parse");
+
+        let summary = summarize_usage_quota_grants(&grants, |grant| match grant.scope {
+            QUOTA_SCOPE_DAILY => 10.0,
+            QUOTA_SCOPE_MONTHLY => 100.0,
+            _ => 0.0,
+        })
+        .expect("summary should exist");
+
+        assert_eq!(summary.daily_remaining_usd, Some(70.0));
+        assert_eq!(summary.quota_remaining_usd, 0.0);
     }
 }

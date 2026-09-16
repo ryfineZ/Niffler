@@ -11,6 +11,7 @@ export interface UsageChargeBreakdown {
   package_multiplier?: number | null
   wallet_debit?: number | null
   wallet_multiplier?: number | null
+  wallet_discount?: number | null
   user_debit?: number | null
 }
 
@@ -35,6 +36,7 @@ export interface UsageRecord {
   official_cost?: number | null
   cost?: number
   sales_multiplier?: number | null
+  discount?: number | null
   model_cost?: number | null
   moderation_cost?: number | null
   actual_cost?: number | null

@@ -18,7 +18,7 @@ pub(crate) use chat::{
     set_local_openai_chat_execution_exhausted_diagnostic,
 };
 pub(crate) use embedding::maybe_build_sync_local_openai_embedding_decision_payload;
-pub(super) use image_intent::{
+pub(crate) use image_intent::{
     openai_image_generation_candidate_model, openai_request_is_image_generation_intent,
 };
 pub(crate) use responses::{

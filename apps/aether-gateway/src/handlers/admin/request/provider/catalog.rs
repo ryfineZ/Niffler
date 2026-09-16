@@ -194,6 +194,13 @@ impl<'a> AdminAppState<'a> {
         self.app.delete_provider_catalog_key(key_id).await
     }
 
+    pub(crate) async fn delete_provider_catalog_keys(
+        &self,
+        keys: &[aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey],
+    ) -> Result<usize, GatewayError> {
+        self.app.delete_provider_catalog_keys(keys).await
+    }
+
     pub(crate) async fn create_provider_catalog_provider(
         &self,
         provider: &aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider,

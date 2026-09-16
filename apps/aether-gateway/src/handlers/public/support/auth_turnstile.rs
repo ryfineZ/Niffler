@@ -1,5 +1,5 @@
 use super::{
-    auth_client_ip_with_cf, build_auth_error_response, decrypt_catalog_secret_with_fallbacks, http,
+    auth_trusted_client_ip, build_auth_error_response, decrypt_catalog_secret_with_fallbacks, http,
     system_config_bool, system_config_string, system_config_string_list, AppState, Body, Response,
 };
 use serde::{Deserialize, Serialize};
@@ -74,12 +74,11 @@ impl AuthTurnstileFailure {
 
 pub(super) async fn verify_auth_turnstile(
     state: &AppState,
-    headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     token: Option<&str>,
     action: AuthTurnstileAction,
 ) -> Result<(), Response<Body>> {
-    match verify_auth_turnstile_inner(state, headers, cf_connecting_ip, token, action).await {
+    match verify_auth_turnstile_inner(state, client_ip, token, action).await {
         Ok(()) => Ok(()),
         Err(err) => Err(err.into_response()),
     }
@@ -87,8 +86,7 @@ pub(super) async fn verify_auth_turnstile(
 
 async fn verify_auth_turnstile_inner(
     state: &AppState,
-    headers: &http::HeaderMap,
-    cf_connecting_ip: Option<&str>,
+    client_ip: Option<&str>,
     token: Option<&str>,
     action: AuthTurnstileAction,
 ) -> Result<(), AuthTurnstileFailure> {
@@ -118,7 +116,7 @@ async fn verify_auth_turnstile_inner(
         return Err(AuthTurnstileFailure::BadRequest("人机验证失败，请重试"));
     }
 
-    let remoteip = auth_client_ip_with_cf(headers, cf_connecting_ip);
+    let remoteip = auth_trusted_client_ip(client_ip);
     let siteverify_request = TurnstileSiteverifyRequest {
         secret: secret_key,
         response: token,

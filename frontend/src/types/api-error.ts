@@ -16,6 +16,8 @@ export interface ApiErrorResponse {
   }
   detail?: string
   message?: string
+  portal_mismatch?: boolean
+  canonical_url?: string | null
 }
 
 /**

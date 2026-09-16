@@ -259,7 +259,8 @@ LIMIT 1
             r#"
 SELECT
   id, order_id, idempotency_key, inviter_user_id, invitee_user_id, rule_id,
-  reward_amount_usd, rule_snapshot, status, failure_reason, retry_count,
+  reward_amount_usd::double precision AS reward_amount_usd,
+  rule_snapshot, status, failure_reason, retry_count,
   paid_at_unix_ms, cancelled_at_unix_ms, created_at_unix_ms, updated_at_unix_ms
 FROM niffler_referral_reward_ledger
 WHERE order_id = $1
@@ -289,8 +290,11 @@ LIMIT 1
 SELECT
   id, request_id, user_id, api_key_id, product_plan_id, upstream_service_id,
   upstream_account_id, requested_model_name, upstream_execution_model_name,
-  image_tool_model_name, pricing_snapshot, wallet_charge_usd,
-  entitlement_charge_usd, upstream_cost_usd, gross_margin_usd,
+  image_tool_model_name, pricing_snapshot,
+  wallet_charge_usd::double precision AS wallet_charge_usd,
+  entitlement_charge_usd::double precision AS entitlement_charge_usd,
+  upstream_cost_usd::double precision AS upstream_cost_usd,
+  gross_margin_usd::double precision AS gross_margin_usd,
   created_at_unix_ms, finalized_at_unix_ms
 FROM niffler_settlement_snapshots
 WHERE request_id = $1
@@ -319,7 +323,9 @@ LIMIT 1
             r#"
 SELECT
   id, request_id, user_id, api_key_id, product_plan_id, requested_model_name,
-  estimated_reservation_usd, legacy_final_charge_usd, difference_usd,
+  estimated_reservation_usd::double precision AS estimated_reservation_usd,
+  legacy_final_charge_usd::double precision AS legacy_final_charge_usd,
+  difference_usd::double precision AS difference_usd,
   estimation_source, status, created_at_unix_ms, finalized_at_unix_ms
 FROM niffler_billing_reservation_dry_runs
 WHERE request_id = $1
@@ -361,7 +367,9 @@ LIMIT 1
             r#"
 SELECT
   id, request_id, user_id, api_key_id, product_plan_id, status,
-  reserved_total_usd, wallet_reserved_usd, entitlement_reserved_usd,
+  reserved_total_usd::double precision AS reserved_total_usd,
+  wallet_reserved_usd::double precision AS wallet_reserved_usd,
+  entitlement_reserved_usd::double precision AS entitlement_reserved_usd,
   reserved_at_unix_ms, expires_at_unix_ms, finalized_at_unix_ms,
   settlement_snapshot_id, release_reason, idempotency_key
 FROM niffler_billing_reservations
@@ -1452,7 +1460,7 @@ SET status = $2,
     settlement_snapshot_id = $4,
     release_reason = $5
 WHERE request_id = $1 AND status = 'active'
-RETURNING id, reserved_total_usd
+RETURNING id, reserved_total_usd::double precision AS reserved_total_usd
 "#,
         )
         .bind(&record.request_id)
@@ -2231,8 +2239,11 @@ fn build_settlement_snapshot_rows_query(
          ua.display_name AS upstream_account_display_name, ua.email AS upstream_account_email, \
          ua.phone AS upstream_account_phone, ss.requested_model_name, \
          ss.upstream_execution_model_name, ss.image_tool_model_name, ss.pricing_snapshot, \
-         ss.wallet_charge_usd, ss.entitlement_charge_usd, ss.upstream_cost_usd, \
-         ss.gross_margin_usd, ss.created_at_unix_ms, ss.finalized_at_unix_ms \
+         ss.wallet_charge_usd::double precision AS wallet_charge_usd, \
+         ss.entitlement_charge_usd::double precision AS entitlement_charge_usd, \
+         ss.upstream_cost_usd::double precision AS upstream_cost_usd, \
+         ss.gross_margin_usd::double precision AS gross_margin_usd, \
+         ss.created_at_unix_ms, ss.finalized_at_unix_ms \
          FROM niffler_settlement_snapshots ss \
          LEFT JOIN niffler_product_plans pp ON pp.id = ss.product_plan_id \
          LEFT JOIN niffler_upstream_services us ON us.id = ss.upstream_service_id \
@@ -2309,11 +2320,11 @@ fn build_consistency_check_rows_query(
                  + GREATEST(0.0, COALESCE(COALESCE(uss.wallet_gift_balance_before, u.wallet_gift_balance_before), 0.0) \
                    - COALESCE(COALESCE(uss.wallet_gift_balance_after, u.wallet_gift_balance_after), 0.0)) \
          END AS legacy_wallet_charge_usd, \
-         COALESCE((SELECT SUM(eul.amount_usd) FROM entitlement_usage_ledgers eul WHERE eul.request_id = ss.request_id), 0.0) \
-           AS legacy_entitlement_charge_usd, \
-         ss.wallet_charge_usd AS niffler_wallet_charge_usd, \
-         ss.entitlement_charge_usd AS niffler_entitlement_charge_usd, \
-         ss.wallet_charge_usd + ss.entitlement_charge_usd AS niffler_total_charge_usd, \
+         CAST(COALESCE((SELECT SUM(eul.amount_usd) FROM entitlement_usage_ledgers eul WHERE eul.request_id = ss.request_id), 0.0) \
+           AS DOUBLE PRECISION) AS legacy_entitlement_charge_usd, \
+         ss.wallet_charge_usd::double precision AS niffler_wallet_charge_usd, \
+         ss.entitlement_charge_usd::double precision AS niffler_entitlement_charge_usd, \
+         (ss.wallet_charge_usd + ss.entitlement_charge_usd)::double precision AS niffler_total_charge_usd, \
          br.id AS reservation_id, br.status AS reservation_status, \
          br.release_reason AS reservation_release_reason, \
          COALESCE((SELECT COUNT(*) FROM niffler_route_attempts ra WHERE ra.request_id = ss.request_id), 0) \
@@ -2434,7 +2445,9 @@ fn build_billing_reservation_rows_query(
 ) -> QueryBuilder<'_, Postgres> {
     let mut builder = QueryBuilder::new(
         "SELECT id, request_id, user_id, api_key_id, product_plan_id, status, \
-         reserved_total_usd, wallet_reserved_usd, entitlement_reserved_usd, \
+         reserved_total_usd::double precision AS reserved_total_usd, \
+         wallet_reserved_usd::double precision AS wallet_reserved_usd, \
+         entitlement_reserved_usd::double precision AS entitlement_reserved_usd, \
          reserved_at_unix_ms, expires_at_unix_ms, finalized_at_unix_ms, \
          settlement_snapshot_id, release_reason, idempotency_key \
          FROM niffler_billing_reservations",
@@ -2532,7 +2545,9 @@ fn build_billing_reservation_dry_run_rows_query(
 ) -> QueryBuilder<'_, Postgres> {
     let mut builder = QueryBuilder::new(
         "SELECT id, request_id, user_id, api_key_id, product_plan_id, requested_model_name, \
-         estimated_reservation_usd, legacy_final_charge_usd, difference_usd, \
+         estimated_reservation_usd::double precision AS estimated_reservation_usd, \
+         legacy_final_charge_usd::double precision AS legacy_final_charge_usd, \
+         difference_usd::double precision AS difference_usd, \
          estimation_source, status, created_at_unix_ms, finalized_at_unix_ms \
          FROM niffler_billing_reservation_dry_runs",
     );
@@ -2612,7 +2627,8 @@ fn build_referral_reward_ledger_rows_query(
 ) -> QueryBuilder<'_, Postgres> {
     let mut builder = QueryBuilder::new(
         "SELECT id, order_id, idempotency_key, inviter_user_id, invitee_user_id, rule_id, \
-         reward_amount_usd, rule_snapshot, status, failure_reason, retry_count, \
+         reward_amount_usd::double precision AS reward_amount_usd, \
+         rule_snapshot, status, failure_reason, retry_count, \
          paid_at_unix_ms, cancelled_at_unix_ms, created_at_unix_ms, updated_at_unix_ms \
          FROM niffler_referral_reward_ledger",
     );

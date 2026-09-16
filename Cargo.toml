@@ -91,7 +91,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_path_to_error = "0.1"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "mysql", "sqlite", "runtime-tokio-rustls", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "chrono"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util"] }

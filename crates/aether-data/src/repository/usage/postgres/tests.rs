@@ -938,14 +938,16 @@ fn usage_sql_recovers_void_failures_before_upsert_and_settlement() {
 }
 
 #[test]
-fn recovered_stale_usage_sql_finalizes_settlement_state() {
+fn recovered_stale_usage_sql_preserves_pending_settlement_without_snapshot() {
     assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("status = 'completed'"));
     assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("billing_status = 'settled'"));
-    assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("finalized_at = $2"));
+    assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("ELSE 'pending'"));
+    assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("ELSE NULL"));
+    assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL
+        .contains("usage_settlement_snapshots.billing_status = 'settled'"));
     assert!(
-        super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("INSERT INTO usage_settlement_snapshots")
+        !super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("INSERT INTO usage_settlement_snapshots")
     );
-    assert!(super::UPDATE_RECOVERED_STALE_USAGE_SQL.contains("SELECT request_id, 'settled', $2"));
 }
 
 #[test]

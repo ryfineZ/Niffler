@@ -64,6 +64,7 @@ export interface UsageRecordDetail {
   official_cost?: number | null  // 模型官方价格
   cost: number  // 用户实际扣费
   sales_multiplier?: number | null  // 用户侧倍率
+  discount?: number | null  // 专属门户用户折扣
   model_cost?: number | null  // 原模型扣费
   moderation_cost?: number | null  // 审查成本
   actual_cost?: number  // 平台成本（仅管理员可见）
@@ -76,6 +77,7 @@ export interface UsageRecordDetail {
     package_multiplier?: number | null
     wallet_debit?: number | null
     wallet_multiplier?: number | null
+    wallet_discount?: number | null
     user_debit?: number | null
   } | null
   response_time_ms?: number | null
@@ -205,6 +207,7 @@ export interface ApiKeyGroupOption {
   name: string
   description?: string | null
   visibility: 'public' | 'internal'
+  discount?: number
   sales_multiplier?: number
 }
 
@@ -387,6 +390,7 @@ export const meApi = {
       official_cost?: number | null
       cost: number
       sales_multiplier?: number | null
+      discount?: number | null
       charge_breakdown?: UsageRecordDetail['charge_breakdown']
       actual_cost?: number | null
       rate_multiplier?: number | null

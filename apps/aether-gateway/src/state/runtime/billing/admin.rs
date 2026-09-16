@@ -3,7 +3,7 @@ use super::{
     AdminBillingPresetApplyResult, AdminBillingRuleRecord, AdminBillingRuleWriteInput, AppState,
     BillingPlanRecord, BillingPlanWriteInput, GatewayError, LocalMutationOutcome,
     PaymentGatewayConfigRecord, PaymentGatewayConfigWriteInput, UserDailyQuotaAvailabilityRecord,
-    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput,
+    UserPlanEntitlementRecord, UserPlanEntitlementUpdateInput, UserPlanQuotaSummaryRecord,
 };
 
 fn data_error(err: impl ToString) -> GatewayError {
@@ -501,6 +501,16 @@ impl AppState {
     ) -> Result<Option<Vec<UserPlanEntitlementRecord>>, GatewayError> {
         self.data
             .list_user_plan_entitlements(user_id)
+            .await
+            .map_err(data_error)
+    }
+
+    pub(crate) async fn list_active_user_plan_quota_summaries(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, GatewayError> {
+        self.data
+            .list_active_user_plan_quota_summaries(user_ids)
             .await
             .map_err(data_error)
     }

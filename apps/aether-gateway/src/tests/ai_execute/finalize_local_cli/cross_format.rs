@@ -383,6 +383,7 @@ async fn gateway_executes_openai_responses_cross_format_upstream_stream_via_loca
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
     let response_status = response.status();
     let response_body = response.text().await.expect("body should read");
 
@@ -430,10 +431,7 @@ async fn gateway_executes_openai_responses_cross_format_upstream_stream_via_loca
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-cli-xfmt-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-openai-cli-xfmt-stream-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent"
@@ -455,7 +453,7 @@ async fn gateway_executes_openai_responses_cross_format_upstream_stream_via_loca
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-cli-xfmt-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -839,6 +837,7 @@ async fn gateway_executes_openai_responses_cross_format_function_call_upstream_s
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -892,10 +891,7 @@ async fn gateway_executes_openai_responses_cross_format_function_call_upstream_s
         seen_remote_execution_runtime_request.trace_id,
         "trace-openai-cli-xfmt-tool-stream-123"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-openai-cli-xfmt-tool-stream-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.url,
         "https://generativelanguage.googleapis.com/custom/v1beta/models/gemini-2.5-pro-upstream:generateContent"
@@ -917,7 +913,7 @@ async fn gateway_executes_openai_responses_cross_format_function_call_upstream_s
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-cli-xfmt-tool-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1
@@ -1409,6 +1405,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
         .await
         .expect("request should succeed");
     let elapsed = started_at.elapsed();
+    let request_id = super::response_request_id(&response);
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
@@ -1504,10 +1501,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
         seen_remote_execution_runtime_request.project,
         "project-antigravity-local-1"
     );
-    assert_eq!(
-        seen_remote_execution_runtime_request.request_id,
-        "trace-openai-cli-antigravity-xfmt-stream-123"
-    );
+    assert_eq!(seen_remote_execution_runtime_request.request_id, request_id);
     assert_eq!(
         seen_remote_execution_runtime_request.model,
         "claude-sonnet-4-5"
@@ -1523,7 +1517,7 @@ async fn gateway_executes_openai_responses_antigravity_cross_format_upstream_str
     let mut stored_candidates = Vec::new();
     for _ in 0..50 {
         stored_candidates = request_candidate_repository
-            .list_by_request_id("trace-openai-cli-antigravity-xfmt-stream-123")
+            .list_by_request_id(&request_id)
             .await
             .expect("request candidate trace should read");
         if stored_candidates.len() == 1

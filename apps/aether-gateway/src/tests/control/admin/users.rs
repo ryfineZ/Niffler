@@ -13,9 +13,13 @@ use aether_data::repository::users::{
 };
 use aether_data::repository::wallet::InMemoryWalletRepository;
 use aether_data::repository::wallet::StoredWalletSnapshot;
-use aether_data_contracts::repository::billing::{BillingPlanRecord, UserPlanEntitlementRecord};
+use aether_data_contracts::repository::billing::{
+    BillingPlanRecord, BillingReadRepository, StoredBillingModelContext, UserPlanEntitlementRecord,
+    UserPlanQuotaSummaryRecord,
+};
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogProvider;
 use aether_data_contracts::repository::usage::StoredRequestUsageAudit;
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::routing::{any, delete, get, patch, post, put};
 use axum::{extract::Request, Router};
@@ -272,6 +276,75 @@ fn sample_admin_api_key_snapshot(user_id: &str, api_key_id: &str) -> StoredAuthA
     .expect("api key snapshot should build")
 }
 
+#[derive(Debug)]
+struct UnavailablePlanSummaryRepository;
+
+#[async_trait]
+impl BillingReadRepository for UnavailablePlanSummaryRepository {
+    async fn find_model_context(
+        &self,
+        _provider_id: &str,
+        _provider_api_key_id: Option<&str>,
+        _global_model_name: &str,
+    ) -> Result<Option<StoredBillingModelContext>, aether_data::DataLayerError> {
+        Ok(None)
+    }
+
+    async fn list_active_user_plan_quota_summaries(
+        &self,
+        _user_ids: &[String],
+    ) -> Result<Option<Vec<UserPlanQuotaSummaryRecord>>, aether_data::DataLayerError> {
+        Err(aether_data::DataLayerError::UnexpectedValue(
+            "simulated plan summary failure".to_string(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn admin_user_list_stays_available_when_plan_summary_fails() {
+    let user_repository = Arc::new(
+        InMemoryUserReadRepository::seed_auth_users(vec![sample_admin_user("user-1")])
+            .with_export_users(vec![sample_admin_export_user("user-1")]),
+    );
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_usage_billing_and_wallet_for_tests(
+                    Arc::new(InMemoryUsageReadRepository::default()),
+                    Arc::new(UnavailablePlanSummaryRepository),
+                    Arc::new(InMemoryWalletRepository::seed(vec![sample_admin_wallet(
+                        "user-1", "monthly",
+                    )])),
+                )
+                .with_user_reader(user_repository),
+            ),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/api/admin/users?skip=0&limit=20&role=user&is_active=true"
+        ))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    let items = payload.as_array().expect("list payload should be array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "user-1");
+    assert_eq!(items[0]["plan"], serde_json::Value::Null);
+    assert_eq!(items[0]["plan_summary_status"], "unavailable");
+
+    gateway_handle.abort();
+}
+
 #[tokio::test]
 async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
@@ -342,16 +415,28 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
             777,
         ),
     ]));
+    let billing_repository = Arc::new(
+        InMemoryBillingReadRepository::default()
+            .with_billing_plans(vec![sample_billing_plan("plan-1")])
+            .with_user_plan_entitlements(vec![sample_user_plan_entitlement(
+                "entitlement-user-1",
+                "user-1",
+                "plan-1",
+            )]),
+    );
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
         AppState::new()
             .expect("gateway should build")
-            .with_data_state_for_tests(GatewayDataState::with_user_wallet_and_usage_for_tests(
-                user_repository,
-                wallet_repository,
-                usage_repository,
-            )),
+            .with_data_state_for_tests(
+                GatewayDataState::with_usage_billing_and_wallet_for_tests(
+                    usage_repository,
+                    billing_repository,
+                    wallet_repository,
+                )
+                .with_user_reader(user_repository),
+            ),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -383,6 +468,11 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
     assert_eq!(items[0]["is_active"], true);
     assert_eq!(items[0]["request_count"], 2);
     assert_eq!(items[0]["total_tokens"], 100);
+    assert_eq!(items[0]["plan"]["plan_title"], "测试套餐");
+    assert_eq!(items[0]["plan"]["daily_total_usd"], 100.0);
+    assert_eq!(items[0]["plan"]["daily_remaining_usd"], 100.0);
+    assert!(items[0]["plan"]["daily_window_ends_at"].is_string());
+    assert_eq!(items[0]["plan_summary_status"], "ok");
 
     let search_response = reqwest::Client::new()
         .get(format!(
@@ -411,6 +501,8 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
     assert_eq!(search_items[0]["wallet"]["spendable_wallet_balance"], 0.0);
     assert_eq!(search_items[0]["wallet"]["debt_usd"], 626.71);
     assert_eq!(search_items[0]["wallet"]["billing_state"], "in_debt");
+    assert_eq!(search_items[0]["plan"], serde_json::Value::Null);
+    assert_eq!(search_items[0]["plan_summary_status"], "ok");
 
     let id_search_response = reqwest::Client::new()
         .get(format!(

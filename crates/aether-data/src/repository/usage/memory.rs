@@ -139,16 +139,6 @@ impl InMemoryUsageReadRepository {
         }
     }
 
-    pub(crate) fn replace_provider_api_key_window_resets(
-        &self,
-        resets: BTreeMap<(String, String, u64, u64), u64>,
-    ) {
-        *self
-            .provider_api_key_window_resets
-            .write()
-            .expect("usage repository reset lock") = resets;
-    }
-
     pub fn with_auth_api_key_repository(
         mut self,
         repository: Arc<InMemoryAuthApiKeySnapshotRepository>,

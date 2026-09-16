@@ -13,6 +13,9 @@ MESSAGE_COUNT_FILE="$TEST_ROOT/message-count"
 LAST_MESSAGE_FILE="$TEST_ROOT/last-message"
 CONTAINER_HEALTH_FILE="$TEST_ROOT/container-health"
 DISK_USAGE_FILE="$TEST_ROOT/disk-usage"
+POSTGRES_RESULT_FILE="$TEST_ROOT/postgres-result"
+DOCKER_EXEC_ARGS_FILE="$TEST_ROOT/docker-exec-args"
+BACKUP_SERVICE_STATE_FILE="$TEST_ROOT/backup-service-state"
 
 cleanup() {
     rm -rf -- "$TEST_ROOT"
@@ -24,18 +27,27 @@ printf '0\n' > "$MESSAGE_COUNT_FILE"
 printf '\n' > "$LAST_MESSAGE_FILE"
 printf 'unhealthy\n' > "$CONTAINER_HEALTH_FILE"
 printf '42\n' > "$DISK_USAGE_FILE"
+printf 'f\n' > "$POSTGRES_RESULT_FILE"
+printf '\n' > "$DOCKER_EXEC_ARGS_FILE"
+printf 'inactive\n' > "$BACKUP_SERVICE_STATE_FILE"
 
 cat > "$FAKE_BIN/docker" <<'EOF'
 #!/bin/bash
 set -euo pipefail
-if [ "$1" != "inspect" ]; then
-    exit 1
-fi
-if [ "$(cat "$CONTAINER_HEALTH_FILE")" = "healthy" ]; then
-    printf 'true healthy\n'
-else
-    printf 'true unhealthy\n'
-fi
+case "$1" in
+    inspect)
+        if [ "$(cat "$CONTAINER_HEALTH_FILE")" = "healthy" ]; then
+            printf 'true healthy\n'
+        else
+            printf 'true unhealthy\n'
+        fi
+        ;;
+    exec)
+        printf '%s\n' "$*" > "$DOCKER_EXEC_ARGS_FILE"
+        cat "$POSTGRES_RESULT_FILE"
+        ;;
+    *) exit 1 ;;
+esac
 EOF
 
 cat > "$FAKE_BIN/df" <<'EOF'
@@ -82,7 +94,17 @@ if [ "$write_out" -eq 1 ]; then
 fi
 EOF
 
-chmod 0755 "$FAKE_BIN/docker" "$FAKE_BIN/df" "$FAKE_BIN/curl"
+cat > "$FAKE_BIN/systemctl" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [ "$1" = "show" ]; then
+    cat "$BACKUP_SERVICE_STATE_FILE"
+    exit 0
+fi
+exit 1
+EOF
+
+chmod 0755 "$FAKE_BIN/docker" "$FAKE_BIN/df" "$FAKE_BIN/curl" "$FAKE_BIN/systemctl"
 
 cat > "$CONFIG_FILE" <<EOF
 MONITOR_NODE_NAME=test-node
@@ -104,7 +126,7 @@ TELEGRAM_CHAT_ID=123456
 EOF
 chmod 0600 "$CONFIG_FILE" "$TELEGRAM_FILE"
 
-export CONTAINER_HEALTH_FILE DISK_USAGE_FILE MESSAGE_COUNT_FILE LAST_MESSAGE_FILE
+export CONTAINER_HEALTH_FILE DISK_USAGE_FILE MESSAGE_COUNT_FILE LAST_MESSAGE_FILE POSTGRES_RESULT_FILE DOCKER_EXEC_ARGS_FILE BACKUP_SERVICE_STATE_FILE
 
 run_monitor() {
     PATH="$FAKE_BIN:$PATH" \
@@ -189,5 +211,56 @@ report="$(
 grep -q '测试服务器（test-node）' <<< "$report"
 grep -q '系统盘：正常' <<< "$report"
 grep -q '测试服务：运行正常' <<< "$report"
+
+cat >> "$CONFIG_FILE" <<'EOF'
+MONITOR_POSTGRES_CONTAINER=test-container
+MONITOR_POSTGRES_ROLE=primary
+MONITOR_POSTGRES_LABEL=数据库主库
+MONITOR_POSTGRES_PORT=55432
+EOF
+report="$(
+    PATH="$FAKE_BIN:$PATH" \
+        NIFFLER_MONITOR_CONFIG_FILE="$CONFIG_FILE" \
+        NIFFLER_MONITOR_STATE_DIR="$STATE_DIR" \
+        NIFFLER_MONITOR_RUNTIME_DIR="$RUNTIME_DIR" \
+        "$MONITOR_SCRIPT" report
+)"
+grep -q '数据库主库：可正常写入，角色正确' <<< "$report"
+grep -q -- '-p 55432' "$DOCKER_EXEC_ARGS_FILE"
+
+sed -i.bak 's/MONITOR_POSTGRES_ROLE=primary/MONITOR_POSTGRES_ROLE=standby/' "$CONFIG_FILE"
+cat >> "$CONFIG_FILE" <<'EOF'
+MONITOR_POSTGRES_LAG_IGNORE_SERVICE=test-backup.service
+EOF
+printf 't|streaming|0\n' > "$POSTGRES_RESULT_FILE"
+report="$(
+    PATH="$FAKE_BIN:$PATH" \
+        NIFFLER_MONITOR_CONFIG_FILE="$CONFIG_FILE" \
+        NIFFLER_MONITOR_STATE_DIR="$STATE_DIR" \
+        NIFFLER_MONITOR_RUNTIME_DIR="$RUNTIME_DIR" \
+        "$MONITOR_SCRIPT" report
+)"
+grep -q '数据库主库：只读同步正常，待重放 0 字节' <<< "$report"
+
+printf 'activating\n' > "$BACKUP_SERVICE_STATE_FILE"
+printf 't|streaming|33554432\n' > "$POSTGRES_RESULT_FILE"
+report="$(
+    PATH="$FAKE_BIN:$PATH" \
+        NIFFLER_MONITOR_CONFIG_FILE="$CONFIG_FILE" \
+        NIFFLER_MONITOR_STATE_DIR="$STATE_DIR" \
+        NIFFLER_MONITOR_RUNTIME_DIR="$RUNTIME_DIR" \
+        "$MONITOR_SCRIPT" report
+)"
+grep -q '数据库主库：备份进行中，复制连接正常，待重放 33554432 字节' <<< "$report"
+
+printf 'inactive\n' > "$BACKUP_SERVICE_STATE_FILE"
+report="$(
+    PATH="$FAKE_BIN:$PATH" \
+        NIFFLER_MONITOR_CONFIG_FILE="$CONFIG_FILE" \
+        NIFFLER_MONITOR_STATE_DIR="$STATE_DIR" \
+        NIFFLER_MONITOR_RUNTIME_DIR="$RUNTIME_DIR" \
+        "$MONITOR_SCRIPT" report
+)"
+grep -q '数据库主库：复制延迟过高，待重放 33554432 字节' <<< "$report"
 
 echo "niffler production monitor tests passed"

@@ -12,7 +12,7 @@ use crate::error::SqlxResultExt;
 use crate::repository::billing::quota::{
     entitlement_allows_global_model, entitlements_snapshot_has_usage_quota_for_global_model,
     quota_base_amount, quota_debit_amount, usage_quota_grants_from_entitlement,
-    StoredUsageQuotaWindow, UsageQuotaGrant, QUOTA_SCOPE_FIVE_HOUR,
+    StoredUsageQuotaWindow, StoredUsageQuotaWindows, UsageQuotaGrant,
 };
 use crate::repository::usage::postgres::provider_contribution::sync_provider_api_key_usage_contribution_for_request_in_tx;
 use crate::DataLayerError;
@@ -409,14 +409,13 @@ FOR UPDATE
         {
             continue;
         }
-        let stored_five_hour =
-            find_usage_quota_window_postgres(tx, &entitlement_id, QUOTA_SCOPE_FIVE_HOUR).await?;
+        let stored_windows = find_usage_quota_windows_postgres(tx, &entitlement_id).await?;
         grants.extend(usage_quota_grants_from_entitlement(
             &entitlement_id,
             &entitlements,
             now,
             entitlement_started_at,
-            stored_five_hour.as_ref(),
+            Some(&stored_windows),
         )?);
     }
     if input.admitted_entitlement_ids.is_none() {
@@ -527,37 +526,37 @@ ON CONFLICT (user_entitlement_id, request_id) DO NOTHING
     })
 }
 
-async fn find_usage_quota_window_postgres(
+async fn find_usage_quota_windows_postgres(
     tx: &mut crate::driver::postgres::PostgresTransaction,
     entitlement_id: &str,
-    scope: &str,
-) -> Result<Option<StoredUsageQuotaWindow>, DataLayerError> {
-    let row = sqlx::query(
+) -> Result<StoredUsageQuotaWindows, DataLayerError> {
+    let rows = sqlx::query(
         r#"
 SELECT
+  window_scope,
   window_key,
   window_started_at,
-  window_ends_at,
-  CAST(used_usd AS DOUBLE PRECISION) AS used_usd
+  window_ends_at
 FROM entitlement_usage_windows
 WHERE user_entitlement_id = $1
-  AND window_scope = $2
-LIMIT 1
         "#,
     )
     .bind(entitlement_id)
-    .bind(scope)
-    .fetch_optional(&mut **tx)
+    .fetch_all(&mut **tx)
     .await
     .map_postgres_err()?;
-    row.map(|row| {
-        Ok(StoredUsageQuotaWindow {
-            window_key: row.try_get("window_key").map_postgres_err()?,
-            window_started_at: row.try_get("window_started_at").map_postgres_err()?,
-            window_ends_at: row.try_get("window_ends_at").map_postgres_err()?,
-        })
-    })
-    .transpose()
+    let mut windows = StoredUsageQuotaWindows::new();
+    for row in rows {
+        windows.insert(
+            row.try_get("window_scope").map_postgres_err()?,
+            StoredUsageQuotaWindow {
+                window_key: row.try_get("window_key").map_postgres_err()?,
+                window_started_at: row.try_get("window_started_at").map_postgres_err()?,
+                window_ends_at: row.try_get("window_ends_at").map_postgres_err()?,
+            },
+        );
+    }
+    Ok(windows)
 }
 
 async fn upsert_usage_quota_window_postgres(
@@ -1072,13 +1071,14 @@ mod tests {
         .await
         .expect("wallet should read");
         assert_eq!(unchanged_balance, 12.0);
-        let pending_status: String =
-            sqlx::query_scalar("SELECT billing_status FROM usage WHERE request_id = $1")
-                .bind(&missing_request_id)
-                .fetch_one(&pool)
-                .await
-                .expect("usage should read");
-        assert_eq!(pending_status, "pending");
+        let pending_usage: (String, f64) = sqlx::query_as(
+            "SELECT billing_status, CAST(total_cost_usd AS DOUBLE PRECISION) FROM usage WHERE request_id = $1",
+        )
+        .bind(&missing_request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("usage should read");
+        assert_eq!(pending_usage, ("pending".to_string(), 15.0));
 
         sqlx::query(
             r#"
@@ -1308,6 +1308,282 @@ VALUES (
             .execute(&pool)
             .await
             .expect("user should clean up");
+    }
+
+    #[tokio::test]
+    async fn postgres_plan_multipliers_and_provider_scope_are_enforced_when_url_is_set() {
+        let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping postgres plan multiplier and provider scope test because AETHER_TEST_POSTGRES_URL is unset"
+            );
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("postgres test pool should connect");
+        crate::lifecycle::migrate::run_migrations(&pool)
+            .await
+            .expect("postgres migrations should run");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        // Derive order ids as `order-ent-single-{key}` which must stay within the
+        // varchar(36) limit of payment_orders.id / user_plan_entitlements.payment_order_id.
+        let key = &suffix[..18];
+        let user_id = format!("u-mult-{key}");
+        let wallet_id = format!("w-mult-{key}");
+        let provider_id = format!("p-mult-{key}");
+        let plan_id = format!("plan-mult-{key}");
+        let single_entitlement_id = format!("ent-single-{key}");
+        let fast_entitlement_id = format!("ent-fast-{key}");
+        let slow_entitlement_id = format!("ent-slow-{key}");
+        let single_request_id = format!("request-single-{suffix}");
+        let combined_request_id = format!("request-combined-{suffix}");
+        let mismatch_request_id = format!("request-mismatch-{suffix}");
+
+        sqlx::query("INSERT INTO users (id, username, email_verified) VALUES ($1, $2, FALSE)")
+            .bind(&user_id)
+            .bind(format!("multiplier-{suffix}"))
+            .execute(&pool)
+            .await
+            .expect("user should seed");
+        sqlx::query(
+            "INSERT INTO wallets (id, user_id, balance, gift_balance, created_at, updated_at) VALUES ($1, $2, 10, 0, NOW(), NOW())",
+        )
+        .bind(&wallet_id)
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .expect("wallet should seed");
+        sqlx::query("INSERT INTO providers (id, name) VALUES ($1, $2)")
+            .bind(&provider_id)
+            .bind(format!("multiplier-provider-{suffix}"))
+            .execute(&pool)
+            .await
+            .expect("provider should seed");
+        sqlx::query(
+            "INSERT INTO billing_plans (id, title, price_amount, duration_unit, duration_value, entitlements_json, created_at, updated_at) VALUES ($1, 'Multiplier plan', 1, 'day', 1, '[]'::jsonb, NOW(), NOW())",
+        )
+        .bind(&plan_id)
+        .execute(&pool)
+        .await
+        .expect("plan should seed");
+
+        for (entitlement_id, quota, multiplier) in [
+            (&single_entitlement_id, 10.0, 0.5),
+            (&fast_entitlement_id, 2.0, 0.5),
+            (&slow_entitlement_id, 2.0, 2.0),
+        ] {
+            let order_id = format!("order-{entitlement_id}");
+            sqlx::query(
+                "INSERT INTO payment_orders (id, order_no, wallet_id, user_id, amount_usd, payment_method, status, created_at) VALUES ($1, $2, $3, $4, 0, 'admin_grant', 'credited', NOW())",
+            )
+            .bind(&order_id)
+            .bind(format!("NO-{order_id}"))
+            .bind(&wallet_id)
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .expect("payment order should seed");
+            sqlx::query(
+                "INSERT INTO user_plan_entitlements (id, user_id, plan_id, payment_order_id, starts_at, expires_at, entitlements_snapshot, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW() - INTERVAL '1 minute', NOW() + INTERVAL '1 day', $5, NOW(), NOW())",
+            )
+            .bind(entitlement_id)
+            .bind(&user_id)
+            .bind(&plan_id)
+            .bind(&order_id)
+            .bind(serde_json::json!([{
+                "type": "daily_quota",
+                "daily_quota_usd": quota,
+                "quota_multiplier": multiplier,
+                "reset_timezone": "Asia/Shanghai",
+                "allow_wallet_overage": true
+            }]))
+            .execute(&pool)
+            .await
+            .expect("entitlement should seed");
+            sqlx::query(
+                "INSERT INTO user_entitlement_providers (user_entitlement_id, provider_id) VALUES ($1, $2)",
+            )
+            .bind(entitlement_id)
+            .bind(&provider_id)
+            .execute(&pool)
+            .await
+            .expect("entitlement provider should seed");
+        }
+
+        for request_id in [
+            &single_request_id,
+            &combined_request_id,
+            &mismatch_request_id,
+        ] {
+            sqlx::query(
+                "INSERT INTO usage (id, user_id, request_id, provider_name, model, status, billing_status, total_cost_usd, actual_total_cost_usd) VALUES ($1, $2, $3, 'test', 'gpt-test', 'completed', 'pending', 3, 2)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&user_id)
+            .bind(request_id)
+            .execute(&pool)
+            .await
+            .expect("usage should seed");
+        }
+
+        sqlx::query(
+            r#"
+INSERT INTO billing_request_admissions (
+  request_id, user_id, wallet_id, funding_source, wallet_balance_at_admission,
+  wallet_payment_allowed, wallet_overage_allowed, entitlement_ids,
+  entitlement_provider_scopes, allowed_provider_ids
+)
+VALUES (
+  $1, $2, $3, 'plan', 10, FALSE, FALSE,
+  jsonb_build_array($4::text),
+  jsonb_build_object($4::text, jsonb_build_array($5::text)),
+  jsonb_build_array($5::text)
+)
+            "#,
+        )
+        .bind(&single_request_id)
+        .bind(&user_id)
+        .bind(&wallet_id)
+        .bind(&single_entitlement_id)
+        .bind(&provider_id)
+        .execute(&pool)
+        .await
+        .expect("single multiplier admission should seed");
+
+        let repository = SqlxSettlementRepository::new(pool.clone());
+        let mut single_input = sample_wallet_settlement_input(&single_request_id, &user_id);
+        single_input.provider_id = Some(provider_id.clone());
+        single_input.base_cost_usd = 3.0;
+        single_input.total_cost_usd = 3.0;
+        single_input.actual_total_cost_usd = 2.0;
+        let single = repository
+            .settle_usage(single_input)
+            .await
+            .expect("single multiplier settlement should succeed")
+            .expect("single multiplier usage should exist");
+        assert_eq!(single.billing_status, "settled");
+        let single_quota_used: f64 = sqlx::query_scalar(
+            "SELECT CAST(SUM(amount_usd) AS DOUBLE PRECISION) FROM entitlement_usage_ledgers WHERE request_id = $1",
+        )
+        .bind(&single_request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("single multiplier ledger should read");
+        assert_eq!(single_quota_used, 1.5);
+
+        sqlx::query(
+            r#"
+INSERT INTO billing_request_admissions (
+  request_id, user_id, wallet_id, funding_source, wallet_balance_at_admission,
+  wallet_payment_allowed, wallet_overage_allowed, entitlement_ids,
+  entitlement_provider_scopes, allowed_provider_ids
+)
+VALUES (
+  $1, $2, $3, 'plan', 10, TRUE, TRUE,
+  jsonb_build_array($4::text, $5::text),
+  jsonb_build_object(
+    $4::text, jsonb_build_array($6::text),
+    $5::text, jsonb_build_array($6::text)
+  ),
+  jsonb_build_array($6::text)
+)
+            "#,
+        )
+        .bind(&combined_request_id)
+        .bind(&user_id)
+        .bind(&wallet_id)
+        .bind(&fast_entitlement_id)
+        .bind(&slow_entitlement_id)
+        .bind(&provider_id)
+        .execute(&pool)
+        .await
+        .expect("combined multiplier admission should seed");
+        let mut combined_input = sample_wallet_settlement_input(&combined_request_id, &user_id);
+        combined_input.provider_id = Some(provider_id.clone());
+        combined_input.base_cost_usd = 6.0;
+        combined_input.total_cost_usd = 12.0;
+        combined_input.actual_total_cost_usd = 3.0;
+        let combined = repository
+            .settle_usage(combined_input)
+            .await
+            .expect("combined multiplier settlement should succeed")
+            .expect("combined multiplier usage should exist");
+        assert_eq!(combined.billing_status, "settled");
+        for entitlement_id in [&fast_entitlement_id, &slow_entitlement_id] {
+            let quota_used: f64 = sqlx::query_scalar(
+                "SELECT CAST(amount_usd AS DOUBLE PRECISION) FROM entitlement_usage_ledgers WHERE request_id = $1 AND user_entitlement_id = $2",
+            )
+            .bind(&combined_request_id)
+            .bind(entitlement_id)
+            .fetch_one(&pool)
+            .await
+            .expect("combined multiplier ledger should read");
+            assert_eq!(quota_used, 2.0);
+        }
+        let wallet_after_combined: f64 = sqlx::query_scalar(
+            "SELECT CAST(balance + gift_balance AS DOUBLE PRECISION) FROM wallets WHERE id = $1",
+        )
+        .bind(&wallet_id)
+        .fetch_one(&pool)
+        .await
+        .expect("wallet should read after combined multiplier settlement");
+        assert_eq!(wallet_after_combined, 8.0);
+
+        sqlx::query("UPDATE wallets SET balance = -1, gift_balance = 0 WHERE id = $1")
+            .bind(&wallet_id)
+            .execute(&pool)
+            .await
+            .expect("wallet should enter debt for provider scope test");
+        sqlx::query(
+            r#"
+INSERT INTO billing_request_admissions (
+  request_id, user_id, wallet_id, funding_source, wallet_balance_at_admission,
+  wallet_payment_allowed, wallet_overage_allowed, entitlement_ids,
+  entitlement_provider_scopes, allowed_provider_ids
+)
+VALUES (
+  $1, $2, $3, 'plan', -1, FALSE, TRUE,
+  jsonb_build_array($4::text),
+  jsonb_build_object($4::text, jsonb_build_array($5::text)),
+  jsonb_build_array($5::text)
+)
+            "#,
+        )
+        .bind(&mismatch_request_id)
+        .bind(&user_id)
+        .bind(&wallet_id)
+        .bind(&fast_entitlement_id)
+        .bind(&provider_id)
+        .execute(&pool)
+        .await
+        .expect("provider scope admission should seed");
+        let mut mismatch_input = sample_wallet_settlement_input(&mismatch_request_id, &user_id);
+        mismatch_input.provider_id = Some(format!("outside-{provider_id}"));
+        mismatch_input.base_cost_usd = 3.0;
+        mismatch_input.total_cost_usd = 3.0;
+        mismatch_input.actual_total_cost_usd = 2.0;
+        assert!(repository.settle_usage(mismatch_input).await.is_err());
+        let wallet_after_mismatch: f64 = sqlx::query_scalar(
+            "SELECT CAST(balance + gift_balance AS DOUBLE PRECISION) FROM wallets WHERE id = $1",
+        )
+        .bind(&wallet_id)
+        .fetch_one(&pool)
+        .await
+        .expect("wallet should read after provider mismatch");
+        assert_eq!(wallet_after_mismatch, -1.0);
+        let mismatch_status: String =
+            sqlx::query_scalar("SELECT billing_status FROM usage WHERE request_id = $1")
+                .bind(&mismatch_request_id)
+                .fetch_one(&pool)
+                .await
+                .expect("provider mismatch usage should read");
+        assert_eq!(mismatch_status, "pending");
     }
 
     fn sample_wallet_settlement_input(request_id: &str, user_id: &str) -> UsageSettlementInput {

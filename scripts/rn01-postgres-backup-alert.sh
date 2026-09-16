@@ -6,6 +6,8 @@ MODE="${1:-failure}"
 CONFIG_FILE="${NIFFLER_TELEGRAM_CONFIG_FILE:-/etc/niffler-backup/telegram.env}"
 STATUS_FILE="${NIFFLER_BACKUP_STATUS_FILE:-/var/lib/niffler-backup/status.env}"
 BACKUP_UNIT="niffler-postgres-backup.service"
+SERVER_LABEL="${NIFFLER_BACKUP_SERVER_LABEL:-数据库服务器（rn01）}"
+LOG_HOST="${NIFFLER_BACKUP_LOG_HOST:-rn01}"
 
 die() {
     echo "ERROR: $*" >&2
@@ -80,7 +82,7 @@ if [ "$MODE" = "test" ]; then
         printf '%s\n' \
             '[Niffler 备份测试消息]' \
             '说明：这是人工触发的测试，不代表备份刚刚执行。' \
-            '服务器：数据库服务器（rn01）' \
+            "服务器：$SERVER_LABEL" \
             '结果：Telegram 通知可以正常送达。' \
             "时间：$updated_at"
 )"
@@ -94,7 +96,7 @@ elif [ "$MODE" = "success" ]; then
     message="$(
         printf '%s\n' \
             '[Niffler 数据库备份完成]' \
-            '服务器：数据库服务器（rn01）' \
+            "服务器：$SERVER_LABEL" \
             '结果：备份已经上传到 Cloudflare R2，并通过完整性校验。' \
             "备份大小：$backup_size" \
             '用途：数据库发生故障时，可以使用这份备份恢复数据。' \
@@ -107,11 +109,11 @@ else
     message="$(
         printf '%s\n' \
             '[Niffler 需要处理：数据库备份失败]' \
-            '服务器：数据库服务器（rn01）' \
+            "服务器：$SERVER_LABEL" \
             '结果：本次没有生成可确认使用的数据库备份。' \
             '影响：如果此时数据库发生故障，无法依靠本次任务恢复数据。' \
             "错误参考：任务状态 ${backup_status:-unknown}，结果 ${unit_result:-unknown}，代码 ${exit_status:-unknown}" \
-            '处理建议：请尽快检查 rn01 的备份任务日志并重新执行备份。' \
+            "处理建议：请尽快检查 $LOG_HOST 的备份任务日志并重新执行备份。" \
             "时间：$updated_at" \
             '日志命令：journalctl -u niffler-postgres-backup.service'
     )"

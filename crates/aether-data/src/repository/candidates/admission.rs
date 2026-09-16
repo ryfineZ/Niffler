@@ -5,7 +5,7 @@ use aether_data_contracts::repository::billing::{
 use super::UpsertRequestCandidateRecord;
 use crate::DataLayerError;
 
-pub(super) fn validate_candidate_admission(
+pub(super) fn validate_candidate_admission_identity(
     candidate: &UpsertRequestCandidateRecord,
     admission: &BillingRequestAdmissionInput,
 ) -> Result<(), DataLayerError> {
@@ -16,6 +16,13 @@ pub(super) fn validate_candidate_admission(
             "candidate and billing admission request_id must match".to_string(),
         ));
     }
+    Ok(())
+}
+
+pub(super) fn validate_candidate_provider(
+    candidate: &UpsertRequestCandidateRecord,
+    admission: &BillingRequestAdmissionInput,
+) -> Result<(), DataLayerError> {
     let provider_allowed = match admission.funding_source {
         aether_data_contracts::repository::billing::BillingFundingSource::Plan => {
             candidate.provider_id.as_deref().is_some_and(|provider_id| {
@@ -46,15 +53,7 @@ pub(super) fn validate_stored_admission_matches_input(
         && stored.user_id == input.user_id
         && stored.api_key_id == input.api_key_id
         && stored.wallet_id == input.wallet_id
-        && stored.global_model_id == input.global_model_id
-        && stored.funding_source == input.funding_source
-        && stored.wallet_balance_at_admission == input.wallet_balance_at_admission
-        && stored.wallet_payment_allowed == input.wallet_payment_allowed
-        && stored.wallet_overage_allowed == input.wallet_overage_allowed
-        && stored.entitlement_ids == input.entitlement_ids
-        && stored.entitlement_provider_scopes == input.entitlement_provider_scopes
-        && stored.allowed_provider_ids == input.allowed_provider_ids
-        && stored.schema_version == input.schema_version;
+        && stored.global_model_id == input.global_model_id;
     if !same_identity || !stored.billing_admitted || stored.status != "admitted" {
         return Err(DataLayerError::InvalidInput(format!(
             "request_id {} already has a different billing admission",

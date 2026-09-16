@@ -12,7 +12,7 @@ use aether_data::repository::users::{
     InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserPreferenceRecord,
 };
 use aether_data::repository::video_tasks::InMemoryVideoTaskRepository;
-use aether_data::{DataLayerError, DatabaseDriver, SqlDatabaseConfig, SqlPoolConfig};
+use aether_data::DataLayerError;
 use aether_data_contracts::repository::candidate_selection::{
     StoredMinimalCandidateSelectionRow, StoredProviderModelMapping,
 };
@@ -34,6 +34,26 @@ use serde_json::json;
 
 use super::{GatewayDataConfig, GatewayDataState};
 use crate::AppState;
+
+pub(crate) async fn postgres_app_state_when_url_is_set(test_name: &str) -> Option<AppState> {
+    let Some(database_url) = std::env::var("AETHER_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping {test_name} because AETHER_TEST_POSTGRES_URL is unset");
+        return None;
+    };
+
+    let state = AppState::new()
+        .expect("app state should build")
+        .with_data_config(GatewayDataConfig::from_postgres_url(database_url, false))
+        .expect("postgres data config should wire");
+    assert!(state
+        .run_database_migrations()
+        .await
+        .expect("postgres migrations should run"));
+    Some(state)
+}
 
 #[test]
 fn disabled_gateway_data_state_has_no_backends() {
@@ -145,40 +165,6 @@ async fn app_state_wires_gateway_data_state_from_config() {
     assert!(state.data.has_proxy_node_writer());
     assert!(state.data.has_usage_reader());
     assert!(state.data.has_video_task_reader());
-}
-
-#[tokio::test]
-async fn app_state_prepares_sqlite_database_startup() -> Result<(), Box<dyn std::error::Error>> {
-    let mut pool = SqlPoolConfig::default();
-    pool.min_connections = 0;
-    pool.max_connections = 1;
-    let database = SqlDatabaseConfig::new(DatabaseDriver::Sqlite, "sqlite::memory:", pool)?;
-    let state =
-        AppState::new()?.with_data_config(GatewayDataConfig::from_database_config(database))?;
-
-    let pending = state
-        .prepare_database_for_startup()
-        .await?
-        .expect("sqlite database should expose migration state");
-    assert!(
-        !pending.is_empty(),
-        "fresh sqlite gateway databases should report pending migrations"
-    );
-
-    assert!(
-        state.run_database_migrations().await?,
-        "sqlite gateway database should run migrations"
-    );
-    let pending = state
-        .prepare_database_for_startup()
-        .await?
-        .expect("sqlite database should expose migration state");
-    assert!(
-        pending.is_empty(),
-        "sqlite gateway databases should be current after migrations"
-    );
-
-    Ok(())
 }
 
 #[tokio::test]

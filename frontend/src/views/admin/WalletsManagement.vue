@@ -227,16 +227,16 @@
                         </div>
                       </TableCell>
                       <TableCell :class="tx.amount >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'">
-                        {{ tx.amount >= 0 ? '+' : '' }}{{ tx.amount.toFixed(4) }}
+                        {{ tx.amount >= 0 ? '+' : '' }}{{ formatWalletAmount(tx.amount) }}
                       </TableCell>
                       <TableCell class="text-xs tabular-nums whitespace-nowrap">
-                        <div>{{ tx.balance_before.toFixed(4) }} → {{ tx.balance_after.toFixed(4) }}</div>
+                        <div>{{ formatWalletAmount(tx.balance_before) }} → {{ formatWalletAmount(tx.balance_after) }}</div>
                         <div
                           v-if="tx.recharge_balance_before !== null && tx.recharge_balance_before !== undefined && tx.gift_balance_before !== null && tx.gift_balance_before !== undefined"
                           class="text-[11px] text-muted-foreground mt-0.5"
                         >
-                          {{ t('walletExtra.rechargeShort') }} {{ Number(tx.recharge_balance_before).toFixed(4) }}→{{ Number(tx.recharge_balance_after ?? 0).toFixed(4) }}
-                          · {{ t('walletExtra.giftShort') }} {{ Number(tx.gift_balance_before).toFixed(4) }}→{{ Number(tx.gift_balance_after ?? 0).toFixed(4) }}
+                          {{ t('walletExtra.rechargeShort') }} {{ formatWalletAmount(tx.recharge_balance_before) }}→{{ formatWalletAmount(tx.recharge_balance_after) }}
+                          · {{ t('walletExtra.giftShort') }} {{ formatWalletAmount(tx.gift_balance_before) }}→{{ formatWalletAmount(tx.gift_balance_after) }}
                         </div>
                       </TableCell>
                       <TableCell
@@ -611,10 +611,10 @@
                       </TableCell>
                       <TableCell>
                         <div class="text-sm font-medium">
-                          {{ orderWalletName(order.wallet_id) }}
+                          {{ orderWalletName(order) }}
                         </div>
                         <div class="text-xs text-muted-foreground mt-1">
-                          {{ orderWalletTypeLabel(order.wallet_id) }}
+                          {{ orderWalletTypeLabel(order) }}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -1265,7 +1265,7 @@
                     class="text-sm font-semibold tabular-nums"
                     :class="currentLedger.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'"
                   >
-                    {{ currentLedger.amount >= 0 ? '+' : '' }}{{ currentLedger.amount.toFixed(4) }}
+                    {{ currentLedger.amount >= 0 ? '+' : '' }}{{ formatWalletAmount(currentLedger.amount) }}
                   </span>
                 </div>
                 <div class="text-xs text-muted-foreground">
@@ -1297,14 +1297,14 @@
                     {{ t('walletExtra.balanceChange') }}
                   </div>
                   <div class="mt-1 text-sm font-medium tabular-nums">
-                    {{ currentLedger.balance_before.toFixed(4) }} → {{ currentLedger.balance_after.toFixed(4) }}
+                    {{ formatWalletAmount(currentLedger.balance_before) }} → {{ formatWalletAmount(currentLedger.balance_after) }}
                   </div>
                   <div
                     v-if="currentLedger.recharge_balance_before !== null && currentLedger.recharge_balance_before !== undefined && currentLedger.gift_balance_before !== null && currentLedger.gift_balance_before !== undefined"
                     class="mt-1 text-xs text-muted-foreground tabular-nums"
                   >
-                    {{ t('walletExtra.rechargeShort') }} {{ Number(currentLedger.recharge_balance_before).toFixed(4) }}→{{ Number(currentLedger.recharge_balance_after ?? 0).toFixed(4) }}
-                    · {{ t('walletExtra.giftShort') }} {{ Number(currentLedger.gift_balance_before).toFixed(4) }}→{{ Number(currentLedger.gift_balance_after ?? 0).toFixed(4) }}
+                    {{ t('walletExtra.rechargeShort') }} {{ formatWalletAmount(currentLedger.recharge_balance_before) }}→{{ formatWalletAmount(currentLedger.recharge_balance_after) }}
+                    · {{ t('walletExtra.giftShort') }} {{ formatWalletAmount(currentLedger.gift_balance_before) }}→{{ formatWalletAmount(currentLedger.gift_balance_after) }}
                   </div>
                 </div>
               </div>
@@ -1654,6 +1654,7 @@ import { log } from '@/utils/logger'
 import {
   callbackStatusBadge,
   callbackStatusLabel,
+  formatWalletAmount,
   formatWalletCurrency as formatCurrency,
   paymentMethodLabel,
   paymentOrderContentLabel,
@@ -1892,8 +1893,6 @@ const canExportLatestGeneratedRedeemCodes = computed(
   () => !!latestGeneratedRedeemBatch.value && latestGeneratedRedeemCodes.value.length > 0
 )
 
-const walletMetaMap = ref<Record<string, { ownerName: string; ownerType: 'user' | 'api_key' }>>({})
-
 const showLedgerDrawer = ref(false)
 const showRefundDrawer = ref(false)
 const currentLedger = ref<AdminLedgerTransaction | null>(null)
@@ -2025,7 +2024,6 @@ watch(
 
 onMounted(async () => {
   await Promise.all([
-    loadWalletMetaMap(),
     loadLedger(),
     loadRefunds(),
     loadOrders(),
@@ -2042,26 +2040,6 @@ onBeforeUnmount(() => {
 
 function isValidTab(tab: unknown): tab is WalletManagementTab {
   return tab === 'ledger' || tab === 'refunds' || tab === 'orders' || tab === 'callbacks' || tab === 'redeem_codes'
-}
-
-async function loadWalletMetaMap() {
-  try {
-    const wallets = await adminWalletApi.listAllWallets()
-    walletMetaMap.value = wallets.reduce<Record<string, { ownerName: string; ownerType: 'user' | 'api_key' }>>(
-      (acc, wallet) => {
-        const ownerName =
-          wallet.owner_name || (wallet.owner_type === 'user' ? t('walletExtra.unnamedUser') : t('walletExtra.unnamedKey'))
-        acc[wallet.id] = {
-          ownerName,
-          ownerType: wallet.owner_type,
-        }
-        return acc
-      },
-      {}
-    )
-  } catch (error) {
-    log.error('加载钱包名称映射失败:', error)
-  }
 }
 
 async function loadLedger() {
@@ -2356,12 +2334,14 @@ async function disableRedeemCode(codeId: string) {
   }
 }
 
-function orderWalletName(walletId: string) {
-  return walletMetaMap.value[walletId]?.ownerName || t('walletExtra.unknownWallet')
+function orderWalletName(order: PaymentOrder) {
+  const ownerName = order.owner_name?.trim()
+  if (ownerName) return ownerName
+  return order.user_id || order.wallet_id || t('walletExtra.unknownWallet')
 }
 
-function orderWalletTypeLabel(walletId: string) {
-  const ownerType = walletMetaMap.value[walletId]?.ownerType
+function orderWalletTypeLabel(order: PaymentOrder) {
+  const ownerType = order.owner_type || (order.user_id ? 'user' : null)
   if (!ownerType) return t('walletExtra.unknownOwner')
   return ownerType === 'user' ? t('walletExtra.userWallet') : t('walletExtra.independentKeyWallet')
 }
@@ -2513,7 +2493,7 @@ async function submitCreditOrder() {
     })
     success(t('walletExtra.orderActionCompleted', { action: actionLabel }))
     showCreditDialog.value = false
-    await Promise.all([loadOrders(), loadLedger(), loadWalletMetaMap()])
+    await Promise.all([loadOrders(), loadLedger()])
   } catch (error) {
     const actionLabel = paymentOrderCreditActionLabel(currentOrder.value)
     log.error(`${actionLabel}失败:`, error)

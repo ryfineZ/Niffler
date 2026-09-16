@@ -46,6 +46,8 @@
             @file-select="handleDataFileSelect"
           />
 
+          <RequestFailoverSection v-show="activeTab === 'network'" />
+
           <!-- 网络代理 -->
           <ProxyConfigSection
             v-show="activeTab === 'network'"
@@ -143,12 +145,14 @@
             v-show="activeTab === 'provider'"
             id="section-provider-advanced"
             :enabled="systemConfig.codex_oauth_identity_convergence_enabled"
+            :telemetry-enabled="systemConfig.codex_telemetry_enabled"
             :loading="systemConfigLoading"
             :saving="providerAdvancedConfigLoading"
             :load-error="!systemConfigLoading && !providerAdvancedConfigReady"
             :has-changes="hasProviderAdvancedConfigChanges"
             @save="saveProviderAdvancedConfig"
             @update:enabled="systemConfig.codex_oauth_identity_convergence_enabled = $event"
+            @update:telemetry-enabled="systemConfig.codex_telemetry_enabled = $event"
           />
 
           <!-- 请求记录清理策略 -->
@@ -254,6 +258,8 @@
 </template>
 
 <script setup lang="ts">
+import { useRoute } from 'vue-router'
+import RequestFailoverSection from './system-settings/RequestFailoverSection.vue'
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PageHeader, PageContainer } from '@/components/layout'
@@ -293,7 +299,8 @@ const settingsTabs = [
   { value: 'data', label: t('systemSettings.data') },
   { value: 'diagnostics', label: t('systemSettings.diagnostics') },
 ]
-const activeTab = ref('site')
+const settingsRoute = useRoute()
+const activeTab = ref(settingsRoute.query.tab === 'network' ? 'network' : 'site')
 
 // System config composable
 const {

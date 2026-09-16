@@ -1,13 +1,9 @@
 mod memory;
-mod mysql;
 mod postgres;
-mod sqlite;
 mod types;
 
 pub use memory::InMemoryProxyNodeRepository;
-pub use mysql::MysqlProxyNodeReadRepository;
 pub use postgres::SqlxProxyNodeRepository;
-pub use sqlite::SqliteProxyNodeReadRepository;
 pub use types::{
     bucket_start_unix_secs, build_tunnel_error_event_detail, build_tunnel_metrics_sample,
     log_reported_tunnel_error_event, normalize_proxy_node_scheduling_state,

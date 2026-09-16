@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::{MysqlBackend, PostgresBackend, SqliteBackend};
+use super::PostgresBackend;
 use crate::repository::announcements::AnnouncementReadRepository;
 use crate::repository::audit::AuditLogReadRepository;
 use crate::repository::auth::AuthApiKeyReadRepository;
@@ -52,7 +52,6 @@ pub struct DataReadRepositories {
     video_tasks: Option<Arc<dyn VideoTaskReadRepository>>,
     wallets: Option<Arc<dyn WalletReadRepository>>,
 }
-
 impl fmt::Debug for DataReadRepositories {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataReadRepositories")
@@ -93,110 +92,35 @@ impl fmt::Debug for DataReadRepositories {
 }
 
 impl DataReadRepositories {
-    pub(crate) fn from_backends(
-        postgres: Option<&PostgresBackend>,
-        mysql: Option<&MysqlBackend>,
-        sqlite: Option<&SqliteBackend>,
-    ) -> Self {
-        Self {
-            announcements: postgres
-                .map(PostgresBackend::announcement_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::announcement_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::announcement_read_repository)),
-            audit_logs: postgres
-                .map(PostgresBackend::audit_log_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::audit_log_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::audit_log_read_repository)),
-            auth_api_keys: postgres
-                .map(PostgresBackend::auth_api_key_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::auth_api_key_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::auth_api_key_read_repository)),
-            auth_modules: postgres
-                .map(PostgresBackend::auth_module_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::auth_module_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::auth_module_read_repository)),
-            background_tasks: postgres
-                .map(PostgresBackend::background_task_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::background_task_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::background_task_read_repository)),
-            billing: postgres
-                .map(PostgresBackend::billing_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::billing_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::billing_read_repository)),
-            content_moderation_evidence: postgres
-                .map(PostgresBackend::content_moderation_evidence_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::content_moderation_evidence_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::content_moderation_evidence_read_repository)),
-            gemini_file_mappings: postgres
-                .map(PostgresBackend::gemini_file_mapping_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::gemini_file_mapping_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::gemini_file_mapping_read_repository)),
-            global_models: postgres
-                .map(PostgresBackend::global_model_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::global_model_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::global_model_read_repository)),
-            management_tokens: postgres
-                .map(PostgresBackend::management_token_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::management_token_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::management_token_read_repository)),
-            niffler_core: postgres
-                .map(PostgresBackend::niffler_core_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::niffler_core_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::niffler_core_read_repository)),
-            oauth_providers: postgres
-                .map(PostgresBackend::oauth_provider_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::oauth_provider_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::oauth_provider_read_repository)),
-            pool_scores: postgres
-                .map(PostgresBackend::pool_score_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::pool_score_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::pool_score_read_repository)),
-            proxy_nodes: postgres
-                .map(PostgresBackend::proxy_node_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::proxy_node_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::proxy_node_read_repository)),
-            minimal_candidate_selection: postgres
-                .map(PostgresBackend::minimal_candidate_selection_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::minimal_candidate_selection_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::minimal_candidate_selection_read_repository)),
-            request_candidates: postgres
-                .map(PostgresBackend::request_candidate_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::request_candidate_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::request_candidate_read_repository)),
-            provider_catalog: postgres
-                .map(PostgresBackend::provider_catalog_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::provider_catalog_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::provider_catalog_read_repository)),
-            provider_quotas: postgres
-                .map(PostgresBackend::provider_quota_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::provider_quota_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::provider_quota_read_repository)),
-            routing_groups: postgres
-                .map(PostgresBackend::routing_group_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::routing_group_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::routing_group_read_repository)),
-            usage: postgres
-                .map(PostgresBackend::usage_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::usage_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::usage_read_repository)),
-            users: postgres
-                .map(PostgresBackend::user_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::user_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::user_read_repository)),
-            video_tasks: postgres
-                .map(PostgresBackend::video_task_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::video_task_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::video_task_read_repository)),
-            wallets: postgres
-                .map(PostgresBackend::wallet_read_repository)
-                .or_else(|| mysql.map(MysqlBackend::wallet_read_repository))
-                .or_else(|| sqlite.map(SqliteBackend::wallet_read_repository)),
-        }
-    }
-
-    #[cfg(test)]
     pub(crate) fn from_postgres(postgres: Option<&PostgresBackend>) -> Self {
-        Self::from_backends(postgres, None, None)
+        Self {
+            announcements: postgres.map(PostgresBackend::announcement_read_repository),
+            audit_logs: postgres.map(PostgresBackend::audit_log_read_repository),
+            auth_api_keys: postgres.map(PostgresBackend::auth_api_key_read_repository),
+            auth_modules: postgres.map(PostgresBackend::auth_module_read_repository),
+            background_tasks: postgres.map(PostgresBackend::background_task_read_repository),
+            billing: postgres.map(PostgresBackend::billing_read_repository),
+            content_moderation_evidence: postgres
+                .map(PostgresBackend::content_moderation_evidence_read_repository),
+            gemini_file_mappings: postgres
+                .map(PostgresBackend::gemini_file_mapping_read_repository),
+            global_models: postgres.map(PostgresBackend::global_model_read_repository),
+            management_tokens: postgres.map(PostgresBackend::management_token_read_repository),
+            niffler_core: postgres.map(PostgresBackend::niffler_core_read_repository),
+            oauth_providers: postgres.map(PostgresBackend::oauth_provider_read_repository),
+            pool_scores: postgres.map(PostgresBackend::pool_score_read_repository),
+            proxy_nodes: postgres.map(PostgresBackend::proxy_node_read_repository),
+            minimal_candidate_selection: postgres
+                .map(PostgresBackend::minimal_candidate_selection_read_repository),
+            request_candidates: postgres.map(PostgresBackend::request_candidate_read_repository),
+            provider_catalog: postgres.map(PostgresBackend::provider_catalog_read_repository),
+            provider_quotas: postgres.map(PostgresBackend::provider_quota_read_repository),
+            routing_groups: postgres.map(PostgresBackend::routing_group_read_repository),
+            usage: postgres.map(PostgresBackend::usage_read_repository),
+            users: postgres.map(PostgresBackend::user_read_repository),
+            video_tasks: postgres.map(PostgresBackend::video_task_read_repository),
+            wallets: postgres.map(PostgresBackend::wallet_read_repository),
+        }
     }
 
     pub fn auth_api_keys(&self) -> Option<Arc<dyn AuthApiKeyReadRepository>> {

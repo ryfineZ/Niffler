@@ -39,7 +39,9 @@ export interface PublicGlobalModelListResponse {
 export interface PublicModelGroup {
   id: string
   name: string
-  sales_multiplier: number
+  discount?: number
+  model_discounts?: Record<string, number> | null
+  sales_multiplier?: number
   model_sales_multipliers?: Record<string, number> | null
   allowed_models?: string[] | null
   allowed_models_mode?: string
