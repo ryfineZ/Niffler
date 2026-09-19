@@ -17,7 +17,9 @@ function mountSection(options: {
   const onSave = vi.fn()
   const onUpdate = vi.fn()
   const onTelemetryUpdate = vi.fn()
+  const onStateUpdate = vi.fn()
   const app = createApp(ProviderAdvancedSection, {
+    turnStateEnabled: false,
     telemetryEnabled: false,
     enabled: options.enabled ?? false,
     loading: options.loading ?? false,
@@ -27,10 +29,11 @@ function mountSection(options: {
     onSave,
     'onUpdate:enabled': onUpdate,
     'onUpdate:telemetryEnabled': onTelemetryUpdate,
+    'onUpdate:turnStateEnabled': onStateUpdate,
   })
   app.mount(root)
   mountedApps.push({ app, root })
-  return { root, onSave, onUpdate, onTelemetryUpdate }
+  return { root, onSave, onUpdate, onTelemetryUpdate, onStateUpdate }
 }
 
 afterEach(() => {
@@ -42,6 +45,18 @@ afterEach(() => {
 })
 
 describe('ProviderAdvancedSection', () => {
+  it('keeps state collection opt-in and separate from identity and telemetry', async () => {
+    const { root, onStateUpdate, onUpdate, onTelemetryUpdate } = mountSection()
+    await nextTick()
+    const toggle = root.querySelector<HTMLButtonElement>('#codex-turn-state')
+    if (!toggle) throw new Error('state switch missing')
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(root.textContent).toContain('采集会消耗上游额度')
+    toggle.click()
+    expect(onStateUpdate).toHaveBeenCalledWith(true)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onTelemetryUpdate).not.toHaveBeenCalled()
+  })
   it('emits the global switch value and save action', async () => {
     const { root, onSave, onUpdate } = mountSection()
     await nextTick()

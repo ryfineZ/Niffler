@@ -186,6 +186,14 @@ pub(crate) fn build_direct_execution_frame_stream(
         let mut ttfb_ms = None;
         let mut first_chunk_telemetry_emitted = false;
         match response {
+            DirectUpstreamResponse::Buffered(bytes) => {
+                upstream_bytes = bytes.len() as u64;
+                ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+                match encode_data_frame(&bytes) {
+                    Ok(frame) => yield Ok(frame),
+                    Err(err) => { yield Err(err); return; }
+                }
+            }
             DirectUpstreamResponse::Reqwest(response) => {
                 let mut bytes_stream = response.bytes_stream();
                 while let Some(item) = bytes_stream.next().await {
@@ -503,6 +511,11 @@ async fn buffer_non_sse_upstream_body(
     let mut ttfb_ms = None;
 
     match response {
+        DirectUpstreamResponse::Buffered(bytes) => {
+            upstream_bytes = bytes.len() as u64;
+            ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
+            body_bytes.extend_from_slice(&bytes);
+        }
         DirectUpstreamResponse::Reqwest(response) => {
             let mut bytes_stream = response.bytes_stream();
             while let Some(item) = bytes_stream.next().await {

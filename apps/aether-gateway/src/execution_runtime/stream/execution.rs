@@ -1005,6 +1005,30 @@ async fn execute_in_process_stream(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
+    let prepared = match crate::execution_runtime::codex_turn_state::prepare(state, plan).await {
+        Ok(prepared) => prepared,
+        Err(error) => return Ok(error.stream(plan)),
+    };
+    let dispatch = prepared.as_ref().map_or(plan, |prepared| &prepared.plan);
+    let mut execution = execute_unmanaged_in_process_stream(state, dispatch).await?;
+    if let Some(prepared) = prepared {
+        if let Err(error) = prepared
+            .observe(state, execution.status_code, &mut execution.headers)
+            .await
+        {
+            return Ok(error.stream(plan));
+        }
+        crate::execution_runtime::codex_turn_state::scrub_context(
+            &mut execution.stream_summary_report_context,
+        );
+    }
+    Ok(execution)
+}
+
+async fn execute_unmanaged_in_process_stream(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
     let mut observation =
         crate::execution_runtime::codex_telemetry::Observation::begin(state, plan).await;
     let tunnel_result = execute_stream_plan_via_local_tunnel(state, plan).await;
