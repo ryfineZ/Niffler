@@ -329,6 +329,12 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     plan: &ExecutionPlan,
     report_context: Option<&serde_json::Value>,
 ) -> Result<ExecutionResult, GatewayError> {
+    if super::codex_compact::is_candidate(plan) {
+        if let Some(result) = Box::pin(super::codex_compact::maybe_execute_sync(state, plan)).await
+        {
+            return Ok(result);
+        }
+    }
     let prepared = match super::codex_turn_state::prepare(state, plan).await {
         Ok(prepared) => prepared,
         Err(error) => return Ok(error.sync(plan)),

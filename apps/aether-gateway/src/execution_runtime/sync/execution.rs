@@ -813,6 +813,15 @@ async fn execute_direct_sync_runtime_candidate(
     candidate_index: &str,
     progress_snapshot: Option<Arc<Mutex<OpenAiImageSyncProgressSnapshot>>>,
 ) -> Result<ExecutionResult, SyncExecutionFailure> {
+    if crate::execution_runtime::codex_compact::is_candidate(plan) {
+        if let Some(result) = Box::pin(crate::execution_runtime::codex_compact::maybe_execute_sync(
+            state, plan,
+        ))
+        .await
+        {
+            return Ok(result);
+        }
+    }
     if !should_track_openai_image_sync_upstream_sse(plan_kind, plan, report_context) {
         let prepared = match crate::execution_runtime::codex_turn_state::prepare(state, plan).await
         {
@@ -1757,6 +1766,7 @@ async fn execute_execution_runtime_sync_impl(
 
         if result.status_code >= 400
             && !oauth_retry_attempted
+            && !crate::execution_runtime::codex_compact::terminal_error(local_failover_response_text.as_deref())
             && refresh_oauth_plan_auth_for_retry(
                 state,
                 &mut plan,
@@ -1797,7 +1807,12 @@ async fn execute_execution_runtime_sync_impl(
             }
         }
 
-        let local_failover_analysis = analyze_local_candidate_failover_sync(
+        let local_failover_analysis = if crate::execution_runtime::codex_compact::handled(&headers) {
+            crate::orchestration::LocalFailoverAnalysis {
+                classification: crate::orchestration::LocalFailoverClassification::StopErrorPattern,
+                decision: LocalFailoverDecision::StopLocalFailover,
+            }
+        } else { analyze_local_candidate_failover_sync(
             state,
             &plan,
             plan_kind,
@@ -1805,7 +1820,7 @@ async fn execute_execution_runtime_sync_impl(
             &result,
             local_failover_response_text.as_deref(),
         )
-        .await;
+        .await };
         break (
             result_error_type,
             result_error_message,

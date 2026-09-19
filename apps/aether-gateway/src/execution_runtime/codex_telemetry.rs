@@ -65,6 +65,7 @@ pub(crate) fn eligible(plan: &ExecutionPlan) -> bool {
         )
         && plan.method.eq_ignore_ascii_case("POST")
         && plan.client_api_format != "openai:image"
+        && !super::codex_compact::is_v2(body)
         && !header(plan, "chatgpt-account-id").is_empty()
         && header(plan, "authorization").starts_with("Bearer ")
         && header(plan, "authorization").len() > 7
