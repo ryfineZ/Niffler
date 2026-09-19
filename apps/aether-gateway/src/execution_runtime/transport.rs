@@ -194,6 +194,7 @@ pub(crate) struct ExecutionTransportControls {
 }
 
 pub(crate) enum DirectUpstreamResponse {
+    Buffered(Bytes),
     Reqwest(reqwest::Response),
     BrowserWreq(wreq::Response),
     LocalTunnel(tunnel::DirectRelayResponse),
@@ -220,13 +221,27 @@ impl DirectSyncExecutionRuntime {
         &self,
         plan: &ExecutionPlan,
     ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
+        self.execute_sync_observed(plan, None).await
+    }
+
+    pub(super) async fn execute_sync_observed(
+        &self,
+        plan: &ExecutionPlan,
+        observation: Option<(&AppState, &super::codex_turn_state::Prepared)>,
+    ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
         let body_bytes = build_request_body(plan)?;
 
         let started_at = Instant::now();
         let response = send_request(plan, body_bytes).await?;
         let ttfb_ms = started_at.elapsed().as_millis() as u64;
         let status_code = response.status_code();
-        let headers = response.headers();
+        let mut headers = response.headers();
+        // 必须先处理响应头；正文读取/解析错误不能绕过 state 的不可重放保护。
+        if let Some((state, prepared)) = observation {
+            if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
+                return Ok(error.sync(plan));
+            }
+        }
         let body_bytes = response.bytes().await?;
         let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)
             .unwrap_or_else(|| body_bytes.to_vec());
@@ -314,6 +329,21 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     plan: &ExecutionPlan,
     report_context: Option<&serde_json::Value>,
 ) -> Result<ExecutionResult, GatewayError> {
+    let prepared = match super::codex_turn_state::prepare(state, plan).await {
+        Ok(prepared) => prepared,
+        Err(error) => return Ok(error.sync(plan)),
+    };
+    let dispatch = prepared.as_ref().map_or(plan, |prepared| &prepared.plan);
+    execute_unmanaged_sync_plan(state, trace_id, dispatch, report_context, prepared.as_ref()).await
+}
+
+async fn execute_unmanaged_sync_plan(
+    state: &AppState,
+    trace_id: Option<&str>,
+    plan: &ExecutionPlan,
+    report_context: Option<&serde_json::Value>,
+    prepared: Option<&super::codex_turn_state::Prepared>,
+) -> Result<ExecutionResult, GatewayError> {
     #[cfg(test)]
     {
         let remote_execution_runtime_base_url = state
@@ -332,7 +362,7 @@ pub(crate) async fn execute_sync_plan_with_report_context(
 
     let mut codex_telemetry = super::codex_telemetry::Observation::begin(state, plan).await;
     if resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).is_some() {
-        let result = execute_sync_plan_via_local_tunnel(state, plan).await;
+        let result = execute_sync_plan_via_local_tunnel_observed(state, plan, prepared).await;
         if let (Some(observation), Ok(result)) = (codex_telemetry.as_mut(), &result) {
             observation.sync_result(result);
         }
@@ -360,7 +390,10 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     }
 
     let _ = trace_id;
-    match DirectSyncExecutionRuntime::new().execute_sync(plan).await {
+    match DirectSyncExecutionRuntime::new()
+        .execute_sync_observed(plan, prepared.map(|prepared| (state, prepared)))
+        .await
+    {
         Ok(result) => {
             if let Some(observation) = codex_telemetry.as_mut() {
                 observation.sync_result(&result);
@@ -509,6 +542,14 @@ pub(super) async fn execute_sync_plan_via_local_tunnel(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
+    execute_sync_plan_via_local_tunnel_observed(state, plan, None).await
+}
+
+async fn execute_sync_plan_via_local_tunnel_observed(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    prepared: Option<&super::codex_turn_state::Prepared>,
+) -> Result<ExecutionResult, ExecutionRuntimeTransportError> {
     let node_id = resolve_local_tunnel_node_id(state, plan.proxy.as_ref()).ok_or_else(|| {
         ExecutionRuntimeTransportError::RelayError("local tunnel node unavailable".to_string())
     })?;
@@ -551,7 +592,12 @@ pub(super) async fn execute_sync_plan_via_local_tunnel(
         .map_err(ExecutionRuntimeTransportError::RelayError)?;
     let ttfb_ms = started_at.elapsed().as_millis() as u64;
     let status_code = response.status();
-    let headers = collect_tunnel_response_headers(response.headers());
+    let mut headers = collect_tunnel_response_headers(response.headers());
+    if let Some(prepared) = prepared {
+        if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
+            return Ok(error.sync(plan));
+        }
+    }
     let proxy_timing = execution_header_for_log(&headers, "x-proxy-timing").unwrap_or("-");
     let mut body_bytes = Vec::new();
     while let Some(chunk) = response

@@ -11,6 +11,7 @@
 | [功能设计文档](functional-design.md) | 说明功能模块、页面能力、API 能力、权限和关键流程 | 产品、前端、后端、测试 |
 | [架构设计文档](architecture-design.md) | 说明系统组成、请求链路、数据层、运行时、Tunnel 和部署架构 | 架构师、后端、运维 |
 | [优化建议文档](optimization-recommendations.md) | 从用户体验、架构、性能、代码质量、bug 风险等角度提出改进建议 | 项目负责人、研发团队 |
+| [Codex turn-state 核心逻辑与适配方案](ccodex-turn-state-niffler-adaptation.md) | 梳理 ccodex-sleep-state 实现，定位 Niffler 接入点与多节点、重试、计费边界 | 后端、架构、测试、运营 |
 
 ## 总体判断
 

@@ -73,6 +73,32 @@
           @update:model-value="$emit('update:telemetryEnabled', $event)"
         />
       </div>
+      <div class="flex items-start justify-between gap-6">
+        <div>
+          <Label
+            id="codex-turn-state-label"
+            for="codex-turn-state"
+            :class="loading || saving || loadError ? 'cursor-not-allowed' : 'cursor-pointer'"
+          >
+            {{ t('providerAdvanced.codexTurnState') }}
+          </Label>
+          <p
+            id="codex-turn-state-hint"
+            class="mt-1 text-sm text-muted-foreground"
+          >
+            {{ t('providerAdvanced.codexTurnStateHint') }}
+          </p>
+        </div>
+        <Switch
+          id="codex-turn-state"
+          class="shrink-0"
+          :model-value="turnStateEnabled"
+          :disabled="loading || saving || loadError"
+          aria-labelledby="codex-turn-state-label"
+          aria-describedby="codex-turn-state-hint"
+          @update:model-value="$emit('update:turnStateEnabled', $event)"
+        />
+      </div>
     </div>
   </CardSection>
 </template>
@@ -85,6 +111,7 @@ import Label from '@/components/ui/label.vue'
 import Switch from '@/components/ui/switch.vue'
 
 defineProps<{
+  turnStateEnabled: boolean
   telemetryEnabled: boolean
   enabled: boolean
   loading: boolean
@@ -97,6 +124,7 @@ defineEmits<{
   save: []
   'update:enabled': [value: boolean]
   'update:telemetryEnabled': [value: boolean]
+  'update:turnStateEnabled': [value: boolean]
 }>()
 
 const { t } = useI18n()

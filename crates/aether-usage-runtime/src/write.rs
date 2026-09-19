@@ -2093,6 +2093,7 @@ fn headers_to_json(headers: &BTreeMap<String, String>) -> Option<Value> {
 /// `apps/aether-gateway/src/handlers/admin/system/shared/configs.rs` 中
 /// `sensitive_headers` 系统配置默认值保持一致。
 const DEFAULT_SENSITIVE_HEADERS: &[&str] = &[
+    "x-codex-turn-state",
     "authorization",
     "x-api-key",
     "api-key",
@@ -2120,6 +2121,9 @@ fn is_sensitive_header(name: &str) -> bool {
 /// 对单个 header value 进行脱敏：保留前 4 + 后 4 字符，中间替换为 `****`。
 /// 长度小于等于 8 时整体替换为 `****`。
 fn mask_header_value(name: &str, value: &str) -> String {
+    if name.eq_ignore_ascii_case("x-codex-turn-state") {
+        return "[redacted]".to_string();
+    }
     if !is_sensitive_header(name) {
         return value.to_string();
     }
@@ -2150,6 +2154,10 @@ fn mask_sensitive_headers_in_json_value(value: Option<Value>) -> Option<Value> {
         return Some(value);
     };
     for (key, val) in map.iter_mut() {
+        if key.eq_ignore_ascii_case("x-codex-turn-state") {
+            *val = Value::String("[redacted]".into());
+            continue;
+        }
         if !is_sensitive_header(key) {
             continue;
         }
@@ -5811,6 +5819,24 @@ mod tests {
                 "payload": "x".repeat(MAX_USAGE_CAPTURE_BYTES + 1)
             }))
         );
+    }
+
+    #[test]
+    fn codex_turn_state_is_fully_redacted_in_header_storage() {
+        let secret = "opaque-state-never-store-even-prefix-or-suffix";
+        assert_eq!(
+            mask_header_value("X-Codex-Turn-State", secret),
+            "[redacted]"
+        );
+        let headers = BTreeMap::from([("x-codex-turn-state".into(), secret.into())]);
+        assert_eq!(
+            headers_to_json(&headers).unwrap()["x-codex-turn-state"],
+            "[redacted]"
+        );
+        let stored =
+            mask_sensitive_headers_in_json_value(Some(json!({"X-Codex-Turn-State": secret})))
+                .unwrap();
+        assert_eq!(stored["X-Codex-Turn-State"], "[redacted]");
     }
 
     #[test]

@@ -1484,7 +1484,8 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
             "thread-id",
             "x-client-request-id",
             "x-codex-window-id",
-            "x-codex-turn-metadata"
+            "x-codex-turn-metadata",
+            "x-codex-turn-state"
         ])),
         "detail_log_retention_days" => Some(json!(1)),
         "compressed_log_retention_days" => Some(json!(2)),
@@ -1511,9 +1512,9 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "email_suffix_list" => Some(json!([])),
         "enable_format_conversion" => Some(json!(false)),
         "enable_model_directives" => Some(json!(false)),
-        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
-            Some(json!(false))
-        }
+        "codex_oauth_identity_convergence_enabled"
+        | "codex_telemetry_enabled"
+        | "codex_turn_state_enabled" => Some(json!(false)),
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1813,18 +1814,18 @@ pub fn parse_admin_system_config_update(
     }
 
     match normalized_key.as_str() {
-        "codex_oauth_identity_convergence_enabled" | "codex_telemetry_enabled" => {
-            match value.as_bool() {
-                Some(enabled) => value = json!(enabled),
-                None if value.is_null() => value = json!(false),
-                None => {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        json!({ "detail": "请求数据验证失败" }),
-                    ));
-                }
+        "codex_oauth_identity_convergence_enabled"
+        | "codex_telemetry_enabled"
+        | "codex_turn_state_enabled" => match value.as_bool() {
+            Some(enabled) => value = json!(enabled),
+            None if value.is_null() => value = json!(false),
+            None => {
+                return Err((
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                ));
             }
-        }
+        },
         "module.chat_pii_redaction.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
@@ -2748,6 +2749,23 @@ mod tests {
         }
         assert!(parse_admin_system_config_update(
             "codex_telemetry_enabled",
+            br#"{"value":"true"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn codex_turn_state_config_is_opt_in_and_boolean() {
+        assert_eq!(
+            admin_system_config_default_value("codex_turn_state_enabled"),
+            Some(json!(false))
+        );
+        assert!(
+            parse_admin_system_config_update("codex_turn_state_enabled", br#"{"value":true}"#)
+                .is_ok()
+        );
+        assert!(parse_admin_system_config_update(
+            "codex_turn_state_enabled",
             br#"{"value":"true"}"#
         )
         .is_err());

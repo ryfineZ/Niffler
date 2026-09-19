@@ -61,6 +61,37 @@ pub(crate) struct MemoryLockEntry {
 }
 
 impl MemoryRuntimeBackend {
+    pub(crate) async fn kv_set_if_lock_owned(
+        &self,
+        lease: &crate::RuntimeLockLease,
+        key: &str,
+        value: &str,
+        ttl: Duration,
+    ) -> bool {
+        let locks = self.locks.lock().await;
+        if !locks
+            .get(&lease.key)
+            .is_some_and(|entry| entry.token == lease.token && entry.expires_at > Instant::now())
+        {
+            return false;
+        }
+        // 与租约检查保持同一临界区；锁顺序固定为 locks -> kv。
+        self.kv_set(key, value.to_owned(), Some(ttl)).await;
+        true
+    }
+
+    pub(crate) async fn kv_delete_if_value(&self, key: &str, expected: &str) -> bool {
+        let mut kv = self.kv.lock().await;
+        if kv
+            .get(key)
+            .is_some_and(|entry| !entry.is_expired(Instant::now()) && entry.value == expected)
+        {
+            kv.remove(key);
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn new(config: MemoryRuntimeStateConfig) -> Self {
         Self {
             config,
