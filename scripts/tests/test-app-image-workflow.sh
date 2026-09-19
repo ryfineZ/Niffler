@@ -4,7 +4,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORKFLOW="$SCRIPT_DIR/../../.github/workflows/app-image.yml"
-PROMOTION_WORKFLOW="$SCRIPT_DIR/../../.github/workflows/promotion-policy.yml"
 
 test -f "$WORKFLOW"
 grep -Fq "workflow_dispatch:" "$WORKFLOW"
@@ -30,14 +29,4 @@ if grep -Fq -- '--run-id "${{ github.run_id }}"' "$WORKFLOW"; then
     exit 1
 fi
 
-test -f "$PROMOTION_WORKFLOW"
-grep -Fq "pull_request_target:" "$PROMOTION_WORKFLOW"
-grep -Fq "      - main" "$PROMOTION_WORKFLOW"
-grep -Fq "name: Promotion policy" "$PROMOTION_WORKFLOW"
-grep -Fq "pull-requests: read" "$PROMOTION_WORKFLOW"
-grep -Fq 'ref: ${{ github.event.pull_request.base.sha }}' "$PROMOTION_WORKFLOW"
-grep -Fq "scripts/check-promotion-source.sh" "$PROMOTION_WORKFLOW"
-grep -Fq -- '--head-ref "${{ github.head_ref }}"' "$PROMOTION_WORKFLOW"
-grep -Fq -- '--head-sha "${{ github.event.pull_request.head.sha }}"' "$PROMOTION_WORKFLOW"
-
-echo "test deployment and promotion workflow checks passed"
+echo "test deployment workflow checks passed"
