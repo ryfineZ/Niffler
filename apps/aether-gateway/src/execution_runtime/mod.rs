@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 mod chatgpt_web_image;
 pub(crate) mod codex_telemetry;
+pub(crate) mod codex_turn_state;
 mod constants;
 mod fallback;
 mod grok;

@@ -814,8 +814,17 @@ async fn execute_direct_sync_runtime_candidate(
     progress_snapshot: Option<Arc<Mutex<OpenAiImageSyncProgressSnapshot>>>,
 ) -> Result<ExecutionResult, SyncExecutionFailure> {
     if !should_track_openai_image_sync_upstream_sse(plan_kind, plan, report_context) {
+        let prepared = match crate::execution_runtime::codex_turn_state::prepare(state, plan).await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return Ok(error.sync(plan)),
+        };
+        let dispatch = prepared.as_ref().map_or(plan, |prepared| &prepared.plan);
         return DirectSyncExecutionRuntime::new()
-            .execute_sync(plan)
+            .execute_sync_observed(
+                dispatch,
+                prepared.as_ref().map(|prepared| (state, prepared)),
+            )
             .await
             .map_err(SyncExecutionFailure::from_transport);
     }

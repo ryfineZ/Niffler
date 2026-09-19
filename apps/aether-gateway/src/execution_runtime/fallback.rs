@@ -132,6 +132,12 @@ pub(crate) async fn analyze_local_candidate_failover_sync(
     result: &ExecutionResult,
     response_text: Option<&str>,
 ) -> LocalFailoverAnalysis {
+    if super::codex_turn_state::terminal_error(response_text) {
+        return LocalFailoverAnalysis {
+            classification: LocalFailoverClassification::StopErrorPattern,
+            decision: LocalFailoverDecision::StopLocalFailover,
+        };
+    }
     if sync_plan_kind_disables_local_candidate_failover(plan_kind) {
         return LocalFailoverAnalysis::use_default();
     }
@@ -331,6 +337,12 @@ pub(crate) async fn resolve_local_candidate_failover_analysis_stream(
     status_code: u16,
     response_text: Option<&str>,
 ) -> LocalFailoverAnalysis {
+    if super::codex_turn_state::terminal_error(response_text) {
+        return LocalFailoverAnalysis {
+            classification: LocalFailoverClassification::StopErrorPattern,
+            decision: LocalFailoverDecision::StopLocalFailover,
+        };
+    }
     if openai_image_success_disables_local_success_failover(plan, status_code) {
         return LocalFailoverAnalysis::use_default();
     }

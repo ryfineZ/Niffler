@@ -1,4 +1,7 @@
 mod error;
+mod fenced_kv;
+#[cfg(test)]
+mod fenced_kv_tests;
 mod memory;
 pub mod redis;
 
