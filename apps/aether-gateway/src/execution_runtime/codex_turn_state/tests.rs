@@ -1,6 +1,8 @@
 use super::*;
 use base64::Engine as _;
 
+#[path = "compact_route_tests.rs"]
+mod compact_route_tests;
 #[path = "sync_tests.rs"]
 mod sync_tests;
 
@@ -77,6 +79,34 @@ async fn feature_defaults_off_without_probing_or_mutating_plan() {
     let p = plan();
     assert!(prepare(&state, &p).await.ok().flatten().is_none());
     assert_eq!(header(&p.headers, HEADER), "client-state");
+}
+
+#[tokio::test]
+async fn native_compaction_never_collects_or_injects_generation_state() {
+    let state = configured_state("codex", "oauth");
+    let mut p = plan();
+    p.body.json_body.as_mut().unwrap()["input"] = json!([
+        {"role":"user","content":"history"}, {"type":"compaction_trigger"}
+    ]);
+    assert!(!eligible(&p), "V2 compression is not a normal generation");
+    assert!(prepare_with_probe(&state, &p, unexpected_probe)
+        .await
+        .ok()
+        .flatten()
+        .is_none());
+
+    for input in [
+        json!([{"role":"user","content":"compaction_trigger"}]),
+        json!([{"type":"compaction","encrypted_content":"opaque"}]),
+        json!([{"type":"compaction_trigger","text":"not a protocol item"}]),
+        json!([{"type":"compaction_trigger"},{"role":"user","content":"continue"}]),
+    ] {
+        p.body.json_body.as_mut().unwrap()["input"] = input;
+        assert!(
+            eligible(&p),
+            "ordinary conversations must retain state handling"
+        );
+    }
 }
 
 #[tokio::test]
@@ -307,6 +337,12 @@ fn removes_opaque_state_from_nested_report_headers() {
 }
 
 fn configured_state(provider_type: &str, auth_type: &str) -> AppState {
+    AppState::new()
+        .unwrap()
+        .with_data_state_for_tests(configured_data(provider_type, auth_type))
+}
+
+fn configured_data(provider_type: &str, auth_type: &str) -> crate::data::GatewayDataState {
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
@@ -338,12 +374,11 @@ fn configured_state(provider_type: &str, auth_type: &str) -> AppState {
     .unwrap();
     let catalog =
         InMemoryProviderCatalogReadRepository::seed(vec![provider], vec![endpoint], vec![key]);
-    let data = crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
+    crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
         std::sync::Arc::new(catalog),
         "test-encryption-key",
     )
-    .with_system_config_values_for_tests([(CONFIG_KEY.to_string(), json!(true))]);
-    AppState::new().unwrap().with_data_state_for_tests(data)
+    .with_system_config_values_for_tests([(CONFIG_KEY.to_string(), json!(true))])
 }
 
 fn success() -> ProbeResult {

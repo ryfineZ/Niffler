@@ -72,7 +72,7 @@
 - 删除客户端传入的 `x-client-request-id`，并且不生成替代值；官方 Codex Compact 请求不发送该字段。
 - 不向 Compact 正文增加 `client_metadata`。客户端传入的 `client_metadata` 会被删除，因为官方 Compact 请求正文不包含该字段，身份只通过请求头传递。
 - 压缩历史 `input` 及其他合法 Compact 字段保持不变。
-- 发往官方 Codex OAuth `/responses/compact` 的请求固定使用普通 JSON 响应，不发送 `Accept: text/event-stream`。官方客户端直接接收这个完整 JSON；第三方客户端如果明确要求流式接收，Niffler 再完整接收 Compact JSON，为 `output` 中每个压缩结果生成一条 `response.output_item.done`，最后生成 `response.completed`。完整响应及解压后的 JSON 均不得超过 64 MiB，超限时停止读取并返回明确错误，避免异常响应耗尽网关内存。该规则不改变其他兼容 Provider 的 Compact 行为。
+- Compact 在身份与计划层保留普通 JSON 契约。2026-09-20 起，执行层对官方 Codex OAuth `/responses/compact` 在发送前转换为 `/responses` V2 压缩（末尾 `compaction_trigger`、SSE），完整成功后还原为 `response.compaction` JSON，保留压缩密文和可取得的用量；此协议兼容不依赖身份收敛或 state 开关。第三方客户端明确要求流式接收时，再为 `output` 中每个压缩结果生成一条 `response.output_item.done`，最后生成 `response.completed`。原始/解压后的完整响应均限制为 64 MiB，超限、不完整或无有效压缩项时明确失败，不自动重放。API Key 和第三方兼容 Provider 保持原协议。
 
 ### 图片生成
 

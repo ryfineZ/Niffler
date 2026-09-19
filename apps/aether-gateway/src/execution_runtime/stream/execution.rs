@@ -1005,6 +1005,14 @@ async fn execute_in_process_stream(
     state: &AppState,
     plan: &ExecutionPlan,
 ) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
+    if crate::execution_runtime::codex_compact::is_candidate(plan) {
+        if let Some(execution) =
+            Box::pin(crate::execution_runtime::codex_compact::maybe_execute_stream(state, plan))
+                .await
+        {
+            return Ok(execution);
+        }
+    }
     let prepared = match crate::execution_runtime::codex_turn_state::prepare(state, plan).await {
         Ok(prepared) => prepared,
         Err(error) => return Ok(error.stream(plan)),
@@ -1068,6 +1076,10 @@ async fn execute_in_process_stream_with_oauth_retry(
     let mut execution = execute_in_process_stream(state, plan).await?;
     apply_stream_summary_report_context(&mut execution, report_context);
     if execution.status_code >= 400
+        && execution
+            .headers
+            .get("x-niffler-compaction")
+            .is_none_or(|value| value != "failed")
         && refresh_oauth_plan_auth_for_retry(state, plan, execution.status_code, None, trace_id)
             .await
     {
@@ -2004,7 +2016,10 @@ async fn execute_stream_from_frame_stream(
     }
     let mut buffered_frames = VecDeque::new();
     let mut stream_terminal_summary: Option<ExecutionStreamTerminalSummary> = None;
-    if status_code == 200 && should_probe_success_failover_before_stream(&headers) {
+    if status_code == 200
+        && !crate::execution_runtime::codex_compact::handled(&headers)
+        && should_probe_success_failover_before_stream(&headers)
+    {
         let success_probe_text =
             probe_local_stream_success_failover_text(&mut buffered_frames, &mut lines).await?;
         if should_retry_next_local_candidate_stream(
@@ -2371,6 +2386,7 @@ async fn execute_stream_from_frame_stream(
     }
     let upstream_content_type = upstream_headers.get("content-type").map(String::as_str);
     let prefetch_openai_responses_sse = stream_failover_policy.enabled
+        && !crate::execution_runtime::codex_compact::handled(&upstream_headers)
         && upstream_content_type.is_some_and(|content_type| {
             content_type
                 .to_ascii_lowercase()
@@ -4167,6 +4183,15 @@ fn apply_stream_summary_report_context(
 ) {
     if let Some(report_context) = report_context.cloned() {
         execution.stream_summary_report_context = report_context;
+    }
+    if execution
+        .headers
+        .get("x-niffler-compaction")
+        .is_some_and(|value| value == "v1-to-v2")
+    {
+        if let Some(context) = execution.stream_summary_report_context.as_object_mut() {
+            context.insert("upstream_is_stream".into(), Value::Bool(false));
+        }
     }
 }
 

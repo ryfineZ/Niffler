@@ -132,7 +132,10 @@ pub(crate) async fn analyze_local_candidate_failover_sync(
     result: &ExecutionResult,
     response_text: Option<&str>,
 ) -> LocalFailoverAnalysis {
-    if super::codex_turn_state::terminal_error(response_text) {
+    if super::codex_turn_state::terminal_error(response_text)
+        || super::codex_compact::terminal_error(response_text)
+        || super::codex_compact::handled_context(report_context)
+    {
         return LocalFailoverAnalysis {
             classification: LocalFailoverClassification::StopErrorPattern,
             decision: LocalFailoverDecision::StopLocalFailover,
@@ -337,7 +340,10 @@ pub(crate) async fn resolve_local_candidate_failover_analysis_stream(
     status_code: u16,
     response_text: Option<&str>,
 ) -> LocalFailoverAnalysis {
-    if super::codex_turn_state::terminal_error(response_text) {
+    if super::codex_turn_state::terminal_error(response_text)
+        || super::codex_compact::terminal_error(response_text)
+        || super::codex_compact::handled_context(report_context)
+    {
         return LocalFailoverAnalysis {
             classification: LocalFailoverClassification::StopErrorPattern,
             decision: LocalFailoverDecision::StopLocalFailover,

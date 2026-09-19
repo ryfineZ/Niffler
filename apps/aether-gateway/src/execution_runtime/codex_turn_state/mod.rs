@@ -1,4 +1,5 @@
 //! Codex OAuth 同出口 state 管理。秘密只存在于临时派发计划和加密缓存中。
+pub(crate) mod compact_route;
 mod policy;
 
 use std::collections::BTreeMap;
@@ -28,13 +29,26 @@ const LEASE_TTL: Duration = Duration::from_secs(30);
 const MAX_PROBE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy)]
-pub(super) struct StateError {
+pub(crate) struct StateError {
     code: &'static str,
     status: u16,
     sent: bool,
 }
 
 impl StateError {
+    pub(crate) fn status(self) -> u16 {
+        self.status
+    }
+    pub(crate) fn egress_unavailable(self) -> bool {
+        self.code == "codex_turn_state_egress_unavailable"
+    }
+    fn egress() -> Self {
+        Self {
+            code: "codex_turn_state_egress_unavailable",
+            status: 503,
+            sent: false,
+        }
+    }
     fn unavailable() -> Self {
         Self {
             code: "codex_turn_state_unavailable",
@@ -181,6 +195,7 @@ fn eligible(plan: &ExecutionPlan) -> bool {
         && plan.method.eq_ignore_ascii_case("POST")
         && plan.provider_api_format == "openai:responses"
         && plan.client_api_format != "openai:image"
+        && !super::codex_compact::is_v2(body)
         && body.get("compaction_trigger").is_none()
         && body.get("context_management").is_none()
         && matches!(
@@ -342,6 +357,7 @@ where
             let cached: Cached =
                 serde_json::from_str(&plaintext).map_err(|_| StateError::runtime())?;
             if policy::accepts(&cached.token, blocks, now()) {
+                compact_route::remember(state, original, &transport, &cache_key, &cached).await?;
                 let mut plan = original.clone();
                 strip(&mut plan.headers);
                 plan.headers.insert(HEADER.into(), cached.token);

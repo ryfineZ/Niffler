@@ -523,6 +523,28 @@ fn local_openai_responses_compact_wrapper_strips_store_for_same_format_requests(
 }
 
 #[test]
+fn native_compact_protocol_trigger_survives_codex_request_normalization() {
+    let body = json!({"model":"gpt-5.6-sol", "input":[{"role":"user","content":"history"},{"type":"compaction_trigger"}],"stream":true});
+    let normalized = build_local_openai_responses_request_body(
+        &body,
+        "gpt-5.6-sol",
+        true,
+        false,
+        "codex",
+        "openai:responses",
+        None,
+        Some("key"),
+        &http::HeaderMap::new(),
+        false,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(crate::execution_runtime::codex_compact::is_v2(&normalized));
+    assert_eq!(normalized["input"], body["input"]);
+}
+
+#[test]
 fn local_openai_responses_compact_wrapper_strips_include_for_codex_requests() {
     let body_json = json!({
         "model": "gpt-5.4",

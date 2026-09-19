@@ -1,6 +1,29 @@
 # ccodex-sleep-state 核心逻辑与 Niffler 适配方案
 
-日期：2026-09-20。状态：首版及 review 的两处边界修复完成，相关测试通过。实际发布版本以各主机 `.niffler-deployed-commit` 和镜像 revision 为准。
+日期：2026-09-20。状态：首版已发布；Compact 协议兼容与同出口复用修复已完成本地验证，尚未提交或部署。实际发布版本以各主机 `.niffler-deployed-commit` 和镜像 revision 为准。
+
+## Compact 修复决定与验收（2026-09-20）
+
+目标：普通对话采集并注入 state；Compact 复用同账号、凭据、模型的有效 state 所绑定出口，不发采集探测、不注入缓存 state、不执行普通生成的 state 形状拦截。支持原生 V2 压缩和官方 Codex OAuth 的旧版接口桥接。非目标：扩展模型名单、第三方压缩协议、后台采集、跨账号复用或新增后台面板。
+
+- V2 只识别 `input` 最后一项恰为 `{"type":"compaction_trigger"}` 的协议标记，文本提及和历史 `compaction` 项不能误判。现有顶层字段检查保留，但不能替代实际协议识别。
+- 官方 Codex OAuth 的 `/responses/compact`（含 `/v1/` 路径）在首次派发前转换为 `/responses` V2 SSE 请求，保留历史与合法字段，仅补齐流式封装和末尾标记。完整成功后返回 `response.compaction` JSON，并保留可取得的用量；不能伪造压缩密文。API Key、第三方兼容上游继续原协议。
+- 旧版桥接属于协议兼容，不依赖 state 开关；出口复用受 `codex_turn_state_enabled` 控制。已有身份收敛仍先执行；桥接派发使用临时 plan，不污染原始客户请求或日志。
+- 增加加密出口索引，按上游账号、workspace、凭据指纹、模型隔离，指向最近选用的有效 state 缓存版本和出口。读取时校验有效期、版本和采集时的配置；配置变更或缓存失效后不复用。节点路由重新解析以刷新 Tunnel 所属机器，已停用/不可用的绑定出口明确报错。
+- 缺少有效绑定时 Compact 按当前配置转发，不能触发采集。有效绑定是另一应用机器的直连或本机代理时，无法在当前实例保证同出口，返回明确错误；不能把两台机器的直连视为同一出口，也不静默改出口。共享代理/Tunnel 可以跨实例复用。
+- Compact 仍遵守账号认证拒绝和限流保护；state 原文从响应/诊断剔除。压缩正文读取有大小和时间上限，支持 gzip、deflate（zlib 封装及 raw 格式）、zstd 解码，以及现有直连、浏览器传输、本地及远程 Tunnel。已经派发后的不完整、错误或超限压缩结果明确失败，不自动换账号/出口重放。
+- 诊断标记：`x-niffler-compaction` 为 `v1-to-v2` / `v2` / `failed`；成功压缩的响应中，`x-niffler-compaction-egress: state` 表示采用有效 state 的绑定出口，`configured` 表示按当前配置转发。这些标记不包含 state 原文，也不表示注入了缓存 state。
+
+验收：先复现 V2 误识别，再验证 V1 字段保留/单次发送/完整输出/异常不重放；验证 V1/V2 均不采集和注入、忽略 state 形状、无缓存转发、出口跟随、版本与凭据隔离、配置变更、跨实例共享及直连拒绝。同步/流式公共入口与相关现有测试均需通过。
+
+- [x] 修复 V2 识别和 state 跳过。
+- [x] 实现加密出口索引与 Compact 出口复用。
+- [x] 实现 V1→V2 请求/响应桥接及有界错误处理。
+- [x] 完成回归、格式及静态检查，更新结果。
+
+验证结果：修复前 V2 跳过测试按预期失败；收尾补测也复现了标准 deflate 封装解码失败，两项均已修复。最终 state、Compact、身份收敛、传输、重试及流式执行的 196 项相关测试全部通过；`cargo clippy -p aether-gateway --lib --tests -j 4 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均通过。公共同步和流式入口已验证诊断响应头透传、错误不换号重放，以及 state 原文剔除。
+
+测试使用仓库 CI 既有的 `RUST_MIN_STACK=16777216`；默认测试线程栈曾溢出，`.github/workflows/rust-ci.yml` 与 `docs/architecture/global-capacity-failover.md` 已记录同类要求。新压缩入口的异步 future 使用堆分配，生产线程栈不改。传输测试使用本地模拟上游，测试结束后无残留进程；未调用真实 OAuth 上游，线上双实例效果仍需发布后验收。代码位于 `execution_runtime/codex_compact/` 和 `codex_turn_state/compact_route.rs`；本轮尚未提交或部署。
 
 ## 实施进度与首版决定
 
@@ -93,6 +116,8 @@ v0.4 支持三种出站方式：
 - Compact 不等待采集、不套用普通生成的形状拦截；模型列表和搜索也不注入。原项目有独立的压缩兼容代码，不属于首版必须搬入的 state 核心。
 
 ## Niffler 首版实现
+
+本节记录首版发布行为；后续 Compact 修复以上方“Compact 修复决定与验收”为准。
 
 ### 接入范围与配置
 
