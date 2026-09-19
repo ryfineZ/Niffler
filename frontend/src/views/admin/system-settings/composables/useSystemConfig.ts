@@ -62,6 +62,7 @@ export interface SystemConfig {
   enable_format_conversion: boolean
   // Codex OAuth 身份收敛
   codex_turn_state_enabled: boolean
+  codex_turn_state_fallback: 'passthrough' | 'strict'
   codex_telemetry_enabled: boolean
   codex_oauth_identity_convergence_enabled: boolean
   // 同步生图心跳
@@ -125,6 +126,7 @@ const CONFIG_KEYS = [
   // Codex OAuth 身份收敛
   'codex_telemetry_enabled',
   'codex_turn_state_enabled',
+  'codex_turn_state_fallback',
   'codex_oauth_identity_convergence_enabled',
   // 同步生图心跳
   'enable_openai_image_sync_heartbeat',
@@ -294,6 +296,7 @@ function createDefaultConfig(): SystemConfig {
     // Codex OAuth 身份收敛
     codex_telemetry_enabled: false,
     codex_turn_state_enabled: false,
+    codex_turn_state_fallback: 'passthrough',
     codex_oauth_identity_convergence_enabled: false,
     // 同步生图心跳
     enable_openai_image_sync_heartbeat: true,
@@ -454,7 +457,8 @@ export function useSystemConfig() {
       systemConfig.value.codex_oauth_identity_convergence_enabled !==
       originalConfig.value.codex_oauth_identity_convergence_enabled ||
       systemConfig.value.codex_telemetry_enabled !== originalConfig.value.codex_telemetry_enabled ||
-      systemConfig.value.codex_turn_state_enabled !== originalConfig.value.codex_turn_state_enabled
+      systemConfig.value.codex_turn_state_enabled !== originalConfig.value.codex_turn_state_enabled ||
+      systemConfig.value.codex_turn_state_fallback !== originalConfig.value.codex_turn_state_fallback
     )
   })
 
@@ -509,6 +513,9 @@ export function useSystemConfig() {
               throw new Error('Provider 高级设置必须是布尔值')
             }
           }
+          if (key === 'codex_turn_state_fallback' && response.value !== 'passthrough' && response.value !== 'strict') {
+            throw new Error('state 兜底策略必须是 passthrough 或 strict')
+          }
           if (key === 'turnstile_secret_key') {
             systemConfig.value.turnstile_secret_key = ''
             systemConfig.value.turnstile_secret_key_is_set = !!response.is_set
@@ -521,7 +528,7 @@ export function useSystemConfig() {
                 : response.value
           }
         } catch (err) {
-          if (key === 'codex_oauth_identity_convergence_enabled' || key === 'codex_telemetry_enabled' || key === 'codex_turn_state_enabled') {
+          if (key === 'codex_oauth_identity_convergence_enabled' || key === 'codex_telemetry_enabled' || key === 'codex_turn_state_enabled' || key === 'codex_turn_state_fallback') {
             providerAdvancedConfigReady.value = false
             error(t('systemConfigMessages.providerAdvancedLoadFailed'))
             log.error('加载 Provider 高级设置失败:', err)
@@ -860,7 +867,7 @@ export function useSystemConfig() {
   async function saveProviderAdvancedConfig() {
     providerAdvancedConfigLoading.value = true
     try {
-      for (const key of ['codex_oauth_identity_convergence_enabled', 'codex_telemetry_enabled', 'codex_turn_state_enabled'] as const) {
+      for (const key of ['codex_oauth_identity_convergence_enabled', 'codex_telemetry_enabled', 'codex_turn_state_enabled', 'codex_turn_state_fallback'] as const) {
         const value = systemConfig.value[key]
         if (originalConfig.value?.[key] === value) continue
         await adminApi.updateSystemConfig(key, value, 'Codex Provider 高级设置')

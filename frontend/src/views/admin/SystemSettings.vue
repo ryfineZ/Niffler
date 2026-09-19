@@ -147,6 +147,7 @@
             :enabled="systemConfig.codex_oauth_identity_convergence_enabled"
             :telemetry-enabled="systemConfig.codex_telemetry_enabled"
             :turn-state-enabled="systemConfig.codex_turn_state_enabled"
+            :turn-state-fallback="systemConfig.codex_turn_state_fallback"
             :loading="systemConfigLoading"
             :saving="providerAdvancedConfigLoading"
             :load-error="!systemConfigLoading && !providerAdvancedConfigReady"
@@ -155,6 +156,7 @@
             @update:enabled="systemConfig.codex_oauth_identity_convergence_enabled = $event"
             @update:telemetry-enabled="systemConfig.codex_telemetry_enabled = $event"
             @update:turn-state-enabled="systemConfig.codex_turn_state_enabled = $event"
+            @update:turn-state-fallback="systemConfig.codex_turn_state_fallback = $event"
           />
 
           <!-- 请求记录清理策略 -->

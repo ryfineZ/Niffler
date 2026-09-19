@@ -54,29 +54,24 @@
 - 所有合并请求都运行 Rust、前端和发布工具检查，`main` 只接受这三组检查通过的
   合并请求。
 
-## 测试到生产的晋级链
+## 测试与生产发布链
 
 ```text
 g-dxw 功能分支
        |
        v
-PR -> ryfineZ/Niffler:test -> Build App Image -> test Environment -> 测试验收
-       |                                                       |
-       +---------------------- PR ------------------------------+
-                               |
-                               v
-                     ryfineZ/Niffler:main
-                               |
-                    手动构建准确 main 镜像
-                               |
-                    production 环境双人审批
-                               |
-                               v
-                            生产环境
+PR -> ryfineZ/Niffler:main -> 手动构建准确 main 镜像
+                                      |
+                         production 环境无需人工审批
+                                      |
+                                      v
+                                  生产环境
+
+test 分支和测试环境仍可用于发布前验证，但不是进入 `main` 或生产环境的必经步骤。
 ```
 
 - `ryfineZ/Niffler` 是唯一发布源；个人 fork 只用于开发分支和发起合并请求。
-- 常规修改只能先进入受保护 `test`，由 `test` 推送自动构建准确提交镜像并部署测试环境。
+- `test` 推送仍会自动构建准确提交镜像并部署测试环境，供需要时验证。
 - 同一时间的 `test` 发布按提交顺序排队，不能取消正在执行的远端部署，避免 SSH 中断让
   测试环境停在半更新状态。
 - 测试发布只接受当前上游 `test` 的准确提交，并调用服务器上 root 所有、不可由待部署
@@ -85,14 +80,7 @@ PR -> ryfineZ/Niffler:test -> Build App Image -> test Environment -> 测试验�
   `app` 容器时，只允许测试流程启动 PostgreSQL 和 Redis，并按测试 `.env` 执行同一项
   兼容检查。两种情况都会验证镜像提交标签、Compose 健康状态、源站健康地址和公开健康地址；
   已有版本的部署失败时自动恢复旧镜像。
-- 测试验收后，由上游 `test` 向 `main` 发起晋级合并请求。
-- `Promotion policy` 检查拒绝普通功能分支直接进入 `main`，也拒绝 fork 中名为
-  `test` 的分支冒充上游集成分支。该检查使用 `pull_request_target`，只检出并执行
-  `main` 基线中的守卫脚本，不执行合并请求提供的脚本，也不授予写权限。
-- 紧急修复使用 `hotfix/*`。同一修复必须先通过合并请求进入 `test` 并完成测试部署，
-  随后才允许向 `main` 发起生产修复合并请求；守卫会核对两条合并请求的准确 head SHA，
-  合并测试后追加的未测试提交不能直接进入 `main`。
-- `main` 合并后仍按受保护生产流程手动构建、手动触发并由另一名维护者批准，不自动上线。
+- `main` 合并后仍按受保护生产流程手动构建、手动触发，无需另一名维护者批准，不自动上线。
 
 ### 一次性测试服务器准备
 
@@ -186,16 +174,13 @@ PR -> ryfineZ/Niffler:test -> Build App Image -> test Environment -> 测试验�
      `http://127.0.0.1:18084/_gateway/health`
    - `MYLINGWEAVE_PUBLIC_URL` =
      `https://niffler-test.123.253.224.101.sslip.io`
-4. 创建保护 `test` 的 Ruleset：禁止删除和强制推送，要求合并请求、至少一名他人批准、
+4. 创建保护 `test` 的 Ruleset：禁止删除和强制推送，要求合并请求、最少批准数为 0、
    解决全部对话，并严格要求 `check`、`Frontend`、`Release tooling` 三项检查。
-5. 在现有 `main` Ruleset 中增加必过检查 `Promotion policy`，并增加 required deployment
-   `test`，确保 PR 的准确 head SHA 已成功部署到测试环境。
-6. 在 `production` Environment 的 required reviewers 中同时加入 `ryfineZ` 和 `g-dxw`，
-   保留禁止发起人自审和禁止管理员绕过。
+5. `production` Environment 不配置 required reviewers，仅允许受保护分支部署。
 
-首次落地顺序为：合并本次流水线修改到 `main`，通过服务器控制台或已有管理员密钥完成
-测试账号、Compose 配置、固定部署器和专用密钥准备，完成上述管理员配置，从最新 `main`
-创建 `test`，等待首次 `Build App Image` 自动运行并验证测试部署，然后开始使用常规晋级链。
+首次落地顺序为：合并流水线修改到 `main`，通过服务器控制台或已有管理员密钥完成
+测试账号、Compose 配置、固定部署器和专用密钥准备，完成上述管理员配置；需要测试时
+再向 `test` 推送并验证，生产发布直接从准确的 `main` 提交手动触发。
 
 ## 主线保护
 
@@ -209,9 +194,10 @@ PR -> ryfineZ/Niffler:test -> Build App Image -> test Environment -> 测试验�
 而让必过检查一直等待。`main` 禁止强制推送和删除，所有对话必须解决后才能合并。
 当前只允许普通合并提交，避免压缩合并或变基合并破坏生产链整合所需的祖先关系。
 
-当前仓库只有一名具有写权限的成员，若要求至少一名他人批准，仓库所有者自己创建
-的合并请求将无法合并。因此现阶段最少批准数设为 0，仍强制合并请求和全部必过
-检查。增加第二名审核者后，必须将最少批准数改为 1。
+按仓库所有者于 2026-09-16 确认的规则，`main` 最少批准数固定为 0，不要求其他
+维护者批准，也不因协作者人数变化自动恢复审核要求。仍保留合并请求、全部必过检查、
+对话解决和禁止强制推送/删除的保护；现有仓库所有者豁免不变。修改后通过 GitHub
+规则 API 回读 `required_approving_review_count=0`，并检查其他规则未变。
 
 ## 影响范围
 
@@ -299,7 +285,7 @@ root 包装器只接受 `status` 和 `deploy <提交号>`。执行部署前必�
 
 1. 为准确 `main` 提交运行并等待 `Build App Image` 成功；
 2. 从 `main` 手动触发 `Deploy Production`，输入同一准确提交号；
-3. Job 进入 `production` 环境等待另一名维护者批准；
+3. Job 进入 `production` 环境，无需人工审批；
 4. Runner 核对 SSH 主机密钥指纹；
 5. 发布脚本查找该提交的成功镜像工作流，验证当前生产提交继承关系；
 6. 通过受限 SSH 协议上传镜像并调用固定部署器；
@@ -311,7 +297,7 @@ root 包装器只接受 `status` 和 `deploy <提交号>`。执行部署前必�
 ### 验证要求
 
 - 非 `main` ref 触发时，生产 Job 必须在读取 Secret 前停止；
-- 未经环境审核时，Runner 不得获得环境 Secret；
+- 不受允许分支策略信任的 ref 不得获得生产环境 Secret；
 - 错误主机密钥指纹必须停止连接；
 - 固定 SSH 命令拒绝空命令、未知命令、额外参数和非法提交号；
 - 上传拒绝超限文件、路径逃逸和符号链接；

@@ -24,7 +24,6 @@ jobs:
       - name: Check deployment scripts
         run: |
           bash -n scripts/check-deploy-ancestry.sh
-          bash -n scripts/check-promotion-source.sh
           bash -n scripts/deploy-ci-artifact.sh
           bash -n scripts/fixed-production-deployer.sh
           bash -n scripts/actions-production-ssh-command.sh
@@ -32,7 +31,6 @@ jobs:
           bash -n scripts/install-actions-production-access.sh
           bash -n scripts/verify-ssh-host-key.sh
           bash -n scripts/tests/test-deploy-ancestry.sh
-          bash -n scripts/tests/test-promotion-source.sh
           bash -n scripts/tests/test-app-image-workflow.sh
           bash -n scripts/tests/test-fixed-production-deployer.sh
           bash -n scripts/tests/test-actions-production-access.sh
@@ -41,7 +39,6 @@ jobs:
           bash -n scripts/tests/test-production-workflow.sh
           bash -n scripts/tests/test-verify-ssh-host-key.sh
           bash scripts/tests/test-deploy-ancestry.sh
-          bash scripts/tests/test-promotion-source.sh
           bash scripts/tests/test-app-image-workflow.sh
           bash scripts/tests/test-fixed-production-deployer.sh
           bash scripts/tests/test-actions-production-access.sh

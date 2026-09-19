@@ -99,6 +99,35 @@
           @update:model-value="$emit('update:turnStateEnabled', $event)"
         />
       </div>
+      <div class="flex items-start justify-between gap-6">
+        <div>
+          <Label
+            id="codex-turn-state-fallback-label"
+            for="codex-turn-state-fallback"
+            :class="loading || saving || loadError ? 'cursor-not-allowed' : 'cursor-pointer'"
+          >
+            {{ t('providerAdvanced.codexTurnStateFallback') }}
+          </Label>
+          <p
+            id="codex-turn-state-fallback-hint"
+            class="mt-1 text-sm text-muted-foreground"
+          >
+            {{ t('providerAdvanced.codexTurnStateFallbackHint') }}
+          </p>
+        </div>
+        <select
+          id="codex-turn-state-fallback"
+          class="h-9 shrink-0 rounded-md border border-input bg-background px-3 text-sm"
+          :value="turnStateFallback"
+          :disabled="loading || saving || loadError"
+          aria-labelledby="codex-turn-state-fallback-label"
+          aria-describedby="codex-turn-state-fallback-hint"
+          @change="onFallbackChange"
+        >
+          <option value="passthrough">{{ t('providerAdvanced.codexTurnStatePassthrough') }}</option>
+          <option value="strict">{{ t('providerAdvanced.codexTurnStateStrict') }}</option>
+        </select>
+      </div>
     </div>
   </CardSection>
 </template>
@@ -112,6 +141,7 @@ import Switch from '@/components/ui/switch.vue'
 
 defineProps<{
   turnStateEnabled: boolean
+  turnStateFallback: 'passthrough' | 'strict'
   telemetryEnabled: boolean
   enabled: boolean
   loading: boolean
@@ -120,13 +150,18 @@ defineProps<{
   hasChanges: boolean
 }>()
 
-defineEmits<{
+const { t } = useI18n()
+const emit = defineEmits<{
   save: []
   'update:enabled': [value: boolean]
   'update:telemetryEnabled': [value: boolean]
   'update:turnStateEnabled': [value: boolean]
+  'update:turnStateFallback': [value: 'passthrough' | 'strict']
 }>()
 
-const { t } = useI18n()
+function onFallbackChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (value === 'strict' || value === 'passthrough') emit('update:turnStateFallback', value)
+}
 
 </script>
