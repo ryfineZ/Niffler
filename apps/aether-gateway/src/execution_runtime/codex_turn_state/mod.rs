@@ -23,6 +23,7 @@ use super::transport::{
 use crate::AppState;
 
 pub(crate) const CONFIG_KEY: &str = "codex_turn_state_enabled";
+pub(crate) const FALLBACK_CONFIG_KEY: &str = "codex_turn_state_fallback";
 pub(crate) const HEADER: &str = "x-codex-turn-state";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const LEASE_TTL: Duration = Duration::from_secs(30);
@@ -41,6 +42,9 @@ impl StateError {
     }
     pub(crate) fn egress_unavailable(self) -> bool {
         self.code == "codex_turn_state_egress_unavailable"
+    }
+    fn is_unavailable(self) -> bool {
+        self.code == "codex_turn_state_unavailable"
     }
     fn egress() -> Self {
         Self {
@@ -84,7 +88,11 @@ impl StateError {
     fn body(self) -> Value {
         json!({"error": {"code":self.code, "type":"codex_turn_state_error",
             "message": if self.sent { "上游请求已发出，但 state 校验或共享状态处理失败；请求可能已产生用量，不会自动重发。" }
-                else { "当前账号没有可用的同出口 state；请检查账号、出口或等待采集冷却结束。" },
+                else if self.code == "codex_turn_state_account_blocked" && self.status == 429 { "上游账号已触发限流，请等待账号冷却结束。" }
+                else if self.code == "codex_turn_state_account_blocked" { "上游已拒绝当前账号凭据，请刷新或更新账号凭据。" }
+                else if self.code == "codex_turn_state_runtime_unavailable" { "无法读取或更新 state 共享状态，请检查运行服务。" }
+                else if self.code == "codex_turn_state_egress_unavailable" { "当前无法使用已有 state 绑定的出口，请检查对应节点或应用实例。" }
+                else { "当前账号没有可用的同出口 state，严格模式已停止请求；可在 Provider 高级设置中选择普通转发兜底。" },
             "upstream_request_sent":self.sent, "upstream_usage_unknown":self.sent}})
     }
     pub(super) fn sync(self, plan: &ExecutionPlan) -> ExecutionResult {
@@ -220,6 +228,29 @@ async fn enabled(state: &AppState) -> Result<bool, StateError> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallbackMode {
+    Passthrough,
+    Strict,
+}
+
+async fn fallback_mode(state: &AppState) -> Result<FallbackMode, StateError> {
+    match state
+        .read_system_config_json_value(FALLBACK_CONFIG_KEY)
+        .await
+        .map_err(|_| StateError::runtime())?
+    {
+        None | Some(Value::Null) => Ok(FallbackMode::Passthrough),
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("passthrough") => {
+            Ok(FallbackMode::Passthrough)
+        }
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("strict") => {
+            Ok(FallbackMode::Strict)
+        }
+        _ => Err(StateError::runtime()),
+    }
+}
+
 /// 节点和配置而非数组位置；本地代理和直连额外绑定执行实例。
 fn route_scope(plan: &ExecutionPlan, instance: &str) -> String {
     let proxy = plan.proxy.as_ref().filter(|p| p.enabled != Some(false));
@@ -266,6 +297,7 @@ struct RateLimit {
 // 不派生 Debug：临时 plan 有认证和注入值。
 pub(super) struct Prepared {
     pub(super) plan: ExecutionPlan,
+    injected: bool,
     cache_key: String,
     cached_value: String,
     guard_key: String,
@@ -277,14 +309,92 @@ pub(super) async fn prepare(
     state: &AppState,
     original: &ExecutionPlan,
 ) -> Result<Option<Prepared>, StateError> {
-    tokio::time::timeout(
+    prepare_with_fallback_probe(state, original, |plan| async move {
+        probe_once(state, &plan).await
+    })
+    .await
+}
+
+async fn prepare_with_fallback_probe<F, Fut>(
+    state: &AppState,
+    original: &ExecutionPlan,
+    probe: F,
+) -> Result<Option<Prepared>, StateError>
+where
+    F: Fn(ExecutionPlan) -> Fut,
+    Fut: Future<Output = ProbeResult>,
+{
+    if !eligible(original) || !enabled(state).await? {
+        return Ok(None);
+    }
+    let fallback = fallback_mode(state).await?;
+    let result = tokio::time::timeout(
         Duration::from_secs(25),
-        prepare_with_probe(state, original, |plan| async move {
-            probe_once(state, &plan).await
-        }),
+        prepare_with_probe(state, original, probe),
     )
     .await
-    .unwrap_or_else(|_| Err(StateError::unavailable()))
+    .unwrap_or_else(|_| Err(StateError::unavailable()));
+    match result {
+        Err(error) if fallback == FallbackMode::Passthrough && error.is_unavailable() => {
+            // 超时也必须重新验证账号保护，不能把未完成的保护检查当作允许派发。
+            tokio::time::timeout(Duration::from_secs(3), prepare_passthrough(state, original))
+                .await
+                .unwrap_or_else(|_| Err(StateError::runtime()))
+        }
+        result => result,
+    }
+}
+
+async fn prepare_passthrough(
+    state: &AppState,
+    original: &ExecutionPlan,
+) -> Result<Option<Prepared>, StateError> {
+    if !enabled(state).await? {
+        return Ok(None);
+    }
+    let transport = state
+        .read_provider_transport_snapshot(
+            &original.provider_id,
+            &original.endpoint_id,
+            &original.key_id,
+        )
+        .await
+        .map_err(|_| StateError::runtime())?
+        .ok_or_else(StateError::runtime)?;
+    if !transport
+        .provider
+        .provider_type
+        .eq_ignore_ascii_case("codex")
+        || !transport.key.auth_type.eq_ignore_ascii_case("oauth")
+    {
+        return Ok(None);
+    }
+    let credential = digest(header(&original.headers, "authorization"));
+    let account = header(&original.headers, "chatgpt-account-id");
+    let guard_key = format!(
+        "codex-state:guard:{}",
+        digest(json!([original.provider_id, original.key_id, account]).to_string())
+    );
+    check_guard(state, &guard_key, &credential).await?;
+    let mut plan = original.clone();
+    strip(&mut plan.headers);
+    plan.headers.retain(|name, _| {
+        !name.eq_ignore_ascii_case(aether_contracts::EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER)
+    });
+    plan.headers.insert(
+        aether_contracts::EXECUTION_REQUEST_FOLLOW_REDIRECTS_HEADER.into(),
+        "false".into(),
+    );
+    tracing::info!(event_name="codex_state_passthrough",request_id=%original.request_id,key_id=%original.key_id,"没有可用 state，按已选账号和出口正常转发");
+    Ok(Some(Prepared {
+        plan,
+        injected: false,
+        cache_key: String::new(),
+        cached_value: String::new(),
+        guard_key,
+        credential,
+        blocks: policy::expected_blocks(header(&original.headers, "authorization"), account),
+    }))
 }
 
 type ProbeResult = Result<(u16, BTreeMap<String, String>, Vec<u8>), ()>;
@@ -372,6 +482,7 @@ where
                 );
                 return Ok(Some(Prepared {
                     plan,
+                    injected: true,
                     cache_key,
                     cached_value: stored,
                     guard_key,
@@ -785,11 +896,20 @@ impl Prepared {
     ) -> Result<(), StateError> {
         let returned = header(headers, HEADER).to_owned();
         strip(headers);
-        headers.insert("x-niffler-turn-state".into(), "injected".into());
+        headers.insert(
+            "x-niffler-turn-state".into(),
+            if self.injected {
+                "injected"
+            } else {
+                "passthrough"
+            }
+            .into(),
+        );
         reject(state, &self.guard_key, &self.credential, status, headers)
             .await
             .map_err(StateError::after_dispatch)?;
-        if (200..300).contains(&status)
+        if self.injected
+            && (200..300).contains(&status)
             && !returned.is_empty()
             && !policy::accepts(&returned, self.blocks, now())
         {

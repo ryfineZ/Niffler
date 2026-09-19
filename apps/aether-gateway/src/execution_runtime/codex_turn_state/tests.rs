@@ -3,6 +3,8 @@ use base64::Engine as _;
 
 #[path = "compact_route_tests.rs"]
 mod compact_route_tests;
+#[path = "passthrough_tests.rs"]
+mod passthrough_tests;
 #[path = "sync_tests.rs"]
 mod sync_tests;
 
@@ -82,6 +84,145 @@ async fn feature_defaults_off_without_probing_or_mutating_plan() {
 }
 
 #[tokio::test]
+async fn missing_state_defaults_to_passthrough_and_strict_mode_is_explicit() {
+    let state = configured_state("codex", "oauth");
+    let account_key = digest(json!(["provider", "account-a", "workspace"]).to_string());
+    state
+        .runtime_state
+        .kv_set(
+            &format!("codex-state:cooldown:{account_key}"),
+            "cooling-down",
+            Some(Duration::from_secs(60)),
+        )
+        .await
+        .unwrap();
+
+    // 默认没有可用 state 时只跳过注入，正式请求继续按原配置发送。
+    let prepared = prepare(&state, &plan()).await.ok().flatten().unwrap();
+    assert!(!prepared.injected);
+    assert_eq!(header(&prepared.plan.headers, HEADER), "");
+    let mut headers = BTreeMap::from([(HEADER.into(), "invalid-state".into())]);
+    assert!(prepared.observe(&state, 200, &mut headers).await.is_ok());
+    assert_eq!(headers["x-niffler-turn-state"], "passthrough");
+    assert!(!headers.contains_key(HEADER));
+
+    state
+        .upsert_system_config_json_value(FALLBACK_CONFIG_KEY, &json!("strict"), None)
+        .await
+        .unwrap();
+    let error = prepare(&state, &plan()).await.err().unwrap();
+    assert!(error.is_unavailable());
+}
+
+#[tokio::test]
+async fn passthrough_keeps_failed_probes_out_of_the_request_failure_path() {
+    for failure in ["transport", "missing", "invalid", "incomplete", "server"] {
+        let state = configured_state("codex", "oauth");
+        let p = plan();
+        let prepared = prepare_with_fallback_probe(&state, &p, |_| async {
+            let (status, mut headers, body) = success().unwrap();
+            match failure {
+                "transport" => Err(()),
+                "missing" => {
+                    headers.clear();
+                    Ok((status, headers, body))
+                }
+                "invalid" => {
+                    headers.insert(HEADER.into(), "invalid".into());
+                    Ok((status, headers, body))
+                }
+                "incomplete" => Ok((
+                    status,
+                    headers,
+                    b"data: {\"type\":\"response.created\"}\n\n".to_vec(),
+                )),
+                "server" => Ok((502, headers, vec![])),
+                _ => unreachable!(),
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+        .expect("probe failure must still allow a real request");
+        assert!(!prepared.injected);
+        assert_eq!(prepared.plan.body, p.body);
+        assert_eq!(prepared.plan.proxy, p.proxy);
+        assert_eq!(prepared.plan.key_id, p.key_id);
+        assert_eq!(header(&prepared.plan.headers, HEADER), "");
+        assert!(
+            !prepare_with_fallback_probe(&state, &p, unexpected_probe)
+                .await
+                .ok()
+                .flatten()
+                .unwrap()
+                .injected
+        );
+    }
+}
+
+#[tokio::test]
+async fn passthrough_preserves_auth_and_rate_protection_from_probes_and_real_responses() {
+    for status in [401, 403, 429] {
+        let state = configured_state("codex", "oauth");
+        let error = prepare_with_fallback_probe(&state, &plan(), |_| async {
+            Ok((status, BTreeMap::new(), vec![]))
+        })
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.status, status);
+        assert_eq!(error.code, "codex_turn_state_account_blocked");
+        assert_eq!(
+            prepare_with_fallback_probe(&state, &plan(), unexpected_probe)
+                .await
+                .err()
+                .unwrap()
+                .status,
+            status
+        );
+
+        let state = configured_state("codex", "oauth");
+        let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async { Err(()) })
+            .await
+            .ok()
+            .flatten()
+            .unwrap();
+        assert!(prepared
+            .observe(&state, status, &mut BTreeMap::new())
+            .await
+            .is_ok());
+        assert_eq!(
+            prepare_with_fallback_probe(&state, &plan(), unexpected_probe)
+                .await
+                .err()
+                .unwrap()
+                .status,
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn passthrough_forwards_when_global_collection_slot_is_busy() {
+    let state = configured_state("codex", "oauth");
+    let lease = state
+        .runtime_state
+        .lock_try_acquire("codex-state:global-collector", "other-instance", LEASE_TTL)
+        .await
+        .unwrap()
+        .unwrap();
+    let result = prepare_with_fallback_probe(&state, &plan(), unexpected_probe).await;
+    state.runtime_state.lock_release(&lease).await.unwrap();
+    assert!(
+        !result
+            .ok()
+            .flatten()
+            .expect("busy collector must fall back")
+            .injected
+    );
+}
+
+#[tokio::test]
 async fn native_compaction_never_collects_or_injects_generation_state() {
     let state = configured_state("codex", "oauth");
     let mut p = plan();
@@ -114,6 +255,7 @@ async fn one_bad_response_rejects_only_its_own_version() {
     let state = AppState::new().unwrap();
     let p = Prepared {
         plan: plan(),
+        injected: true,
         cache_key: "state".into(),
         cached_value: "old-version".into(),
         guard_key: "guard".into(),

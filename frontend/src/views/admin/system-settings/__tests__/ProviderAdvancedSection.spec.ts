@@ -18,8 +18,10 @@ function mountSection(options: {
   const onUpdate = vi.fn()
   const onTelemetryUpdate = vi.fn()
   const onStateUpdate = vi.fn()
+  const onFallbackUpdate = vi.fn()
   const app = createApp(ProviderAdvancedSection, {
     turnStateEnabled: false,
+    turnStateFallback: 'passthrough',
     telemetryEnabled: false,
     enabled: options.enabled ?? false,
     loading: options.loading ?? false,
@@ -30,10 +32,11 @@ function mountSection(options: {
     'onUpdate:enabled': onUpdate,
     'onUpdate:telemetryEnabled': onTelemetryUpdate,
     'onUpdate:turnStateEnabled': onStateUpdate,
+    'onUpdate:turnStateFallback': onFallbackUpdate,
   })
   app.mount(root)
   mountedApps.push({ app, root })
-  return { root, onSave, onUpdate, onTelemetryUpdate, onStateUpdate }
+  return { root, onSave, onUpdate, onTelemetryUpdate, onStateUpdate, onFallbackUpdate }
 }
 
 afterEach(() => {
@@ -80,6 +83,17 @@ describe('ProviderAdvancedSection', () => {
     toggle.click()
     expect(onTelemetryUpdate).toHaveBeenCalledWith(true)
     expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('defaults to passthrough and allows explicitly selecting strict mode', async () => {
+    const { root, onFallbackUpdate } = mountSection()
+    await nextTick()
+    const select = root.querySelector<HTMLSelectElement>('#codex-turn-state-fallback')
+    if (!select) throw new Error('state fallback selector missing')
+    expect(select.value).toBe('passthrough')
+    select.value = 'strict'
+    select.dispatchEvent(new Event('change'))
+    expect(onFallbackUpdate).toHaveBeenCalledWith('strict')
   })
 
   it('blocks editing and reports the load error', async () => {

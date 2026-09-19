@@ -540,7 +540,10 @@ fn native_compact_protocol_trigger_survives_codex_request_normalization() {
         true,
     )
     .unwrap();
-    assert!(crate::execution_runtime::codex_compact::is_v2(&normalized));
+    assert_eq!(
+        normalized["input"].as_array().unwrap().last().unwrap(),
+        &json!({"type":"compaction_trigger"})
+    );
     assert_eq!(normalized["input"], body["input"]);
 }
 

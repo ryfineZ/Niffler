@@ -1515,6 +1515,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "codex_oauth_identity_convergence_enabled"
         | "codex_telemetry_enabled"
         | "codex_turn_state_enabled" => Some(json!(false)),
+        "codex_turn_state_fallback" => Some(json!("passthrough")),
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1820,6 +1821,16 @@ pub fn parse_admin_system_config_update(
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => value = json!(false),
             None => {
+                return Err((
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                ));
+            }
+        },
+        "codex_turn_state_fallback" => match value.as_str().map(str::trim) {
+            Some("passthrough" | "strict") => value = json!(value.as_str().unwrap().trim()),
+            None if value.is_null() => value = json!("passthrough"),
+            _ => {
                 return Err((
                     http::StatusCode::BAD_REQUEST,
                     json!({ "detail": "请求数据验证失败" }),
@@ -2767,6 +2778,23 @@ mod tests {
         assert!(parse_admin_system_config_update(
             "codex_turn_state_enabled",
             br#"{"value":"true"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn codex_turn_state_fallback_defaults_to_passthrough_and_accepts_strict() {
+        assert_eq!(
+            admin_system_config_default_value("codex_turn_state_fallback"),
+            Some(json!("passthrough"))
+        );
+        let strict =
+            parse_admin_system_config_update("codex_turn_state_fallback", br#"{"value":"strict"}"#)
+                .expect("strict fallback should be accepted");
+        assert_eq!(strict.value, json!("strict"));
+        assert!(parse_admin_system_config_update(
+            "codex_turn_state_fallback",
+            br#"{"value":"invalid"}"#,
         )
         .is_err());
     }
