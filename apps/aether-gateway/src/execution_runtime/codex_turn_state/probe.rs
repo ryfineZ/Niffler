@@ -11,6 +11,8 @@ pub(super) struct ProbeObservation {
     pub first_byte_ms: Option<u64>,
     pub completed: bool,
     pub returned_state: &'static str,
+    pub expected_blocks: Option<usize>,
+    pub observed_blocks: Option<usize>,
 }
 
 pub(super) struct ProbeResponse {
@@ -158,6 +160,11 @@ pub(super) async fn probe_once(state: &AppState, plan: &ExecutionPlan) -> ProbeR
         observation.dispatched = Some(true);
         observation.headers_ms = Some(started.elapsed().as_millis() as u64);
         observation.phase = "first_byte";
+        observation.expected_blocks = Some(policy::expected_blocks(
+            header(&plan.headers, "authorization"),
+            header(&plan.headers, "chatgpt-account-id"),
+        ));
+        observation.observed_blocks = policy::parse(header(&headers, HEADER)).map(|(_, n)| n);
         observation.returned_state = policy::state_reason(
             header(&headers, HEADER),
             policy::expected_blocks(

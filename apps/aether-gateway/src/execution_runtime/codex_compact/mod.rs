@@ -340,6 +340,7 @@ fn buffered(
         response: DirectUpstreamResponse::Buffered(Bytes::from(body.to_string())),
         started_at,
         codex_telemetry: None,
+        codex_state_candidate: None,
     }
 }
 

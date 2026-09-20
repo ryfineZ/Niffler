@@ -209,6 +209,7 @@ pub(crate) struct DirectUpstreamStreamExecution {
     pub(crate) stream_summary_report_context: Value,
     pub(crate) response: DirectUpstreamResponse,
     pub(crate) started_at: Instant,
+    pub(crate) codex_state_candidate: Option<Box<super::codex_turn_state::passive::Candidate>>,
     pub(crate) codex_telemetry: Option<super::codex_telemetry::Observation>,
 }
 
@@ -238,11 +239,14 @@ impl DirectSyncExecutionRuntime {
         let mut headers = response.headers();
         super::codex_turn_state::mark_unmanaged(&mut headers);
         // 必须先处理响应头；正文读取/解析错误不能绕过 state 的不可重放保护。
-        if let Some((state, prepared)) = observation {
-            if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
-                return Ok(error.sync(plan));
+        let mut candidate = if let Some((state, prepared)) = observation {
+            match prepared.observe(state, status_code, &mut headers).await {
+                Ok(candidate) => candidate,
+                Err(error) => return Ok(error.sync(plan)),
             }
-        }
+        } else {
+            None
+        };
         let body_bytes = response.bytes().await?;
         let decoded_body_bytes = decode_response_body_bytes(&headers, &body_bytes)
             .unwrap_or_else(|| body_bytes.to_vec());
@@ -269,6 +273,11 @@ impl DirectSyncExecutionRuntime {
                 body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
             })
         };
+
+        if let Some(mut candidate) = candidate.take() {
+            candidate.observe(&decoded_body_bytes);
+            candidate.finish().await;
+        }
 
         Ok(ExecutionResult {
             request_id: plan.request_id.clone(),
@@ -312,6 +321,7 @@ impl DirectSyncExecutionRuntime {
             response: response.into_direct_upstream_response(),
             started_at,
             codex_telemetry: None,
+            codex_state_candidate: None,
         })
     }
 }
@@ -462,6 +472,7 @@ pub(crate) async fn execute_stream_plan_via_local_tunnel(
         response: DirectUpstreamResponse::LocalTunnel(response),
         started_at,
         codex_telemetry: None,
+        codex_state_candidate: None,
     }))
 }
 
@@ -603,11 +614,14 @@ async fn execute_sync_plan_via_local_tunnel_observed(
     let status_code = response.status();
     let mut headers = collect_tunnel_response_headers(response.headers());
     super::codex_turn_state::mark_unmanaged(&mut headers);
-    if let Some(prepared) = prepared {
-        if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
-            return Ok(error.sync(plan));
+    let candidate = if let Some(prepared) = prepared {
+        match prepared.observe(state, status_code, &mut headers).await {
+            Ok(candidate) => candidate,
+            Err(error) => return Ok(error.sync(plan)),
         }
-    }
+    } else {
+        None
+    };
     let proxy_timing = execution_header_for_log(&headers, "x-proxy-timing").unwrap_or("-");
     let mut body_bytes = Vec::new();
     while let Some(chunk) = response
@@ -676,6 +690,10 @@ async fn execute_sync_plan_via_local_tunnel_observed(
         })
     };
 
+    if let Some(mut candidate) = candidate {
+        candidate.observe(&decoded_body_bytes);
+        candidate.finish().await;
+    }
     Ok(ExecutionResult {
         request_id: plan.request_id.clone(),
         candidate_id: plan.candidate_id.clone(),

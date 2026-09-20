@@ -238,6 +238,7 @@ async fn assert_direct_transport_observes_headers(backend: &str) {
         ..Default::default()
     });
     let prepared = Prepared {
+        publication: None,
         plan: p,
         injected: true,
         cache_key: "state".into(),

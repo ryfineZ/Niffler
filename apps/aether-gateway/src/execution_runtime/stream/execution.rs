@@ -1022,12 +1022,13 @@ async fn execute_in_process_stream(
     let mut execution = execute_unmanaged_in_process_stream(state, dispatch).await?;
     crate::execution_runtime::codex_turn_state::mark_unmanaged(&mut execution.headers);
     if let Some(prepared) = prepared {
-        if let Err(error) = prepared
+        execution.codex_state_candidate = match prepared
             .observe(state, execution.status_code, &mut execution.headers)
             .await
         {
-            return Ok(error.stream(plan));
-        }
+            Ok(candidate) => candidate,
+            Err(error) => return Ok(error.stream(plan)),
+        };
         crate::execution_runtime::codex_turn_state::scrub_context(
             &mut execution.stream_summary_report_context,
         );

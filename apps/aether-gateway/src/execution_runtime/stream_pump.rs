@@ -40,6 +40,7 @@ pub(crate) fn build_direct_execution_frame_stream(
             response,
             started_at,
             mut codex_telemetry,
+            mut codex_state_candidate,
         } = execution;
 
         let mut observer_context = stream_summary_report_context;
@@ -72,6 +73,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                     let mut response_headers = original_headers;
                     let mut response_body = Bytes::from(buffered.body_bytes);
                     if let Some(observation) = codex_telemetry.as_mut() { observation.observe_buffered(&response_body); }
+                    if let Some(candidate) = codex_state_candidate.as_mut() { candidate.observe(&response_body); }
                     let mut summary = None;
                     match maybe_bridge_non_sse_sync_json_to_stream(
                         status_code,
@@ -129,6 +131,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                             return;
                         }
                     }
+                    if let Some(candidate) = codex_state_candidate.take() { candidate.finish().await; }
                     match encode_stream_frame_ndjson(&StreamFrame::eof_with_summary(summary)) {
                         Ok(frame) => yield Ok(frame),
                         Err(err) => yield Err(err),
@@ -140,6 +143,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                     upstream_bytes,
                 }) => {
                     if let Some(observation) = codex_telemetry.as_mut() { observation.fail(); }
+                    if let Some(candidate) = codex_state_candidate.as_mut() { candidate.fail(); }
                     match encode_headers_frame(status_code, original_headers) {
                         Ok(frame) => yield Ok(frame),
                         Err(err) => {
@@ -187,6 +191,7 @@ pub(crate) fn build_direct_execution_frame_stream(
         let mut first_chunk_telemetry_emitted = false;
         match response {
             DirectUpstreamResponse::Buffered(bytes) => {
+                if let Some(candidate) = codex_state_candidate.as_mut() { candidate.observe(&bytes); }
                 upstream_bytes = bytes.len() as u64;
                 ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                 match encode_data_frame(&bytes) {
@@ -200,6 +205,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                     match item {
                         Ok(chunk) => {
                             if let Some(observation) = codex_telemetry.as_mut() { observation.observe(&chunk); }
+                            if let Some(candidate) = codex_state_candidate.as_mut() { candidate.observe(&chunk); }
                             if ttfb_ms.is_none() {
                                 ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                             }
@@ -231,6 +237,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                         }
                         Err(err) => {
                             if let Some(observation) = codex_telemetry.as_mut() { observation.fail(); }
+                            if let Some(candidate) = codex_state_candidate.as_mut() { candidate.fail(); }
                             let message = format_error_chain(&err);
                             warn!(
                                 event_name = "stream_pump_body_read_error",
@@ -258,6 +265,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                     match item {
                         Ok(chunk) => {
                             if let Some(observation) = codex_telemetry.as_mut() { observation.observe(&chunk); }
+                            if let Some(candidate) = codex_state_candidate.as_mut() { candidate.observe(&chunk); }
                             if ttfb_ms.is_none() {
                                 ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                             }
@@ -289,6 +297,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                         }
                         Err(err) => {
                             if let Some(observation) = codex_telemetry.as_mut() { observation.fail(); }
+                            if let Some(candidate) = codex_state_candidate.as_mut() { candidate.fail(); }
                             let message = format_wreq_upstream_request_error(&err);
                             warn!(
                                 event_name = "stream_pump_body_read_error",
@@ -314,6 +323,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                 match response.next_chunk().await {
                     Ok(Some(chunk)) => {
                         if let Some(observation) = codex_telemetry.as_mut() { observation.observe(&chunk); }
+                        if let Some(candidate) = codex_state_candidate.as_mut() { candidate.observe(&chunk); }
                         if ttfb_ms.is_none() {
                             ttfb_ms = Some(started_at.elapsed().as_millis() as u64);
                         }
@@ -346,6 +356,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                     Ok(None) => break,
                     Err(message) => {
                         if let Some(observation) = codex_telemetry.as_mut() { observation.fail(); }
+                        if let Some(candidate) = codex_state_candidate.as_mut() { candidate.fail(); }
                         warn!(
                             event_name = "stream_pump_body_read_error",
                             log_type = "ops",
@@ -385,6 +396,7 @@ pub(crate) fn build_direct_execution_frame_stream(
                 return;
             }
         }
+        if let Some(candidate) = codex_state_candidate { candidate.finish().await; }
         match encode_stream_frame_ndjson(&StreamFrame::eof_with_summary(summary)) {
             Ok(frame) => yield Ok(frame),
             Err(err) => yield Err(err),
