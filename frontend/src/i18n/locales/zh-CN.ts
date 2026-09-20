@@ -1,4 +1,18 @@
 export default {
+  codexState: {
+    button: 'State 状态', title: '{name} · State 状态', loading: '读取中…', refresh: '刷新',
+    readFailed: '读取失败', retryRead: '暂时无法读取共享状态，请重试。',
+    disabled: 'State 功能已关闭', readyCount: '{count} 个模型 / 出口有可用 state', noReady: '当前没有可用 state',
+    explanation: '没有合格 state 不代表账号异常，普通模式仍会转发。最近使用只说明是否注入，不代表生成成功。',
+    empty: '最近 24 小时暂无观测。此账号收到支持模型的普通请求后才会开始记录；打开面板不会触发采集。',
+    none: '暂无记录', lastProbe: '最近采集', lastUse: '最近正式请求', expires: 'State 可用至', cooldown: '下一轮采集最早可重试',
+    seconds: '约 {count} 秒后', retryAt: '账号限流至', authRejected: '当前凭据被上游拒绝', snapshot: '读取于 {time} · 保留最近 24 小时最多 24 个模型 / 出口组合',
+    status: { disabled: '功能关闭', configuration_changed: '凭据或配置已变化', rate_limited: '账号限流', auth_rejected: '认证拒绝', ready: '有合格 state', cooldown: '等待补采', unavailable: '暂无合格 state' },
+    egress: { direct: '应用实例直连', local_proxy: '实例本地代理', shared_proxy: '共享代理 / Tunnel' },
+    probe: { accepted: '采到合格 state', missing_state: '上游未返回 state', invalid_state: 'State 形状或有效期不合格', upstream_error: '探测未成功完成', transport_error: '连接失败或超时', unknown: '暂无详细原因' },
+    use: { injected: '已注入 state', passthrough: '普通转发，未注入', invalidated: '回包 state 不合格，已停止响应' },
+  },
+
   poolAccountTest: { loadFailed: '加载测试数据失败', noModels: '暂无可测试的模型', noEndpoints: '该账号没有可测试的协议端点' },
   architectureGuide: { badge: '系统架构', title: '架构说明', multiFormat: '多格式兼容接入', multiFormatText: '支持多种 API 格式、端点配置及认证方式，不同客户端均可平滑接入。', unifiedRouting: '统一模型路由', unifiedRoutingText: '对外暴露统一模型名称，对内自动映射到各提供商的内部模型名及变体，支持优先级选择、亲和性路由、负载均衡与故障转移。', crossFormat: '跨平台格式转换', compatibleInput: '兼容格式入口', formatConversion: '格式转换', upstreamProvider: '上游提供商', compatibleResponse: '兼容格式响应', nativePassthrough: '同生态原生透传', nativeInput: '原生 API 入口', nativeFlow: '原生请求透传 → 上游提供商 → 原生响应透传', nativeOutput: '原生 API 出口' },
   strategyGuide: { badge: '调度与策略', title: '关键策略', description: '了解 Niffler 内部的日志记录、智能调度模式以及服务限制策略。', loggingTitle: '1. 请求体记录', loggingText: '在系统设置中，您可以修改请求体记录详情等级，以便于调试和审计。', logLevel: '日志等级', logContent: '记录内容', basicRequest: '基本请求信息（IP, 模型, 耗时, Token 等）', headersRequest: 'Base + 请求头 (Headers)', fullPayload: 'Headers + 完整的请求体与响应体 (Payloads)', routingTitle: '2. 调度模式', providerFirst: '提供商优先：优先根据提供商设置的顺序进行调度。', keyFirst: 'Key优先：无视提供商层级，直接在所有可用的 Key 之间根据优先级进行调度。', cacheAffinity: '缓存亲和：尽量将相同用户的请求路由到之前处理过该用户请求的提供商/节点，以最大化利用上游缓存。', loadBalance: '负载均衡：在相同优先级的节点之间均匀分配流量。', fixedOrder: '固定顺序：取消随机性与动态调整，严格按照固定的顺序遍历尝试。', failover: '故障转移：当请求失败时，根据策略自动切换到下一个可用的备用节点进行重试。', rateLimitTitle: '3. 访问限制', rateLimitText: '系统支持多种维度的访问频率限制（Rate Limit），有效防止恶意请求或滥用，保障服务稳定性。', cleanupTitle: '4. 请求体压缩清理', cleanupText: '为节省数据库空间与提高查询性能，系统提供自动请求体清理与压缩策略，将历史请求详情定期冷热分离并清理。', tasksTitle: '5. 定时任务', tasksText: '平台内置多个定时任务，用于模型列表同步、缓存清理、余额监控及统计数据聚合等周期性操作。' },

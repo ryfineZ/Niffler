@@ -185,6 +185,14 @@ afterEach(() => {
 })
 
 describe('UsageRecordsTable', () => {
+  it('shows failed when a capacity error arrives after HTTP 200', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      status: 'failed', status_code: 200,
+      error_message: 'Selected model is at capacity. Please try a different model.',
+    })])
+    expect(root.textContent).toContain('失败')
+  })
+
   it('shows output TPS after the request completes', () => {
     const root = mountUsageRecordsTable([buildRecord()])
 

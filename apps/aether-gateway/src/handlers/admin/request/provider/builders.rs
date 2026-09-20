@@ -1,6 +1,26 @@
 use super::*;
 
 impl<'a> AdminAppState<'a> {
+    pub(crate) async fn read_codex_turn_state_diagnostics(
+        &self,
+        provider_id: &str,
+        key_id: &str,
+    ) -> Result<Option<serde_json::Value>, GatewayError> {
+        let keys = self
+            .app
+            .read_provider_catalog_keys_by_ids(&[key_id.to_string()])
+            .await?;
+        if !keys.iter().any(|key| {
+            key.provider_id == provider_id && key.auth_type.eq_ignore_ascii_case("oauth")
+        }) {
+            return Ok(None);
+        }
+        crate::execution_runtime::codex_turn_state::diagnostics::read(self.app, provider_id, key_id)
+            .await
+            .map(Some)
+            .map_err(|_| GatewayError::Internal("无法读取 state 诊断状态".into()))
+    }
+
     pub(crate) async fn build_admin_keys_grouped_by_format_payload(
         &self,
     ) -> Option<serde_json::Value> {

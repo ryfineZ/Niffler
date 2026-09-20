@@ -51,15 +51,16 @@ describe('usage status helpers', () => {
     expect(isUsageRecordSuccessful(record)).toBe(false)
   })
 
-  it('treats explicit failed status with a 2xx status code as successful for display', () => {
+  it('keeps a failed stream failed even after HTTP 200 headers were sent', () => {
     const record = buildUsageRecord({
       status: 'failed',
       status_code: 200,
-      error_message: 'stale failure flag'
+      error_message: 'Selected model is at capacity. Please try a different model.'
     })
 
-    expect(isUsageRecordFailed(record)).toBe(false)
-    expect(isUsageRecordSuccessful(record)).toBe(true)
+    expect(isUsageRecordFailed(record)).toBe(true)
+    expect(isUsageRecordSuccessful(record)).toBe(false)
+    expect(resolveDisplayRequestStatus(record)).toBe('failed')
   })
 
   it('normalizes request status strings before mapping timeline status', () => {

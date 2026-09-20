@@ -172,6 +172,21 @@ fn classifies_admin_provider_pool_status_as_admin_proxy_route() {
 }
 
 #[test]
+fn turn_state_diagnostics_requires_provider_admin_permissions() {
+    let uri: Uri = "/api/admin/providers/provider-codex/turn-state?key_id=account"
+        .parse()
+        .unwrap();
+    let decision = classify_control_route(&http::Method::GET, &uri, &headers(&[])).unwrap();
+    assert_eq!(decision.route_kind.as_deref(), Some("turn_state"));
+    assert_eq!(
+        decision.auth_endpoint_signature.as_deref(),
+        Some("admin:providers")
+    );
+    assert_eq!(decision.route_class.as_deref(), Some("admin_proxy"));
+    assert!(!decision.is_execution_runtime_candidate());
+}
+
+#[test]
 fn classifies_admin_provider_clear_pool_cooldown_as_admin_proxy_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/admin/providers/provider-openai/pool/clear-cooldown/key-openai"

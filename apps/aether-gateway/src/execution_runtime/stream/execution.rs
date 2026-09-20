@@ -47,9 +47,9 @@ use super::error::{
 #[path = "execution_failures.rs"]
 mod execution_failures;
 use self::execution_failures::{
-    build_stream_failure_from_execution_error, build_stream_failure_report,
-    handle_prefetch_stream_failure, record_stream_sync_failure, submit_midstream_stream_failure,
-    StreamFailureReport,
+    build_stream_failure_from_execution_error, build_stream_failure_from_sse_error,
+    build_stream_failure_report, handle_prefetch_stream_failure, record_stream_sync_failure,
+    submit_midstream_stream_failure, StreamFailureReport,
 };
 use crate::ai_serving::api::{
     maybe_bridge_standard_sync_json_to_stream, maybe_build_provider_private_stream_normalizer,
@@ -3180,6 +3180,11 @@ async fn execute_stream_from_frame_stream(
         let reached_eof = initial_reached_eof;
         let mut downstream_dropped = false;
         let mut terminal_failure: Option<StreamFailureReport> = None;
+        let inspect_sse_terminal_errors = plan_for_report
+            .provider_api_format
+            .eq_ignore_ascii_case("openai:responses");
+        let mut stream_failure_observer =
+            super::terminal_error::SseTerminalErrorObserver::default();
         let initial_elapsed_ms = stream_started_at_for_report
             .elapsed()
             .as_millis()
@@ -3321,6 +3326,9 @@ async fn execute_stream_from_frame_stream(
             let replay_chunk = normalized_prefetched_chunk
                 .as_deref()
                 .unwrap_or(provider_prefetched_body_for_report.as_slice());
+            if inspect_sse_terminal_errors {
+                stream_failure_observer.push(replay_chunk);
+            }
             if let (Some(observer), Some(report_context)) = (
                 stream_usage_observer.as_mut(),
                 stream_usage_report_context.as_ref(),
@@ -3356,7 +3364,8 @@ async fn execute_stream_from_frame_stream(
             }
         }
 
-        if terminal_failure.is_none() && !reached_eof {
+        if terminal_failure.is_none() && stream_failure_observer.failure().is_none() && !reached_eof
+        {
             let mut image_stream_total_timeout = openai_image_stream_total_timeout_ms
                 .map(|timeout_ms| Box::pin(tokio::time::sleep(Duration::from_millis(timeout_ms))));
             loop {
@@ -3538,6 +3547,9 @@ async fn execute_stream_from_frame_stream(
                                 &normalized_chunk,
                             );
                         }
+                        if inspect_sse_terminal_errors {
+                            stream_failure_observer.push(&normalized_chunk);
+                        }
                         let rewritten_chunk = if let Some(rewriter) = local_stream_rewriter.as_mut()
                         {
                             match rewriter.push_chunk(&normalized_chunk) {
@@ -3629,6 +3641,9 @@ async fn execute_stream_from_frame_stream(
                                 Ordering::Relaxed,
                             );
                         }
+                        if stream_failure_observer.failure().is_some() {
+                            break;
+                        }
                     }
                     StreamFramePayload::Telemetry {
                         telemetry: frame_telemetry,
@@ -3696,6 +3711,9 @@ async fn execute_stream_from_frame_stream(
                                 &mut stream_usage_observer_buffered,
                                 &normalized_chunk,
                             );
+                        }
+                        if inspect_sse_terminal_errors {
+                            stream_failure_observer.push(&normalized_chunk);
                         }
                         let rewritten_chunk = if let Some(rewriter) = local_stream_rewriter.as_mut()
                         {
@@ -3846,6 +3864,12 @@ async fn execute_stream_from_frame_stream(
             }
         }
 
+        stream_failure_observer.finish();
+        let upstream_failure_observed = stream_failure_observer.failure().is_some();
+        if let Some(error) = stream_failure_observer.failure() {
+            terminal_failure.get_or_insert_with(|| build_stream_failure_from_sse_error(error));
+        }
+
         if !downstream_dropped
             && terminal_failure.is_none()
             && image_terminal_tracker.incomplete_at_eof()
@@ -3857,7 +3881,7 @@ async fn execute_stream_from_frame_stream(
             ));
         }
 
-        if !downstream_dropped {
+        if !downstream_dropped && !upstream_failure_observed {
             if let Some(failure) = terminal_failure.as_ref() {
                 let terminal_event = if failure.error_type == "incomplete_image_generation_stream"
                     && plan_for_report
@@ -3962,7 +3986,7 @@ async fn execute_stream_from_frame_stream(
             downstream_dropped = false;
         }
 
-        if downstream_dropped {
+        if downstream_dropped && !upstream_failure_observed {
             debug!(
                 event_name = "execution_runtime_stream_report_skipped",
                 log_type = "debug",
@@ -5481,22 +5505,33 @@ event: response.completed
 
     #[tokio::test]
     async fn openai_responses_failure_after_output_keeps_the_current_stream() {
-        let state = AppState::new().expect("app state should build");
+        for (prefix, combined, prefetch_enabled) in [
+            ("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n", false, true),
+            ("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\"}}\n\n", true, true),
+            ("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\"}}\n\n", false, false),
+        ] {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new().expect("app state should build")
+            .with_data_state_for_tests(crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                Arc::clone(&request_candidate_repository), Arc::clone(&usage_repository),
+            ))
+            .with_usage_runtime_for_tests(UsageRuntimeConfig { enabled: true, ..UsageRuntimeConfig::default() });
+        let failure = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n";
         let frame_stream = stream! {
             yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
                 b"{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}}\n",
             ));
-            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                b"{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"event: response.output_text.delta\\ndata: {\\\"type\\\":\\\"response.output_text.delta\\\",\\\"delta\\\":\\\"hello\\\"}\\n\\n\"}}\n",
-            ));
-            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                b"{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"event: response.failed\\ndata: {\\\"type\\\":\\\"response.failed\\\",\\\"response\\\":{\\\"error\\\":{\\\"code\\\":\\\"server_is_overloaded\\\"}}}\\n\\n\"}}\n",
-            ));
-            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                b"{\"type\":\"eof\",\"payload\":{\"kind\":\"eof\"}}\n",
-            ));
-        }
-        .boxed();
+            let chunks = if combined { vec![format!("{prefix}{failure}")] } else {
+                vec![prefix.to_string(), failure[..47].to_string(), failure[47..].to_string()]
+            };
+            for text in chunks {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{}\n", json!({"type":"data","payload":{"kind":"data","text":text}}))));
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"{\"type\":\"eof\",\"payload\":{\"kind\":\"eof\"}}\n"));
+        }.boxed();
+        let mut context = openai_responses_stream_failover_test_context("req-openai-output-then-failure");
+        context["global_stream_failover_policy"]["enabled"] = json!(prefetch_enabled);
 
         let response = execute_stream_from_frame_stream(
             &state,
@@ -5505,9 +5540,7 @@ event: response.completed
             &test_decision(),
             "openai_responses_stream",
             Some("openai_responses_stream_success".to_string()),
-            Some(openai_responses_stream_failover_test_context(
-                "req-openai-output-then-failure",
-            )),
+            Some(context),
             crate::clock::current_unix_ms(),
             Instant::now(),
             frame_stream,
@@ -5515,14 +5548,54 @@ event: response.completed
         )
         .await
         .expect("execution should keep the committed stream")
-        .expect("committed output must return a client response");
+        .unwrap_or_else(|| panic!("committed output must return a client response: combined={combined}, enabled={prefetch_enabled}"));
         let body = to_bytes(response.into_body(), 16 * 1024)
             .await
             .expect("response body should be readable");
         let body = String::from_utf8_lossy(&body);
 
-        assert!(body.contains("hello"));
+        assert!(body.contains(prefix.trim()));
         assert!(body.contains("response.failed"));
+        assert_eq!(
+            body.matches("event: response.failed").count(),
+            1,
+            "do not duplicate the upstream error"
+        );
+        let usage = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(usage) = usage_repository
+                    .find_by_request_id("req-openai-output-then-failure")
+                    .await
+                    .unwrap()
+                    .filter(|u| matches!(u.status.as_str(), "failed" | "completed"))
+                {
+                    break usage;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("terminal usage should be written");
+        assert_eq!(
+            usage.status, "failed",
+            "a forwarded response.failed must not be recorded as success"
+        );
+        assert_eq!(usage.status_code, Some(503));
+        assert_eq!(usage.billing_status, "void");
+        assert!(usage.error_message.as_deref().unwrap().contains("Selected model is at capacity"));
+        flush_request_candidate_status_writes(&state).await;
+        let candidates = request_candidate_repository
+            .list_by_request_id("req-openai-output-then-failure")
+            .await
+            .unwrap();
+        assert_eq!(
+            candidates.len(),
+            1,
+            "committed output must never be replayed"
+        );
+        assert_eq!(candidates[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(candidates[0].extra_data.as_ref().unwrap()["capacity_error"], true);
+        }
     }
 
     #[tokio::test]

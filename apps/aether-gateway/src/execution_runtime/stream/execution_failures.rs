@@ -96,6 +96,25 @@ pub(super) fn build_stream_failure_report(
     }
 }
 
+pub(super) fn build_stream_failure_from_sse_error(body: &Value) -> StreamFailureReport {
+    let error = body.get("error").unwrap_or(body);
+    let text = |field| {
+        error
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+    };
+    let kind = text("code")
+        .or_else(|| text("type"))
+        .unwrap_or("upstream_error");
+    let message = text("message").unwrap_or(kind);
+    build_stream_failure_report(
+        kind,
+        message,
+        crate::execution_runtime::submission::resolve_local_sync_error_status_code(200, body),
+    )
+}
+
 pub(super) fn build_stream_failure_from_execution_error(
     error: &ExecutionError,
 ) -> StreamFailureReport {

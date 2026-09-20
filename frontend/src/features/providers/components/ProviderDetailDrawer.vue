@@ -561,6 +561,15 @@
                           <Edit class="w-3.5 h-3.5" />
                         </Button>
                         <Button
+                          v-if="provider.provider_type === 'codex' && key.auth_type === 'oauth'"
+                          variant="outline"
+                          size="sm"
+                          class="h-7 px-2"
+                          @click="codexStateDialogKey = key"
+                        >
+                          {{ t('codexState.button') }}
+                        </Button>
+                        <Button
                           v-if="provider.provider_type === 'antigravity'"
                           variant="ghost"
                           size="icon"
@@ -1118,6 +1127,15 @@
     @saved="handleUpstreamModelsImported"
   />
 
+  <CodexStateDialog
+    v-if="open && providerId && codexStateDialogKey"
+    :open="true"
+    :provider-id="providerId"
+    :key-id="codexStateDialogKey.id"
+    :key-name="getProviderAccountDisplayName(codexStateDialogKey)"
+    @update:open="codexStateDialogKey = null"
+  />
+
   <!-- Antigravity 配额详情弹窗 -->
   <AntigravityQuotaDialog
     v-if="antigravityQuotaDialogKey"
@@ -1197,6 +1215,7 @@ import EndpointFormDialog from '@/features/providers/components/EndpointFormDial
 import ProviderModelFormDialog from '@/features/providers/components/ProviderModelFormDialog.vue'
 import AlertDialog from '@/components/common/AlertDialog.vue'
 import AntigravityQuotaDialog from '@/features/providers/components/AntigravityQuotaDialog.vue'
+import CodexStateDialog from '@/features/providers/components/CodexStateDialog.vue'
 import FailoverRulesDialog from '@/features/providers/components/FailoverRulesDialog.vue'
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
@@ -1354,6 +1373,7 @@ const refreshingQuota = ref(false)
 // Antigravity 配额详情弹窗状态
 const antigravityQuotaDialogOpen = ref(false)
 const antigravityQuotaDialogKey = ref<EndpointAPIKey | null>(null)
+const codexStateDialogKey = ref<EndpointAPIKey | null>(null)
 
 // 故障转移规则
 const failoverRulesDialogOpen = ref(false)
@@ -1540,6 +1560,7 @@ function resetProviderScopedState() {
   upstreamModelsDialogOpen.value = false
   antigravityQuotaDialogOpen.value = false
   antigravityQuotaDialogKey.value = null
+  codexStateDialogKey.value = null
 }
 
 // 合并监听 providerId 和 open，避免同一 tick 内两个 watcher 都触发导致重复请求

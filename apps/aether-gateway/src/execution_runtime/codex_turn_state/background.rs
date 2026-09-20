@@ -28,7 +28,7 @@ impl std::fmt::Debug for Sessions {
     }
 }
 
-async fn configuration(
+pub(super) async fn configuration(
     state: &AppState,
     transport: &GatewayProviderTransportSnapshot,
 ) -> Result<String, StateError> {
@@ -55,7 +55,7 @@ async fn remember(state: &AppState, plan: &ExecutionPlan) -> Result<(), StateErr
     remember_with_transport(state, plan, &transport).await
 }
 
-fn current_credential_matches(
+pub(super) fn current_credential_matches(
     plan: &ExecutionPlan,
     transport: &GatewayProviderTransportSnapshot,
 ) -> bool {

@@ -27,6 +27,33 @@ pub(crate) async fn maybe_build_local_admin_provider_reads_response(
     request_context: &AdminRequestContext<'_>,
     route_kind: Option<&str>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
+    if route_kind == Some("turn_state") && request_context.method() == http::Method::GET {
+        let provider_id = request_context
+            .path()
+            .strip_prefix("/api/admin/providers/")
+            .and_then(|path| path.strip_suffix("/turn-state"))
+            .filter(|id| !id.is_empty() && !id.contains('/'));
+        let key_id = query_param_value(request_context.query_string(), "key_id");
+        let (Some(provider_id), Some(key_id)) = (provider_id, key_id) else {
+            return Ok(Some(
+                (
+                    http::StatusCode::BAD_REQUEST,
+                    Json(json!({"detail":"缺少 Provider 或账号 ID"})),
+                )
+                    .into_response(),
+            ));
+        };
+        return Ok(Some(
+            match state
+                .read_codex_turn_state_diagnostics(provider_id, &key_id)
+                .await?
+            {
+                Some(payload) => Json(payload).into_response(),
+                None => build_admin_provider_not_found_response("OAuth 账号不存在"),
+            },
+        ));
+    }
+
     if route_kind == Some("list_providers") && is_admin_providers_root(request_context.path()) {
         if !state.has_provider_catalog_data_reader() {
             return Ok(Some(build_admin_providers_data_unavailable_response()));

@@ -121,12 +121,16 @@ pub(super) fn classify_admin_model_provider_family_route(
         ))
     } else if method == http::Method::GET
         && normalized_path.starts_with("/api/admin/providers/")
-        && normalized_path.ends_with("/pool-status")
+        && (normalized_path.ends_with("/pool-status") || normalized_path.ends_with("/turn-state"))
     {
         Some(classified(
             "admin_proxy",
             "providers_manage",
-            "pool_status",
+            if normalized_path.ends_with("/turn-state") {
+                "turn_state"
+            } else {
+                "pool_status"
+            },
             "admin:providers",
             false,
         ))
