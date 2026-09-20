@@ -6,7 +6,7 @@
     <template #actions>
       <Button
         size="sm"
-        :disabled="loading || saving || loadError || !hasChanges"
+        :disabled="loading || saving || loadError || !hasChanges || invalidCollectionSettings"
         @click="$emit('save')"
       >
         {{ saving ? t('providerAdvanced.saving') : t('providerAdvanced.save') }}
@@ -124,24 +124,87 @@
           aria-describedby="codex-turn-state-fallback-hint"
           @change="onFallbackChange"
         >
-          <option value="passthrough">{{ t('providerAdvanced.codexTurnStatePassthrough') }}</option>
-          <option value="strict">{{ t('providerAdvanced.codexTurnStateStrict') }}</option>
+          <option value="passthrough">
+            {{ t('providerAdvanced.codexTurnStatePassthrough') }}
+          </option>
+          <option value="strict">
+            {{ t('providerAdvanced.codexTurnStateStrict') }}
+          </option>
         </select>
+      </div>
+      <div class="space-y-4">
+        <div class="flex items-start justify-between gap-6">
+          <div>
+            <Label for="codex-state-attempts">{{ t('providerAdvanced.codexStateAttempts') }}</Label>
+            <p
+              id="codex-state-attempts-hint"
+              class="mt-1 text-sm text-muted-foreground"
+            >
+              {{ t('providerAdvanced.codexStateAttemptsHint') }}
+            </p>
+          </div>
+          <Input
+            id="codex-state-attempts"
+            class="w-24 shrink-0"
+            type="number"
+            min="1"
+            max="6"
+            step="1"
+            :model-value="turnStateProbeAttempts"
+            :disabled="loading || saving || loadError"
+            aria-describedby="codex-state-attempts-hint"
+            @update:model-value="$emit('update:turnStateProbeAttempts', Number($event))"
+          />
+        </div>
+        <div class="flex items-start justify-between gap-6">
+          <div>
+            <Label for="codex-state-cooldown">{{ t('providerAdvanced.codexStateCooldown') }}</Label>
+            <p
+              id="codex-state-cooldown-hint"
+              class="mt-1 text-sm text-muted-foreground"
+            >
+              {{ t('providerAdvanced.codexStateCooldownHint') }}
+            </p>
+          </div>
+          <Input
+            id="codex-state-cooldown"
+            class="w-24 shrink-0"
+            type="number"
+            min="30"
+            max="3600"
+            step="1"
+            :model-value="turnStateProbeCooldownSeconds"
+            :disabled="loading || saving || loadError"
+            aria-describedby="codex-state-cooldown-hint"
+            @update:model-value="$emit('update:turnStateProbeCooldownSeconds', Number($event))"
+          />
+        </div>
+        <p
+          v-if="invalidCollectionSettings"
+          class="text-sm text-destructive"
+          role="alert"
+        >
+          {{ t('providerAdvanced.codexStateInvalid') }}
+        </p>
       </div>
     </div>
   </CardSection>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import Input from '@/components/ui/input.vue'
 import { useI18n } from 'vue-i18n'
 import { CardSection } from '@/components/layout'
 import Button from '@/components/ui/button.vue'
 import Label from '@/components/ui/label.vue'
 import Switch from '@/components/ui/switch.vue'
 
-defineProps<{
+const props = defineProps<{
   turnStateEnabled: boolean
   turnStateFallback: 'passthrough' | 'strict'
+  turnStateProbeAttempts: number
+  turnStateProbeCooldownSeconds: number
   telemetryEnabled: boolean
   enabled: boolean
   loading: boolean
@@ -150,15 +213,20 @@ defineProps<{
   hasChanges: boolean
 }>()
 
-const { t } = useI18n()
 const emit = defineEmits<{
   save: []
+  'update:turnStateProbeAttempts': [value: number]
+  'update:turnStateProbeCooldownSeconds': [value: number]
   'update:enabled': [value: boolean]
   'update:telemetryEnabled': [value: boolean]
   'update:turnStateEnabled': [value: boolean]
   'update:turnStateFallback': [value: 'passthrough' | 'strict']
 }>()
-
+const invalidCollectionSettings = computed(() =>
+  !Number.isInteger(props.turnStateProbeAttempts) || props.turnStateProbeAttempts < 1 || props.turnStateProbeAttempts > 6 ||
+  !Number.isInteger(props.turnStateProbeCooldownSeconds) || props.turnStateProbeCooldownSeconds < 30 || props.turnStateProbeCooldownSeconds > 3600,
+)
+const { t } = useI18n()
 function onFallbackChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value
   if (value === 'strict' || value === 'passthrough') emit('update:turnStateFallback', value)

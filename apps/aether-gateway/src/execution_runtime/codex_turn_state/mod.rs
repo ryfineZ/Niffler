@@ -1,4 +1,5 @@
 //! Codex OAuth 同出口 state 管理。秘密只存在于临时派发计划和加密缓存中。
+pub(crate) mod background;
 pub(crate) mod compact_route;
 mod policy;
 
@@ -24,6 +25,8 @@ use crate::AppState;
 
 pub(crate) const CONFIG_KEY: &str = "codex_turn_state_enabled";
 pub(crate) const FALLBACK_CONFIG_KEY: &str = "codex_turn_state_fallback";
+const ATTEMPTS_CONFIG_KEY: &str = "codex_turn_state_probe_attempts";
+const COOLDOWN_CONFIG_KEY: &str = "codex_turn_state_probe_cooldown_seconds";
 pub(crate) const HEADER: &str = "x-codex-turn-state";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const LEASE_TTL: Duration = Duration::from_secs(30);
@@ -251,6 +254,51 @@ async fn fallback_mode(state: &AppState) -> Result<FallbackMode, StateError> {
     }
 }
 
+async fn collection_setting(
+    state: &AppState,
+    key: &str,
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64, StateError> {
+    match state
+        .read_system_config_json_value(key)
+        .await
+        .map_err(|_| StateError::runtime())?
+    {
+        None | Some(Value::Null) => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (min..=max).contains(n))
+            .ok_or_else(StateError::runtime),
+    }
+}
+
+fn state_scope(state: &AppState, original: &ExecutionPlan) -> String {
+    let account_key = digest(
+        json!([
+            original.provider_id,
+            original.key_id,
+            header(&original.headers, "chatgpt-account-id")
+        ])
+        .to_string(),
+    );
+    digest(
+        json!([
+            account_key,
+            digest(header(&original.headers, "authorization")),
+            original
+                .body
+                .json_body
+                .as_ref()
+                .and_then(|b| b.get("model")),
+            route_scope(original, state.tunnel.local_instance_id()),
+            "same-egress-v1"
+        ])
+        .to_string(),
+    )
+}
+
 /// 节点和配置而非数组位置；本地代理和直连额外绑定执行实例。
 fn route_scope(plan: &ExecutionPlan, instance: &str) -> String {
     let proxy = plan.proxy.as_ref().filter(|p| p.enabled != Some(false));
@@ -408,6 +456,19 @@ where
     F: Fn(ExecutionPlan) -> Fut,
     Fut: Future<Output = ProbeResult>,
 {
+    prepare_with_probe_mode(state, original, probe, true).await
+}
+
+async fn prepare_with_probe_mode<F, Fut>(
+    state: &AppState,
+    original: &ExecutionPlan,
+    probe: F,
+    activate_binding: bool,
+) -> Result<Option<Prepared>, StateError>
+where
+    F: Fn(ExecutionPlan) -> Fut,
+    Fut: Future<Output = ProbeResult>,
+{
     if !eligible(original) || !enabled(state).await? {
         return Ok(None);
     }
@@ -433,22 +494,12 @@ where
     if !authorization.starts_with("Bearer ") || account.is_empty() {
         return Err(StateError::unavailable());
     }
+    if activate_binding {
+        background::remember_with_transport(state, original, &transport).await?;
+    }
     let credential = digest(authorization);
     let account_key = digest(json!([original.provider_id, original.key_id, account]).to_string());
-    let scope = digest(
-        json!([
-            account_key,
-            credential,
-            original
-                .body
-                .json_body
-                .as_ref()
-                .and_then(|b| b.get("model")),
-            route_scope(original, state.tunnel.local_instance_id()),
-            "same-egress-v1"
-        ])
-        .to_string(),
-    );
+    let scope = state_scope(state, original);
     let cache_key = format!("codex-state:active:{scope}");
     let guard_key = format!("codex-state:guard:{account_key}");
     let blocks = policy::expected_blocks(authorization, account);
@@ -467,7 +518,11 @@ where
             let cached: Cached =
                 serde_json::from_str(&plaintext).map_err(|_| StateError::runtime())?;
             if policy::accepts(&cached.token, blocks, now()) {
-                compact_route::remember(state, original, &transport, &cache_key, &cached).await?;
+                // 只有实际生成请求选择 state 时才更新 Compact 出口索引；后台不能抢占。
+                if activate_binding {
+                    compact_route::remember(state, original, &transport, &cache_key, &cached)
+                        .await?;
+                }
                 let mut plan = original.clone();
                 strip(&mut plan.headers);
                 plan.headers.insert(HEADER.into(), cached.token);
@@ -673,12 +728,18 @@ where
     {
         return Ok(());
     }
-    let cooldown = format!("codex-state:cooldown:{account_key}");
+    let cooldown = format!("codex-state:cooldown:v2:{scope}");
+    let legacy_cooldown = format!("codex-state:cooldown:{account_key}");
     if state
         .runtime_state
         .kv_exists(&cooldown)
         .await
         .map_err(|_| StateError::runtime())?
+        || state
+            .runtime_state
+            .kv_exists(&legacy_cooldown)
+            .await
+            .map_err(|_| StateError::runtime())?
     {
         return Err(StateError::unavailable());
     }
@@ -695,72 +756,54 @@ where
         return Err(StateError::unavailable());
     };
     let result = async {
-        check_guard(state, guard_key, credential).await?;
-        // 先保留预算：进程取消/崩溃不能立刻触发另一轮真实探测。
-        state
-            .runtime_state
-            .kv_set(&cooldown, "collecting", Some(Duration::from_secs(200)))
-            .await
-            .map_err(|_| StateError::runtime())?;
-        let probe = probe_plan(plan);
-        let outcome = tokio::time::timeout(PROBE_TIMEOUT, run_probe(probe)).await;
-        let (status, headers, body) = match outcome {
-            Ok(Ok(value)) => value,
-            _ => {
-                record_probe(state, scope, 0, Value::Null, false).await;
-                return Err(StateError::unavailable());
-            }
-        };
-        let parsed = if status == 200 {
-            policy::probe_outcome(&body)
-        } else {
-            Err(status)
-        };
-        let final_status = parsed.as_ref().err().copied().unwrap_or(status);
-        reject(state, guard_key, credential, final_status, &headers).await?;
-        let accepted = parsed.is_ok() && policy::accepts(header(&headers, HEADER), blocks, now());
-        record_probe(
-            state,
-            scope,
-            final_status,
-            parsed.unwrap_or(Value::Null),
-            accepted,
-        )
-        .await;
-        if matches!(final_status, 401 | 403 | 429) {
-            return Err(StateError::blocked(final_status));
-        }
-        if !accepted || !enabled(state).await? {
-            return Err(StateError::unavailable());
-        }
-        check_guard(state, guard_key, credential).await?;
-        let token = header(&headers, HEADER).to_owned();
-        let (issued, _) = policy::parse(&token).ok_or_else(StateError::unavailable)?;
-        let cache = Cached {
-            token,
-            version: uuid::Uuid::new_v4().to_string(),
-        };
-        let plaintext = serde_json::to_string(&cache).map_err(|_| StateError::runtime())?;
-        let encrypted = encrypt_python_fernet_plaintext(
-            state.encryption_key().ok_or_else(StateError::runtime)?,
-            &plaintext,
-        )
-        .map_err(|_| StateError::runtime())?;
-        let ttl = Duration::from_secs(
-            issued
-                .saturating_add(policy::TTL_SECONDS - 30)
-                .saturating_sub(now()),
-        );
-        if ttl.is_zero()
-            || !state
-                .runtime_state
-                .kv_set_if_lock_owned(lease, cache_key, &encrypted, ttl)
+        let attempts = collection_setting(state, ATTEMPTS_CONFIG_KEY, 3, 1, 6).await?;
+        let cooldown_seconds = collection_setting(state, COOLDOWN_CONFIG_KEY, 30, 30, 3600).await?;
+        let probe_deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
+        let result = async {
+            for attempt in 0..attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                if tokio::time::Instant::now() >= probe_deadline || !enabled(state).await? {
+                    return Err(StateError::unavailable());
+                }
+                check_guard(state, guard_key, credential).await?;
+                match collect_attempt(
+                    state,
+                    plan,
+                    scope,
+                    guard_key,
+                    credential,
+                    blocks,
+                    cache_key,
+                    lease,
+                    probe_deadline,
+                    run_probe,
+                )
                 .await
-                .map_err(|_| StateError::runtime())?
+                {
+                    Err(error) if error.is_unavailable() => {}
+                    result => return result,
+                }
+            }
+            Err(StateError::unavailable())
+        }
+        .await;
+        // 从整轮结束计算间隔；并发和取消由共享租约兜底。
+        if !state
+            .runtime_state
+            .kv_set_if_lock_owned(
+                lease,
+                &cooldown,
+                "finished",
+                Duration::from_secs(cooldown_seconds),
+            )
+            .await
+            .map_err(|_| StateError::runtime())?
         {
             return Err(StateError::unavailable());
         }
-        Ok(())
+        result
     }
     .await;
     state
@@ -769,6 +812,84 @@ where
         .await
         .map_err(|_| StateError::runtime())?;
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_attempt<F, Fut>(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    scope: &str,
+    guard_key: &str,
+    credential: &str,
+    blocks: usize,
+    cache_key: &str,
+    lease: &aether_runtime_state::RuntimeLockLease,
+    probe_deadline: tokio::time::Instant,
+    run_probe: &F,
+) -> Result<(), StateError>
+where
+    F: Fn(ExecutionPlan) -> Fut,
+    Fut: Future<Output = ProbeResult>,
+{
+    let probe = probe_plan(plan);
+    let outcome = tokio::time::timeout_at(probe_deadline, run_probe(probe)).await;
+    let (status, headers, body) = match outcome {
+        Ok(Ok(value)) => value,
+        _ => {
+            record_probe(state, scope, 0, Value::Null, false).await;
+            return Err(StateError::unavailable());
+        }
+    };
+    let parsed = if status == 200 {
+        policy::probe_outcome(&body)
+    } else {
+        Err(status)
+    };
+    let final_status = parsed.as_ref().err().copied().unwrap_or(status);
+    reject(state, guard_key, credential, final_status, &headers).await?;
+    let accepted = parsed.is_ok() && policy::accepts(header(&headers, HEADER), blocks, now());
+    record_probe(
+        state,
+        scope,
+        final_status,
+        parsed.unwrap_or(Value::Null),
+        accepted,
+    )
+    .await;
+    if matches!(final_status, 401 | 403 | 429) {
+        return Err(StateError::blocked(final_status));
+    }
+    if !accepted || !enabled(state).await? {
+        return Err(StateError::unavailable());
+    }
+    check_guard(state, guard_key, credential).await?;
+    let token = header(&headers, HEADER).to_owned();
+    let (issued, _) = policy::parse(&token).ok_or_else(StateError::unavailable)?;
+    let cache = Cached {
+        token,
+        version: uuid::Uuid::new_v4().to_string(),
+    };
+    let plaintext = serde_json::to_string(&cache).map_err(|_| StateError::runtime())?;
+    let encrypted = encrypt_python_fernet_plaintext(
+        state.encryption_key().ok_or_else(StateError::runtime)?,
+        &plaintext,
+    )
+    .map_err(|_| StateError::runtime())?;
+    let ttl = Duration::from_secs(
+        issued
+            .saturating_add(policy::TTL_SECONDS - 30)
+            .saturating_sub(now()),
+    );
+    if ttl.is_zero()
+        || !state
+            .runtime_state
+            .kv_set_if_lock_owned(lease, cache_key, &encrypted, ttl)
+            .await
+            .map_err(|_| StateError::runtime())?
+    {
+        return Err(StateError::unavailable());
+    }
+    Ok(())
 }
 
 async fn record_probe(state: &AppState, scope: &str, status: u16, usage: Value, accepted: bool) {

@@ -1516,6 +1516,8 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         | "codex_telemetry_enabled"
         | "codex_turn_state_enabled" => Some(json!(false)),
         "codex_turn_state_fallback" => Some(json!("passthrough")),
+        "codex_turn_state_probe_attempts" => Some(json!(3)),
+        "codex_turn_state_probe_cooldown_seconds" => Some(json!(30)),
         "model_directives" => Some(json!({
             "reasoning_effort": {
                 "enabled": true,
@@ -1827,6 +1829,22 @@ pub fn parse_admin_system_config_update(
                 ));
             }
         },
+        "codex_turn_state_probe_attempts" | "codex_turn_state_probe_cooldown_seconds" => {
+            if value.is_null() {
+                value = admin_system_config_default_value(&normalized_key).unwrap();
+            }
+            let (min, max) = if normalized_key == "codex_turn_state_probe_attempts" {
+                (1, 6)
+            } else {
+                (30, 3600)
+            };
+            if !value.as_u64().is_some_and(|n| (min..=max).contains(&n)) {
+                return Err((
+                    http::StatusCode::BAD_REQUEST,
+                    json!({"detail":"采集次数须为 1–6 的整数，轮次间隔须为 30–3600 秒的整数"}),
+                ));
+            }
+        }
         "codex_turn_state_fallback" => match value.as_str().map(str::trim) {
             Some("passthrough" | "strict") => value = json!(value.as_str().unwrap().trim()),
             None if value.is_null() => value = json!("passthrough"),
@@ -2763,6 +2781,30 @@ mod tests {
             br#"{"value":"true"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn codex_turn_state_collection_limits_validate_ranges() {
+        for (key, default, low, high) in [
+            ("codex_turn_state_probe_attempts", 3, 1, 6),
+            ("codex_turn_state_probe_cooldown_seconds", 30, 30, 3600),
+        ] {
+            assert_eq!(admin_system_config_default_value(key), Some(json!(default)));
+            for value in [json!(low), json!(high), Value::Null] {
+                assert!(parse_admin_system_config_update(
+                    key,
+                    json!({"value":value}).to_string().as_bytes()
+                )
+                .is_ok());
+            }
+            for value in [json!(low - 1), json!(high + 1), json!(1.5), json!("30")] {
+                assert!(parse_admin_system_config_update(
+                    key,
+                    json!({"value":value}).to_string().as_bytes()
+                )
+                .is_err());
+            }
+        }
     }
 
     #[test]

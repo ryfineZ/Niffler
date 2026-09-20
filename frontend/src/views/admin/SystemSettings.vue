@@ -148,6 +148,8 @@
             :telemetry-enabled="systemConfig.codex_telemetry_enabled"
             :turn-state-enabled="systemConfig.codex_turn_state_enabled"
             :turn-state-fallback="systemConfig.codex_turn_state_fallback"
+            :turn-state-probe-attempts="systemConfig.codex_turn_state_probe_attempts"
+            :turn-state-probe-cooldown-seconds="systemConfig.codex_turn_state_probe_cooldown_seconds"
             :loading="systemConfigLoading"
             :saving="providerAdvancedConfigLoading"
             :load-error="!systemConfigLoading && !providerAdvancedConfigReady"
@@ -157,6 +159,8 @@
             @update:telemetry-enabled="systemConfig.codex_telemetry_enabled = $event"
             @update:turn-state-enabled="systemConfig.codex_turn_state_enabled = $event"
             @update:turn-state-fallback="systemConfig.codex_turn_state_fallback = $event"
+            @update:turn-state-probe-attempts="systemConfig.codex_turn_state_probe_attempts = $event"
+            @update:turn-state-probe-cooldown-seconds="systemConfig.codex_turn_state_probe_cooldown_seconds = $event"
           />
 
           <!-- 请求记录清理策略 -->
