@@ -10,6 +10,14 @@ function summary(items: CodexStateObservation[]) {
   return summarizeCodexState({ read_failed: false, diagnostics: { enabled: true, observed_at: 1, items } })
 }
 describe('current egress summary', () => {
+  it('distinguishes automatically queued accounts from failed collection', () => {
+    expect(summary([{ ...item, status: 'queued' }]).status).toBe('queued')
+  })
+  it('lists only currently ready models and deduplicates multiple exits', () => {
+    const result = summary([item, { ...item, egress: 'shared_proxy' }, { ...item, model: 'other', status: 'queued' },
+      { ...item, model: 'old', status: 'credential_changed', current: false }])
+    expect(result.readyModels).toEqual(['model'])
+  })
   it('excludes old egress from availability and recent injection', () => {
     const result = summary([item, { ...item, status: 'egress_changed', current: false,
       last_use: { at: 9, mode: 'injected', http_status: 200 } }])

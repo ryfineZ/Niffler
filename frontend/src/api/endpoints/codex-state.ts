@@ -9,7 +9,7 @@ export interface CodexStateObservation {
   last_seen_at: number
   /** Absent on older servers; infer from historical statuses during rollout. */
   current?: boolean
-  status: 'credential_changed' | 'egress_changed' | 'account_disabled' | 'credential_expired' | 'disabled' | 'configuration_changed' | 'rate_limited' | 'auth_rejected' | 'ready' | 'cooldown' | 'unavailable'
+  status: 'queued' | 'credential_changed' | 'egress_changed' | 'account_disabled' | 'credential_expired' | 'disabled' | 'configuration_changed' | 'rate_limited' | 'auth_rejected' | 'ready' | 'cooldown' | 'unavailable'
   source?: 'probe' | 'response' | null
   expires_at: number | null
   retry_until: number | null

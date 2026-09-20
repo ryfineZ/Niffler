@@ -13,9 +13,7 @@ const label = computed(() => {
   if (!props.state || props.state.loading) return t('codexState.loading')
   if (summary.value?.status === 'read_failed') return t('codexState.readFailed')
   if (summary.value?.status === 'unobserved') return t('codexState.pool.unobserved')
-  if (summary.value?.status === 'ready' && summary.value.ready < summary.value.total) {
-    return t('codexState.pool.partial', { ready: summary.value.ready, total: summary.value.total })
-  }
+  if (summary.value?.status === 'ready') return t('codexState.pool.preferred')
   return t(`codexState.status.${summary.value?.status}`)
 })
 const variant = computed(() => summary.value?.status === 'ready' ? 'success'
@@ -53,6 +51,7 @@ const detailTitle = computed(() => {
     >
       {{ label }}
     </Badge>
+    <span v-if="summary?.readyModels.length" class="text-xs text-muted-foreground">{{ summary.readyModels.join(' · ') }}</span>
     <span
       v-for="warning in summary?.warnings"
       :key="warning"

@@ -334,6 +334,8 @@ pub(crate) async fn read(
             "ready"
         } else if cooldown > 0 {
             "cooldown"
+        } else if values[3].is_none() {
+            "queued"
         } else {
             "unavailable"
         };

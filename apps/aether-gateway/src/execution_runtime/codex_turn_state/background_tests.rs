@@ -3,6 +3,36 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn catalog_sessions_survive_idle_and_are_removed_when_account_leaves_catalog() {
+    let state = configured_state("codex", "oauth");
+    let p = plan();
+    let transport = state
+        .read_provider_transport_snapshot("provider", "endpoint", "account-a")
+        .await
+        .unwrap()
+        .unwrap();
+    remember_catalog(&state, &p, &transport).await.ok().unwrap();
+    for session in state
+        .codex_turn_state_sessions
+        .0
+        .lock()
+        .unwrap()
+        .values_mut()
+    {
+        session.last_seen -= ACTIVE_FOR + Duration::from_secs(1);
+    }
+    tick_with_probe(&state, |_| async { success() })
+        .await
+        .ok()
+        .unwrap();
+    assert!(!state.codex_turn_state_sessions.0.lock().unwrap().is_empty());
+    retain_catalog(&state, &std::collections::HashSet::new())
+        .ok()
+        .unwrap();
+    assert!(state.codex_turn_state_sessions.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn background_collects_active_missing_state_and_skips_healthy_cache() {
     let state = configured_state("codex", "oauth");
     remember(&state, &plan()).await.ok().unwrap();

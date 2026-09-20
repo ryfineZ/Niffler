@@ -359,6 +359,7 @@ pub(crate) struct PoolKeyCursor<'a> {
     skip_reason_counts: BTreeMap<&'static str, u32>,
     next_pool_key_index: u32,
     sticky_candidate_loaded: bool,
+    state_priority_loaded: bool,
     seen_key_ids: BTreeSet<String>,
     queued_candidates: VecDeque<EligibleLocalExecutionCandidate>,
     skipped_candidates: Vec<SkippedLocalExecutionCandidate>,
@@ -439,6 +440,7 @@ impl<'a> PoolKeyCursor<'a> {
             skip_reason_counts: BTreeMap::new(),
             next_pool_key_index: 0,
             sticky_candidate_loaded: false,
+            state_priority_loaded: false,
             seen_key_ids: BTreeSet::new(),
             queued_candidates: VecDeque::new(),
             skipped_candidates: Vec::new(),
@@ -467,6 +469,14 @@ impl<'a> PoolKeyCursor<'a> {
                 return Some(candidate);
             }
 
+            if !self.state_priority_loaded {
+                self.state_priority_loaded = true;
+                self.load_state_priority_candidates().await;
+                if !self.queued_candidates.is_empty() {
+                    continue;
+                }
+            }
+
             if !self.sticky_candidate_loaded {
                 self.sticky_candidate_loaded = true;
                 if let Some(candidate) = self.sticky_candidate().await {
@@ -483,6 +493,97 @@ impl<'a> PoolKeyCursor<'a> {
 
     pub(crate) fn take_skipped_candidates(&mut self) -> Vec<SkippedLocalExecutionCandidate> {
         std::mem::take(&mut self.skipped_candidates)
+    }
+
+    async fn load_state_priority_candidates(&mut self) {
+        use crate::execution_runtime::codex_turn_state::priority;
+        use futures_util::StreamExt;
+        if !self
+            .group
+            .transport
+            .provider
+            .provider_type
+            .eq_ignore_ascii_case("codex")
+            || self.group.provider_api_format != "openai:responses"
+        {
+            return;
+        }
+        let key_ids = priority::candidates(
+            self.state.app(),
+            &self.group.candidate.provider_id,
+            &self.group.candidate.endpoint_id,
+            &self.group.candidate.selected_provider_model_name,
+        )
+        .await;
+        if key_ids.is_empty() {
+            return;
+        }
+        let query = StoredPoolKeyCandidateRowsByKeyIdsQuery {
+            api_format: self.group.candidate.endpoint_api_format.clone(),
+            provider_id: self.group.candidate.provider_id.clone(),
+            endpoint_id: self.group.candidate.endpoint_id.clone(),
+            model_id: self.group.candidate.model_id.clone(),
+            selected_provider_model_name: self.group.candidate.selected_provider_model_name.clone(),
+            key_ids,
+        };
+        let rows = match self
+            .state
+            .app()
+            .list_pool_key_candidate_rows_for_group_key_ids(&query)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(_) => {
+                warn!(event_name = "codex_state_priority_candidates_failed");
+                return;
+            }
+        };
+        let candidates = self.build_page_eligible_candidates(rows).await;
+        let mut pending_ids = candidates
+            .iter()
+            .map(|c| c.candidate.key_id.clone())
+            .collect::<BTreeSet<_>>();
+        let app = self.state.app();
+        let mut checks =
+            futures_util::stream::iter(candidates.into_iter().map(|candidate| async move {
+                let ready = priority::ready(
+                    app,
+                    &candidate.transport,
+                    &candidate.candidate.selected_provider_model_name,
+                )
+                .await;
+                (candidate, ready)
+            }))
+            .buffered(8);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut ready = Vec::new();
+        while let Ok(Some((candidate, usable))) =
+            tokio::time::timeout_at(deadline, checks.next()).await
+        {
+            if usable {
+                pending_ids.remove(&candidate.candidate.key_id);
+                ready.push(candidate);
+            }
+        }
+        drop(checks);
+        // 旧索引和超时均不是账号失败，保留正常分页参与资格。
+        for id in pending_ids {
+            self.seen_key_ids.remove(&id);
+        }
+        let (mut scheduled, mut skipped) = schedule_pool_page_candidates(
+            self.state,
+            ready,
+            self.sticky_session_token.as_deref(),
+            self.effective_pool_config.as_ref(),
+        )
+        .await;
+        self.record_skipped_candidates(&skipped);
+        self.skipped_candidates.append(&mut skipped);
+        for candidate in &mut scheduled {
+            candidate.orchestration.pool_scheduling_presets_override =
+                self.pool_scheduling_presets_override.clone();
+        }
+        self.queued_candidates.extend(scheduled);
     }
 
     pub(crate) fn exhausted_group_skipped_candidate(
@@ -3285,6 +3386,146 @@ mod tests {
         assert!(skipped.iter().all(|candidate| {
             candidate.skip_reason == aether_pool_core::POOL_ACCOUNT_EXHAUSTED_SKIP_REASON
         }));
+    }
+
+    #[tokio::test]
+    async fn codex_state_priority_promotes_later_page_and_preserves_fallback_and_filters() {
+        use crate::execution_runtime::codex_turn_state::priority;
+        let config =
+            Some(json!({"pool_advanced":{"scheduling_presets":[{"preset":"lru","enabled":true}]}}));
+        let (mut provider, mut endpoint, mut keys, mut rows) =
+            large_pool_fixture(70, config.clone());
+        provider.provider_type = "codex".into();
+        endpoint.api_format = "openai:responses".into();
+        endpoint.base_url = "https://chatgpt.com/backend-api/codex".into();
+        endpoint.endpoint_kind = Some("responses".into());
+        for key in &mut keys {
+            key.auth_type = "oauth".into();
+            key.api_formats = Some(json!(["openai:responses"]));
+            key.encrypted_auth_config = Some(r#"{"account_id":"workspace"}"#.into());
+        }
+        for row in &mut rows {
+            row.provider_type = "codex".into();
+            row.endpoint_api_format = "openai:responses".into();
+            row.endpoint_kind = Some("responses".into());
+            row.key_auth_type = "oauth".into();
+            row.key_api_formats = Some(vec!["openai:responses".into()]);
+            row.global_model_name = "gpt-5.6-sol".into();
+            row.model_provider_model_name = "gpt-5.6-sol".into();
+        }
+        let data =
+            GatewayDataState::with_provider_catalog_and_minimal_candidate_selection_for_tests(
+                Arc::new(InMemoryProviderCatalogReadRepository::seed(
+                    vec![provider],
+                    vec![endpoint],
+                    keys,
+                )),
+                Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(rows)),
+            )
+            .with_encryption_key_for_tests(aether_crypto::DEVELOPMENT_ENCRYPTION_KEY)
+            .with_system_config_values_for_tests([(
+                "codex_turn_state_enabled".into(),
+                json!(true),
+            )]);
+        let app = AppState::new().unwrap().with_data_state_for_tests(data);
+        let transport = app
+            .read_provider_transport_snapshot("provider-pool", "endpoint-1", "key-00069")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut group =
+            sample_eligible_candidate("provider-pool", "endpoint-1", "pool-group", 10, config);
+        group.transport = Arc::new(transport.clone());
+        group.provider_api_format = "openai:responses".into();
+        group.candidate.endpoint_api_format = "openai:responses".into();
+        group.candidate.selected_provider_model_name = "gpt-5.6-sol".into();
+        group.candidate.global_model_name = "gpt-5.6-sol".into();
+        let mut plain = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            group.clone(),
+            None,
+            Some("gpt-5.6-sol"),
+            None,
+        );
+        assert_ne!(
+            plain.next_key().await.unwrap().candidate.key_id,
+            "key-00069"
+        );
+        let plan = priority::seed_for_tests(&app, &transport, "gpt-5.6-sol").await;
+        let mut preferred = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            group.clone(),
+            None,
+            Some("gpt-5.6-sol"),
+            None,
+        );
+        preferred.max_scanned_keys = 32;
+        assert_eq!(
+            preferred.next_key().await.unwrap().candidate.key_id,
+            "key-00069",
+            "State account beyond ordinary scan wins"
+        );
+        assert_ne!(
+            preferred.next_key().await.unwrap().candidate.key_id,
+            "key-00069",
+            "no duplicate replay"
+        );
+
+        let policy = routing_policy_with_allowed_keys(["key-00000"]);
+        let mut restricted = PoolKeyCursor::new_with_routing_policy(
+            PlannerAppState::new(&app),
+            group.clone(),
+            None,
+            Some("gpt-5.6-sol"),
+            None,
+            Some(&policy),
+        );
+        assert_eq!(
+            restricted.next_key().await.unwrap().candidate.key_id,
+            "key-00000",
+            "State never overrides allowed keys"
+        );
+        record_admin_provider_pool_model_cooldown(
+            app.runtime_state.as_ref(),
+            "provider-pool",
+            "key-00069",
+            "gpt-5.6-sol",
+            "capacity",
+            60,
+        )
+        .await;
+        let mut cooled = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            group.clone(),
+            None,
+            Some("gpt-5.6-sol"),
+            None,
+        );
+        assert_ne!(
+            cooled.next_key().await.unwrap().candidate.key_id,
+            "key-00069",
+            "capacity cooldown still applies"
+        );
+
+        // 清空真实缓存，保留索引：账号仍可在正常分页中出现，不能被索引永久排除。
+        app.runtime_state
+            .kv_delete(&format!(
+                "codex-state:active:{}",
+                priority::scope_for_tests(&app, &plan)
+            ))
+            .await
+            .unwrap();
+        let mut stale = PoolKeyCursor::new(
+            PlannerAppState::new(&app),
+            group,
+            None,
+            Some("gpt-5.6-sol"),
+            None,
+        );
+        stale.load_state_priority_candidates().await;
+        assert!(!stale.seen_key_ids.contains("key-00069"));
+        assert!(stale.queued_candidates.is_empty());
+        assert!(stale.next_key().await.is_some());
     }
 
     #[tokio::test]
