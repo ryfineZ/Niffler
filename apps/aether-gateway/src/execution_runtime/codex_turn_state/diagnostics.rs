@@ -4,6 +4,7 @@ use crate::provider_transport::GatewayProviderTransportSnapshot;
 
 const KEEP: Duration = Duration::from_secs(86400);
 const MAX_SCOPES: usize = 24;
+static WRITE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
 
 #[derive(Serialize, Deserialize)]
 struct Scope {
@@ -27,14 +28,34 @@ fn index_key(provider_id: &str, key_id: &str) -> String {
     )
 }
 
-async fn best_effort(task: impl Future<Output = Result<(), StateError>>) {
-    if !matches!(
-        tokio::time::timeout(Duration::from_millis(250), task).await,
-        Ok(Ok(()))
-    ) {
+async fn best_effort(task: impl Future<Output = Result<(), StateError>> + Send + 'static) {
+    let Ok(slot) = WRITE_SLOTS.try_acquire() else {
         tracing::warn!(
             event_name = "codex_state_diagnostics_write_failed",
+            reason = "busy",
             "无法更新 state 诊断，正式请求继续执行"
+        );
+        return;
+    };
+    let mut worker = tokio::spawn(async move {
+        let _slot = slot;
+        let reason = match tokio::time::timeout(Duration::from_secs(3), task).await {
+            Ok(Ok(())) => return,
+            Ok(Err(_)) => "runtime",
+            Err(_) => "timeout",
+        };
+        tracing::warn!(
+            event_name = "codex_state_diagnostics_write_failed",
+            reason,
+            "无法更新 state 诊断，正式请求继续执行"
+        );
+    });
+    // 超过请求等待窗口后丢弃 JoinHandle 仅分离任务；写入仍受总时限与并发上限约束。
+    if let Ok(Err(_)) = tokio::time::timeout(Duration::from_millis(250), &mut worker).await {
+        tracing::warn!(
+            event_name = "codex_state_diagnostics_write_failed",
+            reason = "task_join",
+            "诊断任务未正常完成，正式请求继续执行"
         );
     }
 }
@@ -47,9 +68,54 @@ pub(super) async fn register(
     if !background::current_credential_matches(plan, transport) {
         return;
     }
-    best_effort(async {
-        let key = index_key(&plan.provider_id, &plan.key_id);
-        let configuration = background::configuration(state, transport).await?;
+    let key = index_key(&plan.provider_id, &plan.key_id);
+    let proxy = plan.proxy.as_ref().filter(|p| p.enabled != Some(false));
+    let local = route_scope(plan, "instance-a") != route_scope(plan, "instance-b");
+    let mut observation = Scope {
+        scope: state_scope(state, plan),
+        endpoint_id: plan.endpoint_id.clone(),
+        configuration: String::new(),
+        guard: format!(
+            "codex-state:guard:{}",
+            digest(
+                json!([
+                    plan.provider_id,
+                    plan.key_id,
+                    header(&plan.headers, "chatgpt-account-id")
+                ])
+                .to_string()
+            )
+        ),
+        credential: digest(header(&plan.headers, "authorization")),
+        blocks: policy::expected_blocks(
+            header(&plan.headers, "authorization"),
+            header(&plan.headers, "chatgpt-account-id"),
+        ),
+        model: plan
+            .body
+            .json_body
+            .as_ref()
+            .and_then(|body| body.get("model"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        egress: if proxy.is_none() {
+            "direct"
+        } else if local {
+            "local_proxy"
+        } else {
+            "shared_proxy"
+        }
+        .into(),
+        node_id: proxy.and_then(|p| p.node_id.clone()),
+        instance: local.then(|| state.tunnel.local_instance_id().to_string()),
+        at: now(),
+    };
+    // 后台只保留元数据与配置快照，不复制包含用户正文的 ExecutionPlan。
+    let state = state.clone();
+    let transport = transport.clone();
+    best_effort(async move {
+        observation.configuration = background::configuration(&state, &transport).await?;
         let Some(lease) = state
             .runtime_state
             .lock_try_acquire(
@@ -72,55 +138,10 @@ pub(super) async fn register(
                 .transpose()
                 .map_err(|_| StateError::runtime())?
                 .unwrap_or_default();
-            let scope = state_scope(state, plan);
             entries.retain(|entry| {
-                entry.scope != scope && entry.at.saturating_add(KEEP.as_secs()) > now()
+                entry.scope != observation.scope && entry.at.saturating_add(KEEP.as_secs()) > now()
             });
-            let proxy = plan.proxy.as_ref().filter(|p| p.enabled != Some(false));
-            let local = route_scope(plan, "instance-a") != route_scope(plan, "instance-b");
-            entries.insert(
-                0,
-                Scope {
-                    scope,
-                    endpoint_id: plan.endpoint_id.clone(),
-                    configuration,
-                    guard: format!(
-                        "codex-state:guard:{}",
-                        digest(
-                            json!([
-                                plan.provider_id,
-                                plan.key_id,
-                                header(&plan.headers, "chatgpt-account-id")
-                            ])
-                            .to_string()
-                        )
-                    ),
-                    credential: digest(header(&plan.headers, "authorization")),
-                    blocks: policy::expected_blocks(
-                        header(&plan.headers, "authorization"),
-                        header(&plan.headers, "chatgpt-account-id"),
-                    ),
-                    model: plan
-                        .body
-                        .json_body
-                        .as_ref()
-                        .and_then(|b| b.get("model"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    egress: if proxy.is_none() {
-                        "direct"
-                    } else if local {
-                        "local_proxy"
-                    } else {
-                        "shared_proxy"
-                    }
-                    .into(),
-                    node_id: proxy.and_then(|p| p.node_id.clone()),
-                    instance: local.then(|| state.tunnel.local_instance_id().to_string()),
-                    at: now(),
-                },
-            );
+            entries.insert(0, observation);
             entries.truncate(MAX_SCOPES);
             let saved = state
                 .runtime_state
@@ -154,12 +175,19 @@ pub(super) async fn record_use(
     status: u16,
     invalidated: bool,
 ) {
-    best_effort(async {
-        state.runtime_state.kv_set(
-            &format!("codex-state:last-use:{}", state_scope(state, &prepared.plan)),
-            json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status}).to_string(), Some(KEEP),
-        ).await.map_err(|_| StateError::runtime())
-    }).await;
+    let runtime = state.runtime_state.clone();
+    let key = format!(
+        "codex-state:last-use:{}",
+        state_scope(state, &prepared.plan)
+    );
+    let value = json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status}).to_string();
+    best_effort(async move {
+        runtime
+            .kv_set(&key, value, Some(KEEP))
+            .await
+            .map_err(|_| StateError::runtime())
+    })
+    .await;
 }
 
 pub(crate) async fn read(
@@ -277,6 +305,32 @@ pub(crate) async fn read(
 mod tests {
     use super::super::tests::{configured_state, plan, success};
     use super::*;
+
+    #[tokio::test]
+    async fn slow_diagnostic_write_survives_foreground_wait_budget() {
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let (done, done_rx) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(best_effort(async move {
+            started.send(()).unwrap();
+            release_rx.await.unwrap();
+            done.send(()).unwrap();
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("the request must not wait for the entire write")
+            .unwrap();
+        assert!(
+            release.send(()).is_ok(),
+            "the request wait budget must not cancel a slow diagnostic write"
+        );
+        tokio::time::timeout(Duration::from_secs(1), done_rx)
+            .await
+            .expect("the detached write should finish")
+            .unwrap();
+    }
 
     async fn snapshot(state: &AppState) -> Value {
         read(state, "provider", "account-a").await.ok().unwrap()
