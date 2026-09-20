@@ -6,6 +6,7 @@ import type { PoolKeyDetail, PoolOverviewItem, PoolKeysPageResponse } from '@/ap
 import { POOL_MANAGEMENT_VIEW_STORAGE_KEY } from '@/features/pool/utils/poolManagementState'
 
 const endpointMocks = vi.hoisted(() => ({
+  getCodexStateDiagnostics: vi.fn(),
   getPoolOverview: vi.fn(),
   getPoolSchedulingPresets: vi.fn(),
   listPoolKeys: vi.fn(),
@@ -45,6 +46,16 @@ const routeMocks = vi.hoisted(() => ({
 const proxyStoreMocks = vi.hoisted(() => ({
   ensureLoaded: vi.fn(),
 }))
+
+vi.mock('@/api/endpoints/codex-state', () => ({ getCodexStateDiagnostics: endpointMocks.getCodexStateDiagnostics }))
+
+vi.mock('@/features/providers/components/CodexStateDialog.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return { default: defineComponent({
+    props: ['providerId', 'keyId'],
+    setup: props => () => h('div', { 'data-testid': 'state-dialog' }, `${props.providerId}/${props.keyId}`),
+  }) }
+})
 
 vi.mock('@/api/endpoints/pool', () => ({
   getPoolOverview: endpointMocks.getPoolOverview,
@@ -595,6 +606,7 @@ function seedStoredStatsMode(statsMode: 'current_cycle' | 'account_total') {
 }
 
 beforeEach(() => {
+  endpointMocks.getCodexStateDiagnostics.mockReset().mockResolvedValue({ enabled: true, observed_at: 1, items: [] })
   resetQuery()
   window.sessionStorage.clear()
   routeMocks.patchQuery.mockClear()
@@ -647,6 +659,46 @@ afterEach(() => {
 })
 
 describe('PoolManagement Codex cycle stats mode', () => {
+  it('shows each OAuth account state in its own row and opens that account details', async () => {
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
+    const keys = ['ready', 'empty', 'failed', 'api-key'].map(key_id => createPoolKey('codex', {
+      key_id, key_name: key_id, auth_type: key_id === 'api-key' ? 'api_key' : 'oauth',
+    }))
+    endpointMocks.listPoolKeys.mockResolvedValue({ total: keys.length, page: 1, page_size: 50, keys })
+    endpointMocks.getCodexStateDiagnostics.mockImplementation(async (_provider, keyId) => {
+      if (keyId === 'failed') throw new Error('offline')
+      return { enabled: true, observed_at: 1, items: keyId === 'ready' ? [
+        { status: 'ready', model: 'gpt-5.4', last_use: { at: 1, mode: 'injected' } },
+        { status: 'unavailable', model: 'gpt-5.5', last_use: null },
+      ] : [] }
+    })
+    const root = mountPoolManagement()
+    await settle()
+    const table = root.querySelector('[data-testid="pool-accounts-desktop-table"]')!
+    const rows = [...table.querySelectorAll('tbody tr')]
+    expect(rows[0]?.textContent).toContain('1/2 可用')
+    expect(rows[0]?.textContent).toContain('最近已注入')
+    expect(rows[1]?.textContent).toContain('暂无采集记录')
+    expect(rows[2]?.textContent).toContain('读取失败')
+    expect(rows[3]?.querySelector('[data-testid="pool-codex-state"]')).toBeNull()
+    expect(endpointMocks.getCodexStateDiagnostics.mock.calls.map(call => call[1])).toEqual(['ready', 'empty', 'failed'])
+    rows[0]?.querySelector<HTMLButtonElement>('[data-testid="pool-codex-state"]')?.click()
+    await settle()
+    expect(root.querySelector('[data-testid="state-dialog"]')?.textContent).toBe('codex-provider/ready')
+  })
+
+  it('does not add State UI or requests to non-Codex providers', async () => {
+    endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('kiro')] })
+    endpointMocks.getProvider.mockResolvedValue(createProvider('kiro'))
+    endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(createPoolKey('kiro', { auth_type: 'oauth' })))
+    const root = mountPoolManagement()
+    await settle()
+    expect(root.querySelector('[data-testid="pool-state-heading"]')).toBeNull()
+    expect(root.querySelector('[data-testid="pool-codex-state"]')).toBeNull()
+    expect(endpointMocks.getCodexStateDiagnostics).not.toHaveBeenCalled()
+  })
+
   it('lets desktop columns follow their content instead of fixed saved widths', async () => {
     endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
     endpointMocks.listPoolKeys.mockResolvedValue(createKeyPage(createPoolKey('codex')))

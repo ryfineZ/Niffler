@@ -1,5 +1,6 @@
 export default {
   codexState: {
+    pool: { column: 'State', unobserved: 'No collection records', partial: '{ready}/{total} usable', use: { injected: 'Last request: injected', passthrough: 'Last request: not injected', invalidated: 'Response state invalid' } },
     overview: {
       title: 'Codex State', description: 'Collection and injection across all Codex OAuth accounts. Select an account for model and egress details.',
       refresh: 'Refresh status', search: 'Search account or provider', snapshot: 'Snapshot · {time}',

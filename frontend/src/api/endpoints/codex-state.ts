@@ -43,10 +43,10 @@ export async function getCodexStateOverview(params: { page: number; page_size: n
   return response.data
 }
 
-export async function getCodexStateDiagnostics(providerId: string, keyId: string): Promise<CodexStateDiagnostics> {
+export async function getCodexStateDiagnostics(providerId: string, keyId: string, options?: { signal?: AbortSignal }): Promise<CodexStateDiagnostics> {
   const response = await client.get<CodexStateDiagnostics>(
     `/api/admin/providers/${encodeURIComponent(providerId)}/turn-state`,
-    { params: { key_id: keyId } },
+    { params: { key_id: keyId }, signal: options?.signal },
   )
   return response.data
 }

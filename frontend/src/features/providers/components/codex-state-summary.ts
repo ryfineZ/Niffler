@@ -1,6 +1,6 @@
 import type { CodexStateAccount, CodexStateObservation } from '@/api/endpoints/codex-state'
 
-export function summarizeCodexState(account: CodexStateAccount) {
+export function summarizeCodexState(account: Pick<CodexStateAccount, 'diagnostics' | 'read_failed'>) {
   const data = account.diagnostics
   const items = data?.items ?? []
   const ready = items.filter(item => item.status === 'ready').length
