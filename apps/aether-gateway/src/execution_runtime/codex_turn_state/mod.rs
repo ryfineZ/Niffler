@@ -1,6 +1,7 @@
 //! Codex OAuth 同出口 state 管理。秘密只存在于临时派发计划和加密缓存中。
 pub(crate) mod background;
 pub(crate) mod compact_route;
+pub(crate) mod diagnostics;
 mod policy;
 
 use std::collections::BTreeMap;
@@ -495,6 +496,7 @@ where
         return Err(StateError::unavailable());
     }
     if activate_binding {
+        diagnostics::register(state, original, &transport).await;
         background::remember_with_transport(state, original, &transport).await?;
     }
     let credential = digest(authorization);
@@ -836,7 +838,7 @@ where
     let (status, headers, body) = match outcome {
         Ok(Ok(value)) => value,
         _ => {
-            record_probe(state, scope, 0, Value::Null, false).await;
+            record_probe(state, scope, 0, Value::Null, false, "transport_error").await;
             return Err(StateError::unavailable());
         }
     };
@@ -848,12 +850,22 @@ where
     let final_status = parsed.as_ref().err().copied().unwrap_or(status);
     reject(state, guard_key, credential, final_status, &headers).await?;
     let accepted = parsed.is_ok() && policy::accepts(header(&headers, HEADER), blocks, now());
+    let reason = if parsed.is_err() {
+        "upstream_error"
+    } else if header(&headers, HEADER).is_empty() {
+        "missing_state"
+    } else if !accepted {
+        "invalid_state"
+    } else {
+        "accepted"
+    };
     record_probe(
         state,
         scope,
         final_status,
         parsed.unwrap_or(Value::Null),
         accepted,
+        reason,
     )
     .await;
     if matches!(final_status, 401 | 403 | 429) {
@@ -892,8 +904,15 @@ where
     Ok(())
 }
 
-async fn record_probe(state: &AppState, scope: &str, status: u16, usage: Value, accepted: bool) {
-    let record = json!({"purpose":"codex_state_probe","status":status,"usage":usage,"accepted":accepted,"at":now(),"customer_billed":false,"upstream_usage_unknown":usage.is_null()});
+async fn record_probe(
+    state: &AppState,
+    scope: &str,
+    status: u16,
+    usage: Value,
+    accepted: bool,
+    reason: &str,
+) {
+    let record = json!({"purpose":"codex_state_probe","status":status,"usage":usage,"accepted":accepted,"reason":reason,"at":now(),"customer_billed":false,"upstream_usage_unknown":usage.is_null()});
     tracing::info!(event_name="codex_state_probe_finished",scope,status,accepted,usage=%usage,"Codex state 维护探测结束；不计入客户账单");
     if state
         .runtime_state
@@ -1040,8 +1059,10 @@ impl Prepared {
                 .await
                 .map_err(|_| StateError::runtime().after_dispatch())?;
             tracing::warn!(event_name="codex_state_response_rejected",request_id=%self.plan.request_id,key_id=%self.plan.key_id,upstream_usage_unknown=true,"正式请求已派发，state 失效；停止当前响应且不重放");
+            diagnostics::record_use(state, self, status, true).await;
             return Err(StateError::shape());
         }
+        diagnostics::record_use(state, self, status, false).await;
         Ok(())
     }
 }
