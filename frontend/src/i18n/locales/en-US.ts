@@ -15,9 +15,10 @@ export default {
     empty: 'No observations in the last 24 hours. Recording starts when this account receives a regular request for a supported model. Opening this panel does not trigger collection.',
     none: 'No record', lastProbe: 'Last collection', lastUse: 'Last regular request', expires: 'State usable until', cooldown: 'Next collection eligible',
     seconds: 'In about {count} seconds', retryAt: 'Account rate limited until', authRejected: 'Current credentials rejected upstream', snapshot: 'Read at {time} · Up to 24 model / route combinations from the last 24 hours',
-    status: { disabled: 'Disabled', configuration_changed: 'Credentials or configuration changed', rate_limited: 'Rate limited', auth_rejected: 'Authentication rejected', ready: 'Qualified state available', cooldown: 'Waiting to collect', unavailable: 'No qualified state' },
+    history: 'Historical record', showHistory: 'Show history ({count})', hideHistory: 'Hide history',
+    status: { unobserved_current: 'No collection on current egress', collection_failed: 'Collection failed', credential_changed: 'Credentials replaced', egress_changed: 'Egress changed', account_disabled: 'Account or endpoint disabled', credential_expired: 'Credentials expired', disabled: 'Disabled', configuration_changed: 'Historical configuration changed', rate_limited: 'Rate limited', auth_rejected: 'Authentication rejected', ready: 'Qualified state available', cooldown: 'Waiting to collect', unavailable: 'No qualified state' },
     egress: { direct: 'Direct from app instance', local_proxy: 'Instance local proxy', shared_proxy: 'Shared proxy / Tunnel' },
-    probe: { accepted: 'Qualified state collected', missing_state: 'No state returned', invalid_state: 'Invalid state shape or lifetime', upstream_error: 'Probe did not complete successfully', transport_error: 'Connection failed or timed out', unknown: 'No detailed reason' },
+    probe: { accepted: 'Qualified state collected', missing_state: 'No state returned', invalid_state: 'Invalid state shape or lifetime', upstream_error: 'Probe did not complete successfully', timeout: 'Collection timed out', transport_error: 'Collection execution failed', unknown: 'No detailed reason' },
     use: { injected: 'State injected', passthrough: 'Forwarded without injection', invalidated: 'Response stopped after invalid state' },
   },
 

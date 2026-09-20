@@ -837,8 +837,13 @@ where
     let outcome = tokio::time::timeout_at(probe_deadline, run_probe(probe)).await;
     let (status, headers, body) = match outcome {
         Ok(Ok(value)) => value,
-        _ => {
-            record_probe(state, scope, 0, Value::Null, false, "transport_error").await;
+        failure => {
+            let reason = if failure.is_err() {
+                "timeout"
+            } else {
+                "transport_error"
+            };
+            record_probe(state, scope, 0, Value::Null, false, reason).await;
             return Err(StateError::unavailable());
         }
     };

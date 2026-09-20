@@ -35,7 +35,7 @@ describe('CodexStateDialog', () => {
     resolve({ enabled: true, observed_at: 1, items: [] })
     await flush()
     expect(root.textContent).toContain('暂无观测')
-    expect(api.get).toHaveBeenCalledWith('provider', 'account')
+    expect(api.get).toHaveBeenCalledWith('provider', 'account', { signal: expect.any(AbortSignal) })
   })
 
   it('separates usable state from recent passthrough and shows the route', async () => {
@@ -74,4 +74,35 @@ describe('CodexStateDialog', () => {
     await flush()
     expect(root.textContent).toContain('State 功能已关闭')
   })
+})
+
+it('keeps history collapsed and preserves current rows during refresh', async () => {
+  const record = {
+    model: 'current-model', current: true, id: 'current', egress: 'direct', instance: 'app-1', node_id: null,
+    status: 'ready', expires_at: 3600, last_seen_at: 1, retry_until: null, auth_status: null,
+    cooldown_seconds: 0, last_probe: null, last_use: null,
+  }
+  const data = { enabled: true, observed_at: 1, items: [record,
+    { ...record, id: 'old', model: 'old-model', current: false, status: 'egress_changed' }] }
+  api.get.mockResolvedValueOnce(data)
+  const { root, props } = mount()
+  await flush()
+  expect(root.textContent).toContain('current-model')
+  expect(root.textContent).not.toContain('old-model')
+  const currentRow = root.querySelector('h3')
+  let finish!: (value: unknown) => void
+  api.get.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+  root.querySelector('button')?.click()
+  await flush()
+  expect(root.querySelector('h3')).toBe(currentRow)
+  expect(root.textContent).toContain('current-model')
+  finish({ ...data, observed_at: 2 }); await flush()
+  expect(root.querySelector('h3')).toBe(currentRow)
+  root.querySelector<HTMLButtonElement>('button[aria-expanded]')?.click()
+  await flush()
+  expect(root.textContent).toContain('old-model')
+  expect(root.textContent).toContain('出口已更换')
+  const signal = api.get.mock.calls.at(-1)?.[2].signal as AbortSignal
+  props.open = false; await flush()
+  expect(signal.aborted).toBe(true)
 })

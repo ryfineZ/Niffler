@@ -313,3 +313,48 @@ async fn configuration_change_between_attempts_stops_background_dispatch() {
         .unwrap();
     assert!(state.codex_turn_state_sessions.0.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn display_metadata_does_not_invalidate_state_configuration() {
+    let state = configured_state("codex", "oauth");
+    let original = state
+        .read_provider_transport_snapshot("provider", "endpoint", "account-a")
+        .await
+        .unwrap()
+        .unwrap();
+    let before = configuration(&state, &original).await.ok().unwrap();
+    let mut changed = original.clone();
+    changed.provider.name = "Renamed provider".into();
+    changed.provider.website = Some("https://example.org".into());
+    changed.key.name = "Renamed account".into();
+    changed.key.rate_multipliers = Some(json!({"openai:responses": 2}));
+    changed.key.global_priority_by_format = Some(json!({"openai:responses": 99}));
+    assert_eq!(configuration(&state, &changed).await.ok().unwrap(), before);
+    changed.key.proxy = Some(json!({"node_id":"changed"}));
+    assert_ne!(configuration(&state, &changed).await.ok().unwrap(), before);
+    changed = original.clone();
+    changed.key.decrypted_api_key = "rotated".into();
+    assert_ne!(configuration(&state, &changed).await.ok().unwrap(), before);
+    changed = original;
+    changed.key.allowed_models = Some(vec!["another-model".into()]);
+    assert_ne!(configuration(&state, &changed).await.ok().unwrap(), before);
+}
+
+#[tokio::test]
+async fn configuration_ignores_json_object_key_order() {
+    let state = configured_state("codex", "oauth");
+    let mut transport = state
+        .read_provider_transport_snapshot("provider", "endpoint", "account-a")
+        .await
+        .unwrap()
+        .unwrap();
+    transport.key.proxy =
+        Some(serde_json::from_str(r#"{"node_id":"proxy","enabled":true}"#).unwrap());
+    let before = configuration(&state, &transport).await.ok().unwrap();
+    transport.key.proxy =
+        Some(serde_json::from_str(r#"{"enabled":true,"node_id":"proxy"}"#).unwrap());
+    assert_eq!(
+        configuration(&state, &transport).await.ok().unwrap(),
+        before
+    );
+}

@@ -11,6 +11,10 @@ struct Scope {
     scope: String,
     endpoint_id: String,
     configuration: String,
+    #[serde(default)]
+    configuration_v2: Option<String>,
+    #[serde(default)]
+    egress_configuration: Option<String>,
     guard: String,
     credential: String,
     blocks: usize,
@@ -75,6 +79,8 @@ pub(super) async fn register(
         scope: state_scope(state, plan),
         endpoint_id: plan.endpoint_id.clone(),
         configuration: String::new(),
+        configuration_v2: None,
+        egress_configuration: None,
         guard: format!(
             "codex-state:guard:{}",
             digest(
@@ -115,7 +121,10 @@ pub(super) async fn register(
     let state = state.clone();
     let transport = transport.clone();
     best_effort(async move {
-        observation.configuration = background::configuration(&state, &transport).await?;
+        observation.configuration = background::legacy_configuration(&state, &transport).await?;
+        observation.configuration_v2 = Some(background::configuration(&state, &transport).await?);
+        observation.egress_configuration =
+            Some(background::egress_configuration(&state, &transport).await?);
         let Some(lease) = state
             .runtime_state
             .lock_try_acquire(
@@ -190,6 +199,54 @@ pub(super) async fn record_use(
     .await;
 }
 
+async fn historical_reason(
+    state: &AppState,
+    entry: &Scope,
+    transport: Option<&GatewayProviderTransportSnapshot>,
+) -> Result<Option<&'static str>, StateError> {
+    let Some(transport) = transport else {
+        return Ok(Some("account_disabled"));
+    };
+    if !transport.provider.is_active || !transport.endpoint.is_active || !transport.key.is_active {
+        return Ok(Some("account_disabled"));
+    }
+    if entry.credential != digest(format!("Bearer {}", transport.key.decrypted_api_key.trim())) {
+        return Ok(Some("credential_changed"));
+    }
+    if transport
+        .key
+        .expires_at_unix_secs
+        .is_some_and(|at| at <= now())
+    {
+        return Ok(Some("credential_expired"));
+    }
+    let current = match entry.configuration_v2.as_ref() {
+        Some(saved) => *saved == background::configuration(state, transport).await?,
+        None => entry.configuration == background::legacy_configuration(state, transport).await?,
+    };
+    if current {
+        return Ok(None);
+    }
+    let egress_changed = if let Some(saved) = entry.egress_configuration.as_ref() {
+        *saved != background::egress_configuration(state, transport).await?
+    } else {
+        // 旧记录没有分项摘要，仅在节点元数据能证明变化时细分原因。
+        let configured = aether_provider_transport::resolve_transport_proxy_snapshot(transport);
+        let node = match configured.as_ref() {
+            Some(proxy) => proxy.node_id.clone(),
+            None => background::system_proxy(state)
+                .await?
+                .and_then(|v| v.as_str().map(str::to_owned)),
+        };
+        entry.node_id != node
+    };
+    Ok(Some(if egress_changed {
+        "egress_changed"
+    } else {
+        "configuration_changed"
+    }))
+}
+
 pub(crate) async fn read(
     state: &AppState,
     provider_id: &str,
@@ -215,16 +272,8 @@ pub(crate) async fn read(
             .read_provider_transport_snapshot(provider_id, &entry.endpoint_id, key_id)
             .await
             .map_err(|_| StateError::runtime())?;
-        let current = match transport.as_ref() {
-            Some(transport)
-                if transport.provider.is_active
-                    && transport.endpoint.is_active
-                    && transport.key.is_active =>
-            {
-                background::configuration(state, transport).await? == entry.configuration
-            }
-            _ => false,
-        };
+        let historical_reason = historical_reason(state, &entry, transport.as_ref()).await?;
+        let current = historical_reason.is_none();
         let runtime = &state.runtime_state;
         let keys = [
             format!("codex-state:active:{}", entry.scope),
@@ -271,8 +320,8 @@ pub(crate) async fn read(
             .max(0);
         let status = if !enabled {
             "disabled"
-        } else if !current {
-            "configuration_changed"
+        } else if let Some(reason) = historical_reason {
+            reason
         } else if retry_until.is_some() {
             "rate_limited"
         } else if auth.is_some() {
@@ -294,8 +343,8 @@ pub(crate) async fn read(
             .map(serde_json::from_str)
             .transpose()
             .map_err(|_| StateError::runtime())?;
-        items.push(json!({"model":entry.model,"egress":entry.egress,"node_id":entry.node_id,"instance":entry.instance,"last_seen_at":entry.at,
-            "status":status,"expires_at":expires_at.filter(|_|current && enabled),"retry_until":retry_until.filter(|_|current),"auth_status":auth.filter(|_|current).map(|a|a.status),"cooldown_seconds":cooldown,
+        items.push(json!({"id":entry.scope,"model":entry.model,"egress":entry.egress,"node_id":entry.node_id,"instance":entry.instance,"last_seen_at":entry.at,
+            "status":status,"current":current,"expires_at":expires_at.filter(|_|current && enabled),"retry_until":retry_until.filter(|_|current),"auth_status":auth.filter(|_|current).map(|a|a.status),"cooldown_seconds":cooldown,
             "last_probe":probe.map(|p| json!({"at":p["at"],"status":p["status"],"accepted":p["accepted"],"reason":p["reason"]})),"last_use":last_use}));
     }
     Ok(json!({"enabled":enabled,"observed_at":now(),"items":items}))
@@ -305,6 +354,102 @@ pub(crate) async fn read(
 mod tests {
     use super::super::tests::{configured_state, plan, success};
     use super::*;
+
+    #[tokio::test]
+    async fn classifies_history_and_reads_legacy_records_without_exposing_current_cache() {
+        let state = configured_state("codex", "oauth");
+        let transport = state
+            .read_provider_transport_snapshot("provider", "endpoint", "account-a")
+            .await
+            .unwrap()
+            .unwrap();
+        register(&state, &plan(), &transport).await;
+        let raw = state
+            .runtime_state
+            .kv_get(&index_key("provider", "account-a"))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut entries: Vec<Scope> = serde_json::from_str(&raw).unwrap();
+        let entry = &mut entries[0];
+        assert_eq!(
+            historical_reason(&state, entry, Some(&transport))
+                .await
+                .ok()
+                .unwrap(),
+            None
+        );
+        let mut changed = transport.clone();
+        changed.key.name = "display only".into();
+        assert_eq!(
+            historical_reason(&state, entry, Some(&changed))
+                .await
+                .ok()
+                .unwrap(),
+            None
+        );
+        changed.key.proxy = Some(json!({"node_id":"new-egress","enabled":true}));
+        assert_eq!(
+            historical_reason(&state, entry, Some(&changed))
+                .await
+                .ok()
+                .unwrap(),
+            Some("egress_changed")
+        );
+        changed.key.decrypted_api_key = "new-credential".into();
+        assert_eq!(
+            historical_reason(&state, entry, Some(&changed))
+                .await
+                .ok()
+                .unwrap(),
+            Some("credential_changed")
+        );
+        changed.key.is_active = false;
+        assert_eq!(
+            historical_reason(&state, entry, Some(&changed))
+                .await
+                .ok()
+                .unwrap(),
+            Some("account_disabled")
+        );
+        changed = transport.clone();
+        changed.key.expires_at_unix_secs = Some(now() - 1);
+        assert_eq!(
+            historical_reason(&state, entry, Some(&changed))
+                .await
+                .ok()
+                .unwrap(),
+            Some("credential_expired")
+        );
+
+        let mut legacy: Value = serde_json::from_str(&raw).unwrap();
+        legacy[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("configuration_v2");
+        legacy[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("egress_configuration");
+        state
+            .runtime_state
+            .kv_set(
+                &index_key("provider", "account-a"),
+                legacy.to_string(),
+                Some(KEEP),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot(&state).await["items"][0]["current"], true);
+        state
+            .upsert_system_config_json_value("system_proxy_node_id", &json!("new-egress"), None)
+            .await
+            .unwrap();
+        let result = snapshot(&state).await;
+        assert_eq!(result["items"][0]["current"], false);
+        assert_eq!(result["items"][0]["status"], "egress_changed");
+        assert!(result["items"][0]["expires_at"].is_null());
+    }
 
     #[tokio::test]
     async fn slow_diagnostic_write_survives_foreground_wait_budget() {
@@ -437,7 +582,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             snapshot(&state).await["items"][0]["status"],
-            "configuration_changed"
+            "egress_changed"
         );
         state
             .upsert_system_config_json_value(CONFIG_KEY, &json!(false), None)
