@@ -426,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn admin_diagnostic_read_checks_account_ownership_and_auth_type() {
         let state = configured_state("codex", "oauth");
-        let admin = crate::handlers::admin::AdminAppState::new(&state);
+        let admin = crate::admin_api::AdminAppState::new(&state);
         assert!(admin
             .read_codex_turn_state_diagnostics("other-provider", "account-a")
             .await
@@ -444,7 +444,7 @@ mod tests {
             .unwrap();
         assert_eq!(response["items"], json!([]));
         let state = configured_state("codex", "api_key");
-        let admin = crate::handlers::admin::AdminAppState::new(&state);
+        let admin = crate::admin_api::AdminAppState::new(&state);
         assert!(admin
             .read_codex_turn_state_diagnostics("provider", "account-a")
             .await
