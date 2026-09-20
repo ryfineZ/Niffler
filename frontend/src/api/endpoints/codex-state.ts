@@ -21,6 +21,28 @@ export interface CodexStateDiagnostics {
   items: CodexStateObservation[]
 }
 
+export interface CodexStateAccount {
+  provider_id: string
+  provider_name: string
+  key_id: string
+  key_name: string
+  active: boolean
+  read_failed: boolean
+  diagnostics: CodexStateDiagnostics | null
+}
+
+export interface CodexStateOverview {
+  total: number
+  page: number
+  page_size: number
+  accounts: CodexStateAccount[]
+}
+
+export async function getCodexStateOverview(params: { page: number; page_size: number; search: string }): Promise<CodexStateOverview> {
+  const response = await client.get<CodexStateOverview>('/api/admin/providers/turn-state', { params })
+  return response.data
+}
+
 export async function getCodexStateDiagnostics(providerId: string, keyId: string): Promise<CodexStateDiagnostics> {
   const response = await client.get<CodexStateDiagnostics>(
     `/api/admin/providers/${encodeURIComponent(providerId)}/turn-state`,

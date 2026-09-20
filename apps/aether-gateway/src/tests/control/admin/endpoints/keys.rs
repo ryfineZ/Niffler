@@ -2274,3 +2274,78 @@ async fn gateway_handles_admin_keys_grouped_by_format_locally_with_trusted_admin
     gateway_handle.abort();
     upstream_handle.abort();
 }
+
+#[tokio::test]
+async fn overview_lists_only_codex_oauth_accounts_and_paginates_search_without_secrets() {
+    let mut codex = sample_provider("codex", "codex", 1);
+    codex.name = "My Codex".into();
+    codex.provider_type = "codex".into();
+    let mut a = sample_key("a", "codex", "openai:responses", "secret-a");
+    a.auth_type = "oauth".into();
+    a.name = "Alice".into();
+    let mut b = a.clone();
+    b.id = "b".into();
+    b.name = "Bob".into();
+    b.is_active = false;
+    let mut other = a.clone();
+    other.id = "other".into();
+    other.provider_id = "other".into();
+    let api_key = sample_key("api", "codex", "openai:responses", "secret-api");
+    let state = crate::AppState::new().unwrap().with_data_state_for_tests(
+        GatewayDataState::with_provider_catalog_reader_for_tests(Arc::new(
+            InMemoryProviderCatalogReadRepository::seed(
+                vec![codex, sample_provider("other", "custom", 1)],
+                vec![],
+                vec![a, b, other, api_key],
+            ),
+        )),
+    );
+    let admin = crate::handlers::admin::AdminAppState::new(&state);
+    let page = admin
+        .read_codex_turn_state_overview(2, 1, "")
+        .await
+        .unwrap();
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["accounts"][0]["key_name"], "Bob");
+    assert_eq!(page["accounts"][0]["active"], false);
+    assert_eq!(page["accounts"][0]["diagnostics"]["items"], json!([]));
+    assert!(!page.to_string().contains("secret"));
+    let found = admin
+        .read_codex_turn_state_overview(9, 10, "alice")
+        .await
+        .unwrap();
+    assert_eq!(found["page"], 1);
+    assert_eq!(found["total"], 1);
+    let provider = admin
+        .read_codex_turn_state_overview(1, 10, "my codex")
+        .await
+        .unwrap();
+    assert_eq!(provider["total"], 2);
+    let empty = admin
+        .read_codex_turn_state_overview(1, 10, "missing")
+        .await
+        .unwrap();
+    assert_eq!(empty["accounts"], json!([]));
+    // One corrupt diagnostics record must not hide other accounts or appear as no state.
+    use sha2::{Digest, Sha256};
+    let index = format!(
+        "codex-state:diagnostics:{:x}",
+        Sha256::digest(json!(["codex", "a"]).to_string())
+    );
+    state
+        .runtime_state
+        .kv_set(
+            &index,
+            "broken",
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .await
+        .unwrap();
+    let partial = admin
+        .read_codex_turn_state_overview(1, 10, "")
+        .await
+        .unwrap();
+    assert_eq!(partial["accounts"][0]["read_failed"], true);
+    assert!(partial["accounts"][0]["diagnostics"].is_null());
+    assert_eq!(partial["accounts"][1]["read_failed"], false);
+}

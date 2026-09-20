@@ -173,6 +173,13 @@ fn classifies_admin_provider_pool_status_as_admin_proxy_route() {
 
 #[test]
 fn turn_state_diagnostics_requires_provider_admin_permissions() {
+    let overview: Uri = "/api/admin/providers/turn-state?page=1".parse().unwrap();
+    let overview = classify_control_route(&http::Method::GET, &overview, &headers(&[])).unwrap();
+    assert_eq!(overview.route_kind.as_deref(), Some("turn_state"));
+    assert_eq!(
+        overview.auth_endpoint_signature.as_deref(),
+        Some("admin:providers")
+    );
     let uri: Uri = "/api/admin/providers/provider-codex/turn-state?key_id=account"
         .parse()
         .unwrap();

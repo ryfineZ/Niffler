@@ -1,5 +1,12 @@
 export default {
   codexState: {
+    overview: {
+      title: 'Codex State', description: 'Collection and injection across all Codex OAuth accounts. Select an account for model and egress details.',
+      refresh: 'Refresh status', search: 'Search account or provider', snapshot: 'Snapshot · {time}',
+      account: 'Account / Provider', state: 'Current state', ready: '{ready} / {total} combinations ready',
+      details: 'View State details for {name}', inactive: 'Inactive', waiting: 'Recorded after an eligible request',
+      unobserved: 'No observations', read_failed: 'Read failed', noMatches: 'No matching Codex OAuth accounts',
+    },
     button: 'State status', title: '{name} · State status', loading: 'Loading…', refresh: 'Refresh',
     readFailed: 'Unable to load', retryRead: 'Shared state is temporarily unavailable. Please retry.',
     disabled: 'State is disabled', readyCount: '{count} model / route combinations have usable state', noReady: 'No usable state currently',

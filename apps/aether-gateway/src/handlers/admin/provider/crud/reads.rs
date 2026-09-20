@@ -28,6 +28,24 @@ pub(crate) async fn maybe_build_local_admin_provider_reads_response(
     route_kind: Option<&str>,
 ) -> Result<Option<Response<Body>>, GatewayError> {
     if route_kind == Some("turn_state") && request_context.method() == http::Method::GET {
+        if request_context.path() == "/api/admin/providers/turn-state" {
+            let page = query_param_value(request_context.query_string(), "page")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1);
+            let page_size = query_param_value(request_context.query_string(), "page_size")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(10);
+            let search =
+                query_param_value(request_context.query_string(), "search").unwrap_or_default();
+            return Ok(Some(
+                Json(
+                    state
+                        .read_codex_turn_state_overview(page, page_size, &search)
+                        .await?,
+                )
+                .into_response(),
+            ));
+        }
         let provider_id = request_context
             .path()
             .strip_prefix("/api/admin/providers/")

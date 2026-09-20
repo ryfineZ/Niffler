@@ -1,5 +1,6 @@
 <template>
   <div class="space-y-4">
+    <CodexStateOverview />
     <Card
       v-if="providerDeleteProgress"
       class="border-primary/30 bg-primary/5"
@@ -337,6 +338,7 @@
 </template>
 
 <script setup lang="ts">
+import CodexStateOverview from '@/features/providers/components/CodexStateOverview.vue'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Button from '@/components/ui/button.vue'
