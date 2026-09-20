@@ -1,5 +1,10 @@
 export default {
   codexState: {
+    request: { injected: 'State 已注入', passthrough: 'State 未注入', not_applicable: 'State 不适用', failed: 'State 处理失败', invalidated: 'State 已失效', unknown: 'State 未记录' },
+    attemptTitle: '本轮尝试', attempt: '第 {count}/{limit} 次', elapsed: '耗时 {seconds} 秒', phaseTitle: '结束阶段', returnedTitle: '返回 State',
+    phase: { unknown: '阶段未记录', dispatch: '连接 / 等待响应头', first_byte: '等待正文', completion: '等待生成完成', validation: '校验结果', revalidation: '复核账号和出口' },
+    returned: { qualified: '通过校验', missing_state: '未返回', invalid_structure: '格式不合格', wrong_blocks: '与账号类型不匹配', future_state: '签发时间异常', expired_state: '已过期或即将过期' },
+
     pool: { column: 'State', unobserved: '暂无采集记录', partial: '{ready}/{total} 可用', use: { injected: '最近已注入', passthrough: '最近未注入', invalidated: '回包 state 失效' } },
     overview: {
       title: 'Codex State', description: '所有 Codex OAuth 账号的采集与注入状态，点击账号查看模型和出口明细。',
@@ -16,9 +21,9 @@ export default {
     none: '暂无记录', lastProbe: '最近采集', lastUse: '最近正式请求', expires: 'State 可用至', cooldown: '下一轮采集最早可重试',
     seconds: '约 {count} 秒后', retryAt: '账号限流至', authRejected: '当前凭据被上游拒绝', snapshot: '读取于 {time} · 保留最近 24 小时最多 24 个模型 / 出口组合',
     history: '历史记录', showHistory: '查看历史记录（{count}）', hideHistory: '收起历史记录',
-    status: { unobserved_current: '当前出口暂无采集记录', collection_failed: '采集失败', credential_changed: '登录凭据已更换', egress_changed: '出口已更换', account_disabled: '账号或接口已停用', credential_expired: '登录凭据已过期', disabled: '功能关闭', configuration_changed: '历史配置已变化', rate_limited: '账号限流', auth_rejected: '认证拒绝', ready: '有合格 state', cooldown: '等待补采', unavailable: '暂无合格 state' },
+    status: { collecting: '采集中', unobserved_current: '当前出口暂无采集记录', collection_failed: '采集失败', credential_changed: '登录凭据已更换', egress_changed: '出口已更换', account_disabled: '账号或接口已停用', credential_expired: '登录凭据已过期', disabled: '功能关闭', configuration_changed: '历史配置已变化', rate_limited: '账号限流', auth_rejected: '认证拒绝', ready: '有合格 state', cooldown: '等待补采', unavailable: '暂无合格 state' },
     egress: { direct: '应用实例直连', local_proxy: '实例本地代理', shared_proxy: '共享代理 / Tunnel' },
-    probe: { accepted: '采到合格 state', missing_state: '上游未返回 state', invalid_state: 'State 形状或有效期不合格', upstream_error: '探测未成功完成', timeout: '采集超时', transport_error: '采集执行失败', unknown: '暂无详细原因' },
+    probe: { interrupted: '采集中断，等待重试', collecting: '采集中', dispatch_error: '连接或请求派发失败', read_error: '读取响应中断', missing_completion: '响应结束但未完成生成', invalid_response: '响应格式无法解析', body_too_large: '采集响应超出大小限制', configuration_changed: '账号或出口变化，已取消采集', revalidation_error: '采集前账号或出口复核失败', accepted: '采到合格 state', missing_state: '上游未返回 state', invalid_state: 'State 形状或有效期不合格', upstream_error: '探测未成功完成', timeout: '采集超时', transport_error: '采集执行失败', unknown: '暂无详细原因' },
     use: { injected: '已注入 state', passthrough: '普通转发，未注入', invalidated: '回包 state 不合格，已停止响应' },
   },
 

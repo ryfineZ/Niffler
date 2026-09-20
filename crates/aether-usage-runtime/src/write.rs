@@ -785,11 +785,14 @@ pub fn build_sync_terminal_usage_payload_seed(
         provider_response_body_state,
         client_response,
         client_response_body_state,
-        capture_metadata: build_payload_body_capture_metadata(
-            payload.body_base64.as_deref(),
-            None,
-            provider_response_body_state,
-            client_response_body_state,
+        capture_metadata: crate::request_metadata::attach_turn_state_headers(
+            build_payload_body_capture_metadata(
+                payload.body_base64.as_deref(),
+                None,
+                provider_response_body_state,
+                client_response_body_state,
+            ),
+            &payload.headers,
         ),
     }
 }
@@ -836,11 +839,14 @@ pub fn build_stream_terminal_usage_payload_seed(
             .terminal_summary
             .as_ref()
             .and_then(|summary| summary.standardized_usage.clone()),
-        capture_metadata: build_payload_body_capture_metadata(
-            payload.provider_body_base64.as_deref(),
-            payload.client_body_base64.as_deref(),
-            payload.provider_body_state,
-            payload.client_body_state,
+        capture_metadata: crate::request_metadata::attach_turn_state_headers(
+            build_payload_body_capture_metadata(
+                payload.provider_body_base64.as_deref(),
+                payload.client_body_base64.as_deref(),
+                payload.provider_body_state,
+                payload.client_body_state,
+            ),
+            &payload.headers,
         ),
     }
 }
@@ -6015,5 +6021,41 @@ mod tests {
             extract_token_counts_from_value(&Value::String(sse_body.to_string())),
             Some((3, 5, 8)),
         );
+    }
+}
+
+#[cfg(test)]
+mod state_metadata_tests {
+    use super::*;
+    #[test]
+    fn terminal_state_metadata_survives_without_saved_headers_or_bodies() {
+        let plan: ExecutionPlan = serde_json::from_value(json!({
+            "request_id":"state-usage", "provider_id":"provider", "endpoint_id":"endpoint", "key_id":"account",
+            "method":"POST", "url":"https://chatgpt.com/backend-api/codex/responses", "headers":{},
+            "body":{"json_body":{"model":"gpt-6-astra","input":"hello"}}, "stream":true,
+            "client_api_format":"openai:responses", "provider_api_format":"openai:responses"
+        })).unwrap();
+        for status_code in [200, 503] {
+            let payload: GatewayStreamReportRequest = serde_json::from_value(json!({
+                "trace_id":"state-usage", "report_kind":"openai_responses_stream_success", "status_code":status_code,
+                "headers":{"x-niffler-turn-state":"passthrough","x-niffler-state-returned":"qualified"},
+                "provider_body_state":"none","client_body_state":"none"
+            })).unwrap();
+            let event = build_stream_terminal_usage_event(&plan, None, &payload).unwrap();
+            let record = crate::record::build_upsert_usage_record_from_event(&event).unwrap();
+            assert_eq!(
+                event.data.request_metadata.as_ref().unwrap()["codex_turn_state"]["mode"],
+                "passthrough"
+            );
+            assert_eq!(
+                event.data.request_metadata.as_ref().unwrap()["codex_turn_state"]["returned_state"],
+                "qualified"
+            );
+            assert!(event.data.response_body.is_none());
+            assert_eq!(
+                record.request_metadata.as_ref().unwrap()["codex_turn_state"]["mode"],
+                "passthrough"
+            );
+        }
     }
 }

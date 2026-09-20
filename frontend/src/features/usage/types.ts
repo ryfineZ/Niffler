@@ -88,6 +88,7 @@ export interface UsageChargeBreakdown {
 }
 
 export interface UsageRecord {
+  codex_turn_state?: { mode: string; returned_state?: string } | null
   id: string
   user_id?: string
   username?: string

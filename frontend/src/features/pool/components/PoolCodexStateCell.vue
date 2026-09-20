@@ -58,6 +58,7 @@ const detailTitle = computed(() => {
       :key="warning"
       class="text-xs text-destructive"
     >{{ t(`codexState.status.${warning}`) }}</span>
+    <span v-if="summary?.probe?.last_probe?.attempt" class="text-xs text-muted-foreground whitespace-nowrap">{{ t('codexState.attempt', { count: summary.probe.last_probe.attempt, limit: summary.probe.last_probe.attempt_limit }) }}</span>
     <span
       v-if="summary?.use?.last_use"
       class="text-xs text-muted-foreground whitespace-nowrap"

@@ -185,6 +185,18 @@ afterEach(() => {
 })
 
 describe('UsageRecordsTable', () => {
+  it('shows generation failure independently from injected State and keeps old records unknown', () => {
+    const root = mountUsageRecordsTable([
+      buildRecord({ id: 'failure', status: 'failed', status_code: 200, codex_turn_state: { mode: 'injected' } }),
+      buildRecord({ id: 'success', status: 'completed', codex_turn_state: { mode: 'passthrough' } }),
+      buildRecord({ id: 'old', status: 'completed' }),
+    ])
+    expect(root.textContent).toContain('失败')
+    expect(root.textContent).toContain('State 已注入')
+    expect(root.textContent).toContain('State 未注入')
+    expect(root.textContent).toContain('State 未记录')
+  })
+
   it('shows failed when a capacity error arrives after HTTP 200', () => {
     const root = mountUsageRecordsTable([buildRecord({
       status: 'failed', status_code: 200,

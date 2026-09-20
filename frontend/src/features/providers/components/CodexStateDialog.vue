@@ -74,7 +74,7 @@ function variant(item: CodexStateObservation) {
 }
 function probeReason(item: CodexStateObservation) {
   const reason = item.last_probe?.reason
-  const known = ['accepted', 'missing_state', 'invalid_state', 'upstream_error', 'transport_error', 'timeout']
+  const known = ['accepted', 'missing_state', 'invalid_state', 'upstream_error', 'transport_error', 'timeout', 'collecting', 'interrupted', 'dispatch_error', 'read_error', 'missing_completion', 'invalid_response', 'body_too_large', 'configuration_changed', 'revalidation_error']
   return t(`codexState.probe.${reason && known.includes(reason) ? reason : 'unknown'}`)
 }
 </script>
@@ -104,6 +104,9 @@ function probeReason(item: CodexStateObservation) {
             </p>
             <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div><dt class="text-xs text-muted-foreground">{{ t('codexState.lastProbe') }}</dt><dd>{{ item.last_probe ? probeReason(item) : t('codexState.none') }}</dd><dd class="text-xs text-muted-foreground">{{ date(item.last_probe?.at) }}<span v-if="item.last_probe?.status"> · HTTP {{ item.last_probe.status }}</span></dd></div>
+              <div v-if="item.last_probe?.attempt"><dt class="text-xs text-muted-foreground">{{ t('codexState.attemptTitle') }}</dt><dd>{{ t('codexState.attempt', { count: item.last_probe.attempt, limit: item.last_probe.attempt_limit }) }}</dd><dd v-if="item.last_probe.observation?.elapsed_ms" class="text-xs text-muted-foreground">{{ t('codexState.elapsed', { seconds: (item.last_probe.observation.elapsed_ms / 1000).toFixed(1) }) }}</dd></div>
+              <div v-if="item.last_probe?.observation?.phase"><dt class="text-xs text-muted-foreground">{{ t('codexState.phaseTitle') }}</dt><dd>{{ t(`codexState.phase.${item.last_probe.observation.phase}`) }}</dd></div>
+              <div v-if="item.last_probe?.observation?.returned_state"><dt class="text-xs text-muted-foreground">{{ t('codexState.returnedTitle') }}</dt><dd>{{ t(`codexState.returned.${item.last_probe.observation.returned_state}`) }}</dd></div>
               <div><dt class="text-xs text-muted-foreground">{{ t('codexState.lastUse') }}</dt><dd>{{ item.last_use ? t(`codexState.use.${item.last_use.mode}`) : t('codexState.none') }}</dd><dd class="text-xs text-muted-foreground">{{ date(item.last_use?.at) }}</dd></div>
               <div v-if="item.status === 'ready'"><dt class="text-xs text-muted-foreground">{{ t('codexState.expires') }}</dt><dd>{{ date(item.expires_at) }}</dd></div>
               <div v-if="item.status === 'cooldown'"><dt class="text-xs text-muted-foreground">{{ t('codexState.cooldown') }}</dt><dd>{{ t('codexState.seconds', { count: item.cooldown_seconds }) }}</dd></div>

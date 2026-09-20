@@ -227,7 +227,7 @@ async fn current_plan(
     Ok(Some(plan))
 }
 
-async fn tick_with_probe<F, Fut>(state: &AppState, probe: F) -> Result<(), StateError>
+pub(super) async fn tick_with_probe<F, Fut>(state: &AppState, probe: F) -> Result<(), StateError>
 where
     F: Fn(ExecutionPlan) -> Fut,
     Fut: Future<Output = ProbeResult>,
@@ -254,81 +254,120 @@ where
             .collect::<Vec<_>>()
     };
     pending.sort_by_key(|(_, s)| s.last_checked);
-    let started = Instant::now();
-    for (scope, session) in pending {
-        if started.elapsed() >= Duration::from_secs(25) {
-            break;
+    pending.truncate(4);
+    let mut workers = futures_util::stream::iter(pending)
+        .map(|(scope, session)| tick_session(state, scope, session, &probe))
+        .buffer_unordered(4);
+    let mut failure = None;
+    while let Some(result) = workers.next().await {
+        if let Err(error) = result {
+            failure = Some(error);
         }
-        if session.last_seen.elapsed() >= ACTIVE_FOR || !enabled(state).await? {
-            continue;
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+async fn tick_session<F, Fut>(
+    state: &AppState,
+    scope: String,
+    session: Session,
+    probe: &F,
+) -> Result<(), StateError>
+where
+    F: Fn(ExecutionPlan) -> Fut,
+    Fut: Future<Output = ProbeResult>,
+{
+    if session.last_seen.elapsed() >= ACTIVE_FOR || !enabled(state).await? {
+        return Ok(());
+    }
+    // 包括冷却和账号保护在内，检查过的会话都轮转，避免占满每批名额。
+    if let Some(current) = state
+        .codex_turn_state_sessions
+        .0
+        .lock()
+        .map_err(|_| StateError::runtime())?
+        .get_mut(&scope)
+        .filter(|s| s.encrypted_plan == session.encrypted_plan)
+    {
+        current.last_checked = Instant::now();
+    }
+    let resolved = match current_plan(state, &session).await {
+        Err(error) if error.egress_unavailable() => {
+            tracing::debug!(
+                event_name = "codex_state_background_egress_unavailable",
+                scope,
+                "补采出口暂不可用，保留活跃会话等待下轮检查"
+            );
+            return Ok(());
         }
-        if let Some(current) = state
+        result => result?,
+    };
+    let Some(plan) = resolved else {
+        let mut sessions = state
             .codex_turn_state_sessions
             .0
             .lock()
-            .map_err(|_| StateError::runtime())?
-            .get_mut(&scope)
+            .map_err(|_| StateError::runtime())?;
+        // 不让迟到的配置检查删除刚刚由新请求更新的会话。
+        if sessions
+            .get(&scope)
+            .is_some_and(|s| s.encrypted_plan == session.encrypted_plan)
         {
-            current.last_checked = Instant::now();
+            sessions.remove(&scope);
         }
-        let resolved = match current_plan(state, &session).await {
-            Err(error) if error.egress_unavailable() => {
-                tracing::debug!(
-                    event_name = "codex_state_background_egress_unavailable",
-                    scope,
-                    "补采出口暂不可用，保留活跃会话等待下轮检查"
-                );
-                continue;
-            }
-            result => result?,
-        };
-        let Some(plan) = resolved else {
-            let mut sessions = state
-                .codex_turn_state_sessions
-                .0
-                .lock()
-                .map_err(|_| StateError::runtime())?;
-            // 不让迟到的配置检查删除刚刚由新请求更新的会话。
-            if sessions
-                .get(&scope)
-                .is_some_and(|s| s.encrypted_plan == session.encrypted_plan)
-            {
-                sessions.remove(&scope);
-            }
-            continue;
-        };
-        let guarded_probe = |mut probe_plan: ExecutionPlan| {
-            let session = &session;
-            let probe = &probe;
-            async move {
-                // 等待共享槽和轮内重试期间配置可能变化，每次真正派发前再验证。
-                match current_plan(state, session).await {
-                    Ok(Some(current)) => {
-                        probe_plan.proxy = current.proxy;
-                        probe(probe_plan).await
-                    }
-                    Ok(None) => Err(()),
-                    Err(error) => {
-                        tracing::warn!(
-                            event_name = "codex_state_background_revalidation_failed",
-                            code = error.code,
-                            "补采前复核失败，本次不派发"
-                        );
-                        Err(())
+        return Ok(());
+    };
+    let guarded_probe = |mut probe_plan: ExecutionPlan| {
+        let session = &session;
+        let probe = &probe;
+        async move {
+            // 等待共享槽和轮内重试期间配置可能变化，每次真正派发前再验证。
+            match current_plan(state, session).await {
+                Ok(Some(current)) => {
+                    probe_plan.proxy = current.proxy;
+                    let result = probe(probe_plan).await;
+                    if let Ok(response) = result {
+                        if response.status == 200 && policy::probe_outcome(&response.body).is_ok() {
+                            let reason = match current_plan(state, session).await {
+                                Ok(Some(_)) => None,
+                                Ok(None) => Some("configuration_changed"),
+                                Err(_) => Some("revalidation_error"),
+                            };
+                            if let Some(reason) = reason {
+                                let mut observation = response.observation;
+                                observation.phase = "revalidation";
+                                return Err(ProbeFailure {
+                                    reason,
+                                    observation,
+                                });
+                            }
+                        }
+                        Ok(response)
+                    } else {
+                        result
                     }
                 }
+                Ok(None) => Err(ProbeFailure::new("configuration_changed", "revalidation")),
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "codex_state_background_revalidation_failed",
+                        code = error.code,
+                        "补采前复核失败，本次不派发"
+                    );
+                    Err(ProbeFailure::new("revalidation_error", "revalidation"))
+                }
             }
-        };
-        if let Err(error) = tokio::time::timeout(
-            Duration::from_secs(25),
-            prepare_with_probe_mode(state, &plan, guarded_probe, false),
-        )
-        .await
-        .unwrap_or_else(|_| Err(StateError::unavailable()))
-        {
-            if !error.is_unavailable() && error.code != "codex_turn_state_account_blocked" {
-                return Err(error);
-            }
+        }
+    };
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(150),
+        prepare_with_probe_mode(state, &plan, guarded_probe, false),
+    )
+    .await
+    .unwrap_or_else(|_| Err(StateError::unavailable()));
+    if let Err(error) = outcome {
+        if !error.is_unavailable() && error.code != "codex_turn_state_account_blocked" {
+            return Err(error);
         }
     }
     Ok(())

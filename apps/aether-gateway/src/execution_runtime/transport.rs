@@ -236,6 +236,7 @@ impl DirectSyncExecutionRuntime {
         let ttfb_ms = started_at.elapsed().as_millis() as u64;
         let status_code = response.status_code();
         let mut headers = response.headers();
+        super::codex_turn_state::mark_unmanaged(&mut headers);
         // 必须先处理响应头；正文读取/解析错误不能绕过 state 的不可重放保护。
         if let Some((state, prepared)) = observation {
             if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
@@ -330,8 +331,10 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     report_context: Option<&serde_json::Value>,
 ) -> Result<ExecutionResult, GatewayError> {
     if super::codex_compact::is_candidate(plan) {
-        if let Some(result) = Box::pin(super::codex_compact::maybe_execute_sync(state, plan)).await
+        if let Some(mut result) =
+            Box::pin(super::codex_compact::maybe_execute_sync(state, plan)).await
         {
+            super::codex_turn_state::mark_unmanaged(&mut result.headers);
             return Ok(result);
         }
     }
@@ -599,6 +602,7 @@ async fn execute_sync_plan_via_local_tunnel_observed(
     let ttfb_ms = started_at.elapsed().as_millis() as u64;
     let status_code = response.status();
     let mut headers = collect_tunnel_response_headers(response.headers());
+    super::codex_turn_state::mark_unmanaged(&mut headers);
     if let Some(prepared) = prepared {
         if let Err(error) = prepared.observe(state, status_code, &mut headers).await {
             return Ok(error.sync(plan));

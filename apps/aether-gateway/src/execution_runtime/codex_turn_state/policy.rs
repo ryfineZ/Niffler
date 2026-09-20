@@ -24,11 +24,25 @@ pub(super) fn parse(value: &str) -> Option<(u64, usize)> {
 }
 
 pub(super) fn accepts(value: &str, expected: usize, now: u64) -> bool {
-    parse(value).is_some_and(|(issued, blocks)| {
-        blocks == expected
-            && issued <= now.saturating_add(30)
-            && now < issued.saturating_add(TTL_SECONDS - 30)
-    })
+    state_reason(value, expected, now) == "qualified"
+}
+
+pub(super) fn state_reason(value: &str, expected: usize, now: u64) -> &'static str {
+    if value.is_empty() {
+        return "missing_state";
+    }
+    let Some((issued, blocks)) = parse(value) else {
+        return "invalid_structure";
+    };
+    if blocks != expected {
+        "wrong_blocks"
+    } else if issued > now.saturating_add(30) {
+        "future_state"
+    } else if now >= issued.saturating_add(TTL_SECONDS - 30) {
+        "expired_state"
+    } else {
+        "qualified"
+    }
 }
 
 pub(super) fn expected_blocks(authorization: &str, account: &str) -> usize {
@@ -73,7 +87,12 @@ pub(super) fn probe_outcome(bytes: &[u8]) -> Result<Value, u16> {
             continue;
         }
         let value: Value = serde_json::from_str(&data).map_err(|_| 502u16)?;
-        match value.get("type").and_then(Value::as_str) {
+        let event_type = value.get("type").and_then(Value::as_str).or_else(|| {
+            event
+                .lines()
+                .find_map(|line| line.strip_prefix("event:").map(str::trim))
+        });
+        match event_type {
             Some("error" | "response.failed" | "response.incomplete") => {
                 let code = value
                     .pointer("/response/error/code")

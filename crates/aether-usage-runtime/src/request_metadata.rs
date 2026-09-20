@@ -118,7 +118,59 @@ pub(crate) fn attach_provider_request_body_metadata(
     )
 }
 
+fn copy_turn_state(source: &Map<String, Value>, target: &mut Map<String, Value>) {
+    let Some(value) = source.get("codex_turn_state").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(mode) = value.get("mode").and_then(Value::as_str).filter(|mode| {
+        matches!(
+            *mode,
+            "injected" | "passthrough" | "not_applicable" | "failed" | "invalidated"
+        )
+    }) else {
+        return;
+    };
+    let mut observation = json!({"mode":mode});
+    if let Some(reason) = value
+        .get("returned_state")
+        .and_then(Value::as_str)
+        .filter(|reason| {
+            matches!(
+                *reason,
+                "qualified"
+                    | "missing_state"
+                    | "invalid_structure"
+                    | "wrong_blocks"
+                    | "future_state"
+                    | "expired_state"
+            )
+        })
+    {
+        observation["returned_state"] = json!(reason);
+    }
+    target.insert("codex_turn_state".into(), observation);
+}
+
+pub(crate) fn attach_turn_state_headers(
+    metadata: Option<Value>,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Option<Value> {
+    let mut object = metadata
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let candidate = json!({"codex_turn_state": {"mode":header("x-niffler-turn-state"), "returned_state":header("x-niffler-state-returned")}});
+    copy_turn_state(candidate.as_object().unwrap(), &mut object);
+    (!object.is_empty()).then_some(Value::Object(object))
+}
+
 fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<String, Value>) {
+    copy_turn_state(source, target);
     copy_non_empty_string(source, target, "trace_id");
     copy_non_empty_string(source, target, "source");
     copy_non_empty_string(source, target, "platform_reason");
@@ -187,6 +239,7 @@ fn copy_allowed_metadata_fields(source: &Map<String, Value>, target: &mut Map<St
 }
 
 fn move_allowed_metadata_fields(mut source: Map<String, Value>, target: &mut Map<String, Value>) {
+    copy_turn_state(&source, target);
     remove_non_empty_string(&mut source, target, "trace_id");
     remove_non_empty_string(&mut source, target, "source");
     remove_non_empty_string(&mut source, target, "platform_reason");
@@ -1019,5 +1072,31 @@ mod tests {
             sanitize_usage_request_metadata_ref(Some(&value)),
             sanitize_usage_request_metadata(Some(value))
         );
+    }
+}
+
+#[cfg(test)]
+mod turn_state_tests {
+    use super::*;
+    #[test]
+    fn retains_only_safe_state_metadata_without_body_capture() {
+        let headers = std::collections::BTreeMap::from([
+            ("x-niffler-turn-state".into(), "passthrough".into()),
+            ("x-niffler-state-returned".into(), "qualified".into()),
+            ("x-codex-turn-state".into(), "SECRET".into()),
+        ]);
+        let value = attach_turn_state_headers(None, &headers).unwrap();
+        assert_eq!(value["codex_turn_state"]["mode"], "passthrough");
+        assert_eq!(
+            sanitize_usage_request_metadata(Some(value.clone())),
+            Some(value.clone())
+        );
+        assert!(!value.to_string().contains("SECRET"));
+        let mut malicious = value;
+        malicious["codex_turn_state"]["token"] = json!("SECRET");
+        assert!(!sanitize_usage_request_metadata(Some(malicious))
+            .unwrap()
+            .to_string()
+            .contains("SECRET"));
     }
 }

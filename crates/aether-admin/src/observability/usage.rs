@@ -1625,6 +1625,12 @@ fn admin_usage_active_request_json(
     if let Some(endpoint_api_format) = item.endpoint_api_format.as_ref() {
         value["endpoint_api_format"] = json!(endpoint_api_format);
     }
+    value["codex_turn_state"] = item
+        .request_metadata
+        .as_ref()
+        .and_then(|m| m.get("codex_turn_state"))
+        .cloned()
+        .unwrap_or(Value::Null);
     value["has_format_conversion"] = json!(item.has_format_conversion);
     if let Some(target_model) = item.target_model.as_ref() {
         value["target_model"] = json!(target_model);
@@ -1740,6 +1746,14 @@ pub fn admin_usage_record_json(
     object.insert(
         "official_cost".to_string(),
         json!(round_to(official_cost, 6)),
+    );
+    object.insert(
+        "codex_turn_state".into(),
+        item.request_metadata
+            .as_ref()
+            .and_then(|m| m.get("codex_turn_state"))
+            .cloned()
+            .unwrap_or(Value::Null),
     );
     object.insert("cost".to_string(), json!(round_to(user_debit_usd, 6)));
     object.insert("sales_multiplier".to_string(), json!(sales_multiplier));
@@ -3241,6 +3255,43 @@ mod tests {
 
         assert_eq!(record["provider"], "无可用供应商");
         assert_eq!(detail["provider"], "无可用供应商");
+    }
+
+    #[test]
+    fn admin_usage_record_keeps_generation_result_separate_from_state_usage() {
+        for status in ["completed", "failed"] {
+            let item = StoredRequestUsageAudit {
+                request_metadata: Some(
+                    json!({"codex_turn_state":{"mode":"passthrough","returned_state":"qualified"}}),
+                ),
+                ..sample_usage(
+                    status,
+                    Some(if status == "completed" { 200 } else { 503 }),
+                    None,
+                )
+            };
+            let record = admin_usage_record_json(
+                &item,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                false,
+                false,
+                None,
+            );
+            assert_eq!(record["status"], status);
+            assert_eq!(record["codex_turn_state"]["mode"], "passthrough");
+            assert_eq!(record["codex_turn_state"]["returned_state"], "qualified");
+        }
+        let legacy = sample_usage("completed", Some(200), None);
+        let record = admin_usage_record_json(
+            &legacy,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+            false,
+            None,
+        );
+        assert!(record["codex_turn_state"].is_null());
     }
 
     #[test]

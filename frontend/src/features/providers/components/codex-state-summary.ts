@@ -21,6 +21,7 @@ export function summarizeCodexState(account: Pick<CodexStateAccount, 'diagnostic
     for (const blocked of ['auth_rejected', 'rate_limited']) {
       if (items.some(item => item.status === blocked)) return blocked
     }
+    if (items.some(item => item.last_probe?.reason === 'collecting')) return 'collecting'
     if (failed) return 'collection_failed'
     if (items.some(item => item.status === 'cooldown')) return 'cooldown'
     if (items.length) return 'unavailable'

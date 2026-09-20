@@ -183,13 +183,14 @@ pub(super) async fn record_use(
     prepared: &Prepared,
     status: u16,
     invalidated: bool,
+    returned_state: &str,
 ) {
     let runtime = state.runtime_state.clone();
     let key = format!(
         "codex-state:last-use:{}",
         state_scope(state, &prepared.plan)
     );
-    let value = json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status}).to_string();
+    let value = json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status, "returned_state": returned_state}).to_string();
     best_effort(async move {
         runtime
             .kv_set(&key, value, Some(KEEP))
@@ -333,11 +334,20 @@ pub(crate) async fn read(
         } else {
             "unavailable"
         };
-        let probe: Option<Value> = values[3]
+        let mut probe: Option<Value> = values[3]
             .as_deref()
             .map(serde_json::from_str)
             .transpose()
             .map_err(|_| StateError::runtime())?;
+        if let Some(probe) = probe.as_mut() {
+            if probe["reason"] == "collecting"
+                && probe["at"]
+                    .as_u64()
+                    .is_none_or(|at| at.saturating_add(35) < now())
+            {
+                probe["reason"] = json!("interrupted");
+            }
+        }
         let last_use: Option<Value> = values[4]
             .as_deref()
             .map(serde_json::from_str)
@@ -345,7 +355,7 @@ pub(crate) async fn read(
             .map_err(|_| StateError::runtime())?;
         items.push(json!({"id":entry.scope,"model":entry.model,"egress":entry.egress,"node_id":entry.node_id,"instance":entry.instance,"last_seen_at":entry.at,
             "status":status,"current":current,"expires_at":expires_at.filter(|_|current && enabled),"retry_until":retry_until.filter(|_|current),"auth_status":auth.filter(|_|current).map(|a|a.status),"cooldown_seconds":cooldown,
-            "last_probe":probe.map(|p| json!({"at":p["at"],"status":p["status"],"accepted":p["accepted"],"reason":p["reason"]})),"last_use":last_use}));
+            "last_probe":probe.map(|p| json!({"at":p["at"],"status":p["status"],"accepted":p["accepted"],"reason":p["reason"],"attempt":p["attempt"],"attempt_limit":p["attempt_limit"],"observation":p["observation"]})),"last_use":last_use}));
     }
     Ok(json!({"enabled":enabled,"observed_at":now(),"items":items}))
 }
@@ -522,13 +532,18 @@ mod tests {
     #[tokio::test]
     async fn missing_state_cooldown_and_passthrough_do_not_mean_auth_failure() {
         let state = configured_state("codex", "oauth");
-        let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async {
-            let (status, _, body) = success().unwrap();
-            Ok((status, BTreeMap::new(), body))
+        let prepared =
+            prepare_with_fallback_probe(&state, &plan(), super::super::tests::unexpected_probe)
+                .await
+                .ok()
+                .flatten()
+                .unwrap();
+        background::tick_with_probe(&state, |_| async {
+            let ProbeResponse { status, body, .. } = success().unwrap();
+            Ok(ProbeResponse::new(status, BTreeMap::new(), body))
         })
         .await
         .ok()
-        .flatten()
         .unwrap();
         prepared
             .observe(&state, 200, &mut BTreeMap::new())

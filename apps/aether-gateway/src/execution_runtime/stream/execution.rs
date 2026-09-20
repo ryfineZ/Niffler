@@ -1006,10 +1006,11 @@ async fn execute_in_process_stream(
     plan: &ExecutionPlan,
 ) -> Result<DirectUpstreamStreamExecution, ExecutionRuntimeTransportError> {
     if crate::execution_runtime::codex_compact::is_candidate(plan) {
-        if let Some(execution) =
+        if let Some(mut execution) =
             Box::pin(crate::execution_runtime::codex_compact::maybe_execute_stream(state, plan))
                 .await
         {
+            crate::execution_runtime::codex_turn_state::mark_unmanaged(&mut execution.headers);
             return Ok(execution);
         }
     }
@@ -1019,6 +1020,7 @@ async fn execute_in_process_stream(
     };
     let dispatch = prepared.as_ref().map_or(plan, |prepared| &prepared.plan);
     let mut execution = execute_unmanaged_in_process_stream(state, dispatch).await?;
+    crate::execution_runtime::codex_turn_state::mark_unmanaged(&mut execution.headers);
     if let Some(prepared) = prepared {
         if let Err(error) = prepared
             .observe(state, execution.status_code, &mut execution.headers)

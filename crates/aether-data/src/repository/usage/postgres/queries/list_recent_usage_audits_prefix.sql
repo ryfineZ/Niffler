@@ -156,7 +156,15 @@ SELECT
       OR NULLIF(BTRIM("usage".request_metadata->>'request_path_and_query'), '') IS NOT NULL
       OR ("usage".request_metadata->>'client_requested_stream') IN ('true', 'false')
       OR ("usage".request_metadata->>'upstream_is_stream') IN ('true', 'false')
+      OR ("usage".request_metadata #>> '{codex_turn_state,mode}') IN ('injected', 'passthrough', 'not_applicable', 'failed', 'invalidated')
       THEN jsonb_strip_nulls(jsonb_build_object(
+        'codex_turn_state',
+        CASE WHEN ("usage".request_metadata #>> '{codex_turn_state,mode}') IN ('injected', 'passthrough', 'not_applicable', 'failed', 'invalidated')
+          THEN jsonb_build_object(
+            'mode', "usage".request_metadata #>> '{codex_turn_state,mode}',
+            'returned_state', CASE WHEN ("usage".request_metadata #>> '{codex_turn_state,returned_state}') IN ('qualified', 'missing_state', 'invalid_structure', 'wrong_blocks', 'future_state', 'expired_state')
+              THEN "usage".request_metadata #>> '{codex_turn_state,returned_state}' ELSE NULL END
+          ) ELSE NULL END,
         'client_ip',
         NULLIF(BTRIM("usage".request_metadata->>'client_ip'), ''),
         'user_agent',
