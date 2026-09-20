@@ -119,31 +119,50 @@ async fn passthrough_keeps_failed_probes_out_of_the_request_failure_path() {
     for failure in ["transport", "missing", "invalid", "incomplete", "server"] {
         let state = configured_state("codex", "oauth");
         let p = plan();
-        let prepared = prepare_with_fallback_probe(&state, &p, |_| async {
-            let (status, mut headers, body) = success().unwrap();
+        prepare_with_fallback_probe(&state, &p, unexpected_probe)
+            .await
+            .ok()
+            .flatten()
+            .unwrap();
+        background::tick_with_probe(&state, |_| async {
+            let ProbeResponse {
+                status,
+                mut headers,
+                body,
+                ..
+            } = success().unwrap();
             match failure {
-                "transport" => Err(()),
+                "transport" => Err(ProbeFailure::transport()),
                 "missing" => {
                     headers.clear();
-                    Ok((status, headers, body))
+                    Ok(ProbeResponse::new(status, headers, body))
                 }
                 "invalid" => {
                     headers.insert(HEADER.into(), "invalid".into());
-                    Ok((status, headers, body))
+                    Ok(ProbeResponse::new(status, headers, body))
                 }
-                "incomplete" => Ok((
+                "incomplete" => Ok(ProbeResponse::new(
                     status,
                     headers,
                     b"data: {\"type\":\"response.created\"}\n\n".to_vec(),
                 )),
-                "server" => Ok((502, headers, vec![])),
+                "server" => Ok(ProbeResponse::new(502, headers, vec![])),
                 _ => unreachable!(),
             }
         })
         .await
         .ok()
-        .flatten()
-        .expect("probe failure must still allow a real request");
+        .unwrap();
+        let snapshot = diagnostics::read(&state, "provider", "account-a")
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(snapshot["items"][0]["last_probe"]["accepted"], false);
+        let prepared = prepare_with_fallback_probe(&state, &p, unexpected_probe)
+            .await
+            .ok()
+            .flatten()
+            .expect("probe failure must still allow a real request");
         assert!(!prepared.injected);
         assert_eq!(prepared.plan.body, p.body);
         assert_eq!(prepared.plan.proxy, p.proxy);
@@ -164,8 +183,8 @@ async fn passthrough_keeps_failed_probes_out_of_the_request_failure_path() {
 async fn passthrough_preserves_auth_and_rate_protection_from_probes_and_real_responses() {
     for status in [401, 403, 429] {
         let state = configured_state("codex", "oauth");
-        let error = prepare_with_fallback_probe(&state, &plan(), |_| async {
-            Ok((status, BTreeMap::new(), vec![]))
+        let error = prepare_with_probe(&state, &plan(), |_| async {
+            Ok(ProbeResponse::new(status, BTreeMap::new(), vec![]))
         })
         .await
         .err()
@@ -182,11 +201,13 @@ async fn passthrough_preserves_auth_and_rate_protection_from_probes_and_real_res
         );
 
         let state = configured_state("codex", "oauth");
-        let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async { Err(()) })
-            .await
-            .ok()
-            .flatten()
-            .unwrap();
+        let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async {
+            Err(ProbeFailure::transport())
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap();
         assert!(prepared
             .observe(&state, status, &mut BTreeMap::new())
             .await
@@ -532,12 +553,36 @@ pub(super) fn success() -> ProbeResult {
     let mut raw = vec![0; 57 + 10 * 16];
     raw[0] = 0x80;
     raw[1..9].copy_from_slice(&now().to_be_bytes());
-    Ok((200, BTreeMap::from([(HEADER.into(), base64::engine::general_purpose::URL_SAFE.encode(raw))]),
+    Ok(ProbeResponse::new(200, BTreeMap::from([(HEADER.into(), base64::engine::general_purpose::URL_SAFE.encode(raw))]),
         b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n".to_vec()))
 }
 
 pub(super) async fn unexpected_probe(_: ExecutionPlan) -> ProbeResult {
     panic!("unexpected upstream probe")
+}
+
+#[tokio::test]
+async fn ordinary_request_queues_collection_without_dispatching_a_probe() {
+    let state = configured_state("codex", "oauth");
+    let prepared = prepare_with_fallback_probe(&state, &plan(), unexpected_probe)
+        .await
+        .ok()
+        .flatten()
+        .expect("ordinary forwarding should not probe");
+    assert!(!prepared.injected);
+    assert_eq!(prepared.plan.body, plan().body);
+    background::tick_with_probe(&state, |_| async { success() })
+        .await
+        .ok()
+        .unwrap();
+    assert!(
+        prepare_with_fallback_probe(&state, &plan(), unexpected_probe)
+            .await
+            .ok()
+            .flatten()
+            .unwrap()
+            .injected
+    );
 }
 
 #[tokio::test]
@@ -629,8 +674,10 @@ async fn concurrent_requests_share_one_probe_and_encrypted_cache() {
 async fn rejects_incomplete_probe_and_enforces_cooldown() {
     let state = configured_state("codex", "oauth");
     let result = prepare_with_probe(&state, &plan(), |_| async {
-        let (status, headers, _) = success().unwrap();
-        Ok((
+        let ProbeResponse {
+            status, headers, ..
+        } = success().unwrap();
+        Ok(ProbeResponse::new(
             status,
             headers,
             b"data: {\"type\":\"response.created\"}\n\n".to_vec(),
@@ -648,7 +695,7 @@ async fn probe_rate_limit_is_shared_across_models_and_refreshed_credentials() {
     let state = configured_state("codex", "oauth");
     let mut original = plan();
     let error = prepare_with_probe(&state, &original, |_| async {
-        Ok((429, BTreeMap::new(), vec![]))
+        Ok(ProbeResponse::new(429, BTreeMap::new(), vec![]))
     })
     .await
     .err()
@@ -775,7 +822,7 @@ async fn transient_probe_failure_retries_in_the_same_round() {
     let calls = AtomicUsize::new(0);
     let prepared = prepare_with_probe(&state, &plan(), |_| async {
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            Err(())
+            Err(ProbeFailure::transport())
         } else {
             success()
         }
@@ -800,7 +847,7 @@ async fn collection_round_uses_configured_limit_and_stops_on_rejection() {
         let calls = AtomicUsize::new(0);
         let error = prepare_with_probe(&state, &plan(), |_| async {
             calls.fetch_add(1, Ordering::SeqCst);
-            Ok((status, BTreeMap::new(), vec![]))
+            Ok(ProbeResponse::new(status, BTreeMap::new(), vec![]))
         })
         .await
         .err()
@@ -816,9 +863,11 @@ async fn collection_round_uses_configured_limit_and_stops_on_rejection() {
 #[tokio::test]
 async fn ordinary_cooldown_does_not_block_other_models_or_new_credentials() {
     let state = configured_state("codex", "oauth");
-    assert!(prepare_with_probe(&state, &plan(), |_| async { Err(()) })
-        .await
-        .is_err());
+    assert!(prepare_with_probe(&state, &plan(), |_| async {
+        Err(ProbeFailure::transport())
+    })
+    .await
+    .is_err());
     assert!(prepare_with_probe(&state, &plan(), unexpected_probe)
         .await
         .is_err());
@@ -870,30 +919,18 @@ async fn collection_settings_use_short_defaults_and_reject_invalid_values() {
 }
 
 #[tokio::test]
-async fn multiple_attempts_share_the_original_twenty_second_budget() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+async fn ordinary_mode_does_not_wait_for_a_missing_state() {
     let state = configured_state("codex", "oauth");
-    let calls = AtomicUsize::new(0);
-    let started = Instant::now();
-    let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async {
-        calls.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_secs(15)).await;
-        Err(())
-    })
+    let prepared = tokio::time::timeout(
+        Duration::from_secs(2),
+        prepare_with_fallback_probe(&state, &plan(), unexpected_probe),
+    )
     .await
+    .expect("ordinary requests must not wait for a collection round")
     .ok()
     .flatten()
     .unwrap();
     assert!(!prepared.injected);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert!(started.elapsed() < Duration::from_secs(23));
-    let lease = state
-        .runtime_state
-        .lock_try_acquire("codex-state:global-collector", "test", LEASE_TTL)
-        .await
-        .unwrap()
-        .expect("round must release global slot");
-    state.runtime_state.lock_release(&lease).await.unwrap();
 }
 
 #[tokio::test]
@@ -906,7 +943,7 @@ async fn configured_cooldown_begins_after_round_finishes() {
     let cooldown = format!("codex-state:cooldown:v2:{}", state_scope(&state, &plan()));
     assert!(prepare_with_probe(&state, &plan(), |_| async {
         assert!(!state.runtime_state.kv_exists(&cooldown).await.unwrap());
-        Err(())
+        Err(ProbeFailure::transport())
     })
     .await
     .is_err());

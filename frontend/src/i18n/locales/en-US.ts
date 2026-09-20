@@ -1,5 +1,10 @@
 export default {
   codexState: {
+    request: { injected: 'State injected', passthrough: 'State not injected', not_applicable: 'State not applicable', failed: 'State handling failed', invalidated: 'State invalidated', unknown: 'State not recorded' },
+    attemptTitle: 'Round attempts', attempt: 'Attempt {count}/{limit}', elapsed: '{seconds} seconds', phaseTitle: 'Last phase', returnedTitle: 'Returned State',
+    phase: { unknown: 'Phase not recorded', dispatch: 'Connecting / waiting for headers', first_byte: 'Waiting for response body', completion: 'Waiting for completion', validation: 'Validating result', revalidation: 'Checking account and egress' },
+    returned: { qualified: 'Qualified', missing_state: 'Missing', invalid_structure: 'Invalid structure', wrong_blocks: 'Account type mismatch', future_state: 'Invalid issue time', expired_state: 'Expired or expiring' },
+
     pool: { column: 'State', unobserved: 'No collection records', partial: '{ready}/{total} usable', use: { injected: 'Last request: injected', passthrough: 'Last request: not injected', invalidated: 'Response state invalid' } },
     overview: {
       title: 'Codex State', description: 'Collection and injection across all Codex OAuth accounts. Select an account for model and egress details.',
@@ -16,9 +21,9 @@ export default {
     none: 'No record', lastProbe: 'Last collection', lastUse: 'Last regular request', expires: 'State usable until', cooldown: 'Next collection eligible',
     seconds: 'In about {count} seconds', retryAt: 'Account rate limited until', authRejected: 'Current credentials rejected upstream', snapshot: 'Read at {time} · Up to 24 model / route combinations from the last 24 hours',
     history: 'Historical record', showHistory: 'Show history ({count})', hideHistory: 'Hide history',
-    status: { unobserved_current: 'No collection on current egress', collection_failed: 'Collection failed', credential_changed: 'Credentials replaced', egress_changed: 'Egress changed', account_disabled: 'Account or endpoint disabled', credential_expired: 'Credentials expired', disabled: 'Disabled', configuration_changed: 'Historical configuration changed', rate_limited: 'Rate limited', auth_rejected: 'Authentication rejected', ready: 'Qualified state available', cooldown: 'Waiting to collect', unavailable: 'No qualified state' },
+    status: { collecting: 'Collecting', unobserved_current: 'No collection on current egress', collection_failed: 'Collection failed', credential_changed: 'Credentials replaced', egress_changed: 'Egress changed', account_disabled: 'Account or endpoint disabled', credential_expired: 'Credentials expired', disabled: 'Disabled', configuration_changed: 'Historical configuration changed', rate_limited: 'Rate limited', auth_rejected: 'Authentication rejected', ready: 'Qualified state available', cooldown: 'Waiting to collect', unavailable: 'No qualified state' },
     egress: { direct: 'Direct from app instance', local_proxy: 'Instance local proxy', shared_proxy: 'Shared proxy / Tunnel' },
-    probe: { accepted: 'Qualified state collected', missing_state: 'No state returned', invalid_state: 'Invalid state shape or lifetime', upstream_error: 'Probe did not complete successfully', timeout: 'Collection timed out', transport_error: 'Collection execution failed', unknown: 'No detailed reason' },
+    probe: { interrupted: 'Collection interrupted; awaiting retry', collecting: 'Collecting', dispatch_error: 'Connection or dispatch failed', read_error: 'Response read interrupted', missing_completion: 'Response ended without completion', invalid_response: 'Invalid response format', body_too_large: 'Probe response too large', configuration_changed: 'Account or egress changed; collection cancelled', revalidation_error: 'Account or egress revalidation failed', accepted: 'Qualified state collected', missing_state: 'No state returned', invalid_state: 'Invalid state shape or lifetime', upstream_error: 'Probe did not complete successfully', timeout: 'Collection timed out', transport_error: 'Collection execution failed', unknown: 'No detailed reason' },
     use: { injected: 'State injected', passthrough: 'Forwarded without injection', invalidated: 'Response stopped after invalid state' },
   },
 

@@ -284,6 +284,7 @@
           </div>
         </div>
 
+        <UsageStateLabel v-if="isAdmin" :value="record.codex_turn_state" class="mt-1" />
         <!-- 第二行：状态 | 时间 | API格式 | 耗时 | Tokens -->
         <div class="flex items-center justify-between text-[11px] text-muted-foreground mt-1 leading-4">
           <div class="flex items-center gap-1.5">
@@ -894,6 +895,7 @@
             >
               {{ translateStreamMode(getStreamModeLabel(record)) }}
             </Badge>
+            <UsageStateLabel v-if="isAdmin" :value="record.codex_turn_state" class="mt-1" />
           </TableCell>
           <TableCell v-if="isColumnVisible('tokens')" class="py-4 align-top">
             <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-x-1 text-xs leading-tight tabular-nums">
@@ -1051,6 +1053,7 @@
 </template>
 
 <script setup lang="ts">
+import UsageStateLabel from './UsageStateLabel.vue'
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDebounceFn, useLocalStorage } from '@vueuse/core'

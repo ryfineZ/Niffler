@@ -3,6 +3,8 @@ pub(crate) mod background;
 pub(crate) mod compact_route;
 pub(crate) mod diagnostics;
 mod policy;
+mod probe;
+use probe::{probe_once, ProbeFailure, ProbeObservation, ProbeResponse, ProbeResult};
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -170,6 +172,14 @@ fn header<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> &'a str {
 }
 pub(crate) fn strip(headers: &mut BTreeMap<String, String>) {
     headers.retain(|k, _| !k.eq_ignore_ascii_case(HEADER));
+}
+/// 清除上游伪造的本地诊断标记；实际注入路径随后重写可信结果。
+pub(super) fn mark_unmanaged(headers: &mut BTreeMap<String, String>) {
+    headers.retain(|key, _| {
+        !key.eq_ignore_ascii_case("x-niffler-turn-state")
+            && !key.eq_ignore_ascii_case("x-niffler-state-returned")
+    });
+    headers.insert("x-niffler-turn-state".into(), "not_applicable".into());
 }
 pub(crate) fn scrub_context(value: &mut Value) {
     match value {
@@ -379,7 +389,13 @@ where
     let fallback = fallback_mode(state).await?;
     let result = tokio::time::timeout(
         Duration::from_secs(25),
-        prepare_with_probe(state, original, probe),
+        prepare_with_probe_options(
+            state,
+            original,
+            probe,
+            true,
+            fallback == FallbackMode::Strict,
+        ),
     )
     .await
     .unwrap_or_else(|_| Err(StateError::unavailable()));
@@ -446,8 +462,7 @@ async fn prepare_passthrough(
     }))
 }
 
-type ProbeResult = Result<(u16, BTreeMap<String, String>, Vec<u8>), ()>;
-
+#[cfg(test)]
 async fn prepare_with_probe<F, Fut>(
     state: &AppState,
     original: &ExecutionPlan,
@@ -465,6 +480,20 @@ async fn prepare_with_probe_mode<F, Fut>(
     original: &ExecutionPlan,
     probe: F,
     activate_binding: bool,
+) -> Result<Option<Prepared>, StateError>
+where
+    F: Fn(ExecutionPlan) -> Fut,
+    Fut: Future<Output = ProbeResult>,
+{
+    prepare_with_probe_options(state, original, probe, activate_binding, true).await
+}
+
+async fn prepare_with_probe_options<F, Fut>(
+    state: &AppState,
+    original: &ExecutionPlan,
+    probe: F,
+    activate_binding: bool,
+    collect_missing: bool,
 ) -> Result<Option<Prepared>, StateError>
 where
     F: Fn(ExecutionPlan) -> Fut,
@@ -553,6 +582,9 @@ where
                 .await
                 .map_err(|_| StateError::runtime())?;
         }
+        if !collect_missing {
+            return Err(StateError::unavailable());
+        }
         let lock_key = format!("codex-state:collect:{account_key}");
         let Some(lease) = state
             .runtime_state
@@ -560,24 +592,28 @@ where
             .await
             .map_err(|_| StateError::runtime())?
         else {
-            if Instant::now() >= deadline {
+            if !activate_binding || Instant::now() >= deadline {
                 return Err(StateError::unavailable());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
         // 采集租约也限定取消后的残留时间；发布原子校验所有者。
-        let result = collect(
+        let result = with_lease(
             state,
-            original,
-            &scope,
-            &account_key,
-            &guard_key,
-            &credential,
-            blocks,
-            &cache_key,
             &lease,
-            &probe,
+            collect(
+                state,
+                original,
+                &scope,
+                &account_key,
+                &guard_key,
+                &credential,
+                blocks,
+                &cache_key,
+                &lease,
+                &probe,
+            ),
         )
         .await;
         let released = state.runtime_state.lock_release(&lease).await;
@@ -745,78 +781,94 @@ where
     {
         return Err(StateError::unavailable());
     }
-    let Some(global) = state
+    let attempts = collection_setting(state, ATTEMPTS_CONFIG_KEY, 3, 1, 6).await?;
+    let cooldown_seconds = collection_setting(state, COOLDOWN_CONFIG_KEY, 30, 30, 3600).await?;
+    let round = uuid::Uuid::new_v4().to_string();
+    let result = async {
+        for attempt in 1..=attempts {
+            if attempt > 1 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            if !enabled(state).await? {
+                return Err(StateError::unavailable());
+            }
+            check_guard(state, guard_key, credential).await?;
+            // 全局槽每次尝试释放，其他活跃账号可在轮内获得机会。
+            let global = loop {
+                if let Some(global) = state
+                    .runtime_state
+                    .lock_try_acquire(
+                        "codex-state:global-collector",
+                        state.tunnel.local_instance_id(),
+                        LEASE_TTL,
+                    )
+                    .await
+                    .map_err(|_| StateError::runtime())?
+                {
+                    break global;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            };
+            let result = with_lease(
+                state,
+                &global,
+                collect_attempt(
+                    state, plan, scope, guard_key, credential, blocks, cache_key, lease, &round,
+                    attempt, attempts, run_probe,
+                ),
+            )
+            .await;
+            state
+                .runtime_state
+                .lock_release(&global)
+                .await
+                .map_err(|_| StateError::runtime())?;
+            match result {
+                Err(error) if error.is_unavailable() => {}
+                result => return result,
+            }
+        }
+        Err(StateError::unavailable())
+    }
+    .await;
+    if !state
         .runtime_state
-        .lock_try_acquire(
-            "codex-state:global-collector",
-            state.tunnel.local_instance_id(),
-            LEASE_TTL,
+        .kv_set_if_lock_owned(
+            lease,
+            &cooldown,
+            "finished",
+            Duration::from_secs(cooldown_seconds),
         )
         .await
         .map_err(|_| StateError::runtime())?
-    else {
-        return Err(StateError::unavailable());
-    };
-    let result = async {
-        let attempts = collection_setting(state, ATTEMPTS_CONFIG_KEY, 3, 1, 6).await?;
-        let cooldown_seconds = collection_setting(state, COOLDOWN_CONFIG_KEY, 30, 30, 3600).await?;
-        let probe_deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
-        let result = async {
-            for attempt in 0..attempts {
-                if attempt > 0 {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-                if tokio::time::Instant::now() >= probe_deadline || !enabled(state).await? {
-                    return Err(StateError::unavailable());
-                }
-                check_guard(state, guard_key, credential).await?;
-                match collect_attempt(
-                    state,
-                    plan,
-                    scope,
-                    guard_key,
-                    credential,
-                    blocks,
-                    cache_key,
-                    lease,
-                    probe_deadline,
-                    run_probe,
-                )
-                .await
-                {
-                    Err(error) if error.is_unavailable() => {}
-                    result => return result,
-                }
-            }
-            Err(StateError::unavailable())
-        }
-        .await;
-        // 从整轮结束计算间隔；并发和取消由共享租约兜底。
-        if !state
-            .runtime_state
-            .kv_set_if_lock_owned(
-                lease,
-                &cooldown,
-                "finished",
-                Duration::from_secs(cooldown_seconds),
-            )
-            .await
-            .map_err(|_| StateError::runtime())?
-        {
-            return Err(StateError::unavailable());
-        }
-        result
+    {
+        return Err(StateError::runtime());
     }
-    .await;
-    state
-        .runtime_state
-        .lock_release(&global)
-        .await
-        .map_err(|_| StateError::runtime())?;
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+/// 续期与工作共享生命周期；取消后不留下独立心跳，失去所有权立即丢弃工作。
+async fn with_lease<T>(
+    state: &AppState,
+    lease: &aether_runtime_state::RuntimeLockLease,
+    work: impl Future<Output = Result<T, StateError>>,
+) -> Result<T, StateError> {
+    tokio::pin!(work);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut work => return result,
+            _ = heartbeat.tick() => {
+                if !enabled(state).await? { return Err(StateError::unavailable()); }
+                let renewed = tokio::time::timeout(Duration::from_secs(3), state.runtime_state.lock_renew(lease, LEASE_TTL))
+                    .await.map_err(|_| StateError::runtime())?.map_err(|_| StateError::runtime())?;
+                if !renewed { return Err(StateError::runtime()); }
+            }
+        }
+    }
+}
+
 async fn collect_attempt<F, Fut>(
     state: &AppState,
     plan: &ExecutionPlan,
@@ -826,7 +878,9 @@ async fn collect_attempt<F, Fut>(
     blocks: usize,
     cache_key: &str,
     lease: &aether_runtime_state::RuntimeLockLease,
-    probe_deadline: tokio::time::Instant,
+    round: &str,
+    attempt: u64,
+    attempts: u64,
     run_probe: &F,
 ) -> Result<(), StateError>
 where
@@ -834,19 +888,60 @@ where
     Fut: Future<Output = ProbeResult>,
 {
     let probe = probe_plan(plan);
-    let outcome = tokio::time::timeout_at(probe_deadline, run_probe(probe)).await;
-    let (status, headers, body) = match outcome {
+    let started = Instant::now();
+    record_probe(
+        state,
+        scope,
+        0,
+        Value::Null,
+        false,
+        "collecting",
+        &ProbeObservation::default(),
+        round,
+        attempt,
+        attempts,
+    )
+    .await;
+    let outcome =
+        tokio::time::timeout(PROBE_TIMEOUT + Duration::from_secs(1), run_probe(probe)).await;
+    let ProbeResponse {
+        status,
+        headers,
+        body,
+        mut observation,
+    } = match outcome {
         Ok(Ok(value)) => value,
         failure => {
-            let reason = if failure.is_err() {
-                "timeout"
-            } else {
-                "transport_error"
+            let failure = match failure {
+                Ok(Err(failure)) => failure,
+                _ => ProbeFailure {
+                    reason: "timeout",
+                    observation: ProbeObservation {
+                        phase: "unknown",
+                        ..Default::default()
+                    },
+                },
             };
-            record_probe(state, scope, 0, Value::Null, false, reason).await;
+            let mut observation = failure.observation;
+            observation.elapsed_ms = started.elapsed().as_millis() as u64;
+            record_probe(
+                state,
+                scope,
+                observation.http_status,
+                Value::Null,
+                false,
+                failure.reason,
+                &observation,
+                round,
+                attempt,
+                attempts,
+            )
+            .await;
             return Err(StateError::unavailable());
         }
     };
+    observation.elapsed_ms = started.elapsed().as_millis() as u64;
+    observation.returned_state = policy::state_reason(header(&headers, HEADER), blocks, now());
     let parsed = if status == 200 {
         policy::probe_outcome(&body)
     } else {
@@ -854,6 +949,7 @@ where
     };
     let final_status = parsed.as_ref().err().copied().unwrap_or(status);
     reject(state, guard_key, credential, final_status, &headers).await?;
+    observation.completed = parsed.is_ok();
     let accepted = parsed.is_ok() && policy::accepts(header(&headers, HEADER), blocks, now());
     let reason = if parsed.is_err() {
         "upstream_error"
@@ -871,6 +967,10 @@ where
         parsed.unwrap_or(Value::Null),
         accepted,
         reason,
+        &observation,
+        round,
+        attempt,
+        attempts,
     )
     .await;
     if matches!(final_status, 401 | 403 | 429) {
@@ -909,6 +1009,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_probe(
     state: &AppState,
     scope: &str,
@@ -916,9 +1017,13 @@ async fn record_probe(
     usage: Value,
     accepted: bool,
     reason: &str,
+    observation: &ProbeObservation,
+    round: &str,
+    attempt: u64,
+    attempts: u64,
 ) {
-    let record = json!({"purpose":"codex_state_probe","status":status,"usage":usage,"accepted":accepted,"reason":reason,"at":now(),"customer_billed":false,"upstream_usage_unknown":usage.is_null()});
-    tracing::info!(event_name="codex_state_probe_finished",scope,status,accepted,usage=%usage,"Codex state 维护探测结束；不计入客户账单");
+    let record = json!({"purpose":"codex_state_probe","status":status,"usage":usage,"accepted":accepted,"reason":reason,"at":now(),"customer_billed":false,"upstream_usage_unknown":usage.is_null(),"observation":observation,"round":round,"attempt":attempt,"attempt_limit":attempts});
+    tracing::info!(event_name="codex_state_probe_finished",scope,status,accepted,reason,attempt,attempts,phase=observation.phase,elapsed_ms=observation.elapsed_ms,usage=%usage,"Codex state 维护探测结束；不计入客户账单");
     if state
         .runtime_state
         .kv_set(
@@ -982,56 +1087,6 @@ fn probe_plan(original: &ExecutionPlan) -> ExecutionPlan {
     plan
 }
 
-async fn probe_once(
-    state: &AppState,
-    plan: &ExecutionPlan,
-) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), ()> {
-    let execution = match execute_stream_plan_via_local_tunnel(state, plan)
-        .await
-        .map_err(|_| ())?
-    {
-        Some(value) => value,
-        None => DirectSyncExecutionRuntime::new()
-            .execute_stream(plan)
-            .await
-            .map_err(|_| ())?,
-    };
-    let status = execution.status_code;
-    let headers = execution.headers;
-    if status != 200 {
-        return Ok((status, headers, Vec::new()));
-    }
-    let mut data = Vec::new();
-    match execution.response {
-        DirectUpstreamResponse::Reqwest(response) => {
-            let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                append(&mut data, &chunk.map_err(|_| ())?)?;
-            }
-        }
-        DirectUpstreamResponse::BrowserWreq(response) => {
-            let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                append(&mut data, &chunk.map_err(|_| ())?)?;
-            }
-        }
-        DirectUpstreamResponse::LocalTunnel(mut response) => {
-            while let Some(chunk) = response.next_chunk().await.map_err(|_| ())? {
-                append(&mut data, &chunk)?;
-            }
-        }
-        DirectUpstreamResponse::Buffered(bytes) => append(&mut data, &bytes)?,
-    }
-    Ok((status, headers, data))
-}
-fn append(data: &mut Vec<u8>, chunk: &[u8]) -> Result<(), ()> {
-    if chunk.len() > MAX_PROBE_BYTES.saturating_sub(data.len()) {
-        return Err(());
-    }
-    data.extend_from_slice(chunk);
-    Ok(())
-}
-
 impl Prepared {
     pub(super) async fn observe(
         &self,
@@ -1040,7 +1095,9 @@ impl Prepared {
         headers: &mut BTreeMap<String, String>,
     ) -> Result<(), StateError> {
         let returned = header(headers, HEADER).to_owned();
+        let returned_state = policy::state_reason(&returned, self.blocks, now());
         strip(headers);
+        headers.insert("x-niffler-state-returned".into(), returned_state.into());
         headers.insert(
             "x-niffler-turn-state".into(),
             if self.injected {
@@ -1064,10 +1121,10 @@ impl Prepared {
                 .await
                 .map_err(|_| StateError::runtime().after_dispatch())?;
             tracing::warn!(event_name="codex_state_response_rejected",request_id=%self.plan.request_id,key_id=%self.plan.key_id,upstream_usage_unknown=true,"正式请求已派发，state 失效；停止当前响应且不重放");
-            diagnostics::record_use(state, self, status, true).await;
+            diagnostics::record_use(state, self, status, true, returned_state).await;
             return Err(StateError::shape());
         }
-        diagnostics::record_use(state, self, status, false).await;
+        diagnostics::record_use(state, self, status, false, returned_state).await;
         Ok(())
     }
 }

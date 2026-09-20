@@ -14,8 +14,8 @@ export interface CodexStateObservation {
   retry_until: number | null
   auth_status: number | null
   cooldown_seconds: number
-  last_probe: { at: number; status: number; accepted: boolean; reason: string | null } | null
-  last_use: { at: number; mode: 'injected' | 'passthrough' | 'invalidated'; http_status: number } | null
+  last_probe: { at: number; status: number; accepted: boolean; reason: string | null; attempt?: number; attempt_limit?: number; observation?: { phase: string; elapsed_ms: number; dispatched: boolean | null; headers_ms?: number | null; first_byte_ms?: number | null; completed: boolean; returned_state: string } | null } | null
+  last_use: { at: number; mode: 'injected' | 'passthrough' | 'invalidated'; http_status: number; returned_state?: string } | null
 }
 
 export interface CodexStateDiagnostics {

@@ -201,7 +201,7 @@ async fn legacy_sync_bridge_dispatches_once_with_state_off_and_ignores_state_sha
     assert_eq!(result.status_code, 200);
     assert_eq!(result.headers["x-niffler-compaction"], "v1-to-v2");
     assert!(!result.headers.contains_key("x-codex-turn-state"));
-    assert!(!result.headers.contains_key("x-niffler-turn-state"));
+    assert_eq!(result.headers["x-niffler-turn-state"], "not_applicable");
     assert_eq!(
         result.body.unwrap().json_body.unwrap()["object"],
         "response.compaction"

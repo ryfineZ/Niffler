@@ -106,3 +106,16 @@ it('keeps history collapsed and preserves current rows during refresh', async ()
   props.open = false; await flush()
   expect(signal.aborted).toBe(true)
 })
+
+it('shows the failed phase and preserves the HTTP status after a body timeout', async () => {
+  api.get.mockResolvedValue({ enabled: true, observed_at: 1, items: [{
+    model: 'gpt-6-astra', current: true, egress: 'shared_proxy', status: 'cooldown',
+    cooldown_seconds: 30, last_probe: { at: 1, status: 200, accepted: false, reason: 'timeout', attempt: 2, attempt_limit: 6,
+      observation: { phase: 'completion', elapsed_ms: 20000, dispatched: true, completed: false, returned_state: 'wrong_blocks' } }, last_use: null,
+  }] })
+  const { root } = mount(); await flush()
+  expect(root.textContent).toContain('第 2/6 次')
+  expect(root.textContent).toContain('HTTP 200')
+  expect(root.textContent).toContain('等待生成完成')
+  expect(root.textContent).toContain('与账号类型不匹配')
+})

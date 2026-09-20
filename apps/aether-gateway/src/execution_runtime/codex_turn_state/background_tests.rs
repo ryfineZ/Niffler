@@ -37,7 +37,7 @@ async fn background_collects_active_missing_state_and_skips_healthy_cache() {
 async fn background_retries_after_cooldown_without_another_user_request() {
     let state = configured_state("codex", "oauth");
     remember(&state, &plan()).await.ok().unwrap();
-    tick_with_probe(&state, |_| async { Err(()) })
+    tick_with_probe(&state, |_| async { Err(ProbeFailure::transport()) })
         .await
         .ok()
         .unwrap();
@@ -125,10 +125,12 @@ async fn background_respects_protection_and_does_not_reactivate_idle_sessions() 
         .next()
         .unwrap()
         .last_seen;
-    tick_with_probe(&state, |_| async { Ok((401, BTreeMap::new(), vec![])) })
-        .await
-        .ok()
-        .unwrap();
+    tick_with_probe(&state, |_| async {
+        Ok(ProbeResponse::new(401, BTreeMap::new(), vec![]))
+    })
+    .await
+    .ok()
+    .unwrap();
     tick_with_probe(&state, unexpected_probe)
         .await
         .ok()
@@ -301,7 +303,7 @@ async fn configuration_change_between_attempts_stops_background_dispatch() {
             .upsert_system_config_json_value("system_proxy_node_id", &json!("changed"), None)
             .await
             .unwrap();
-        Err(())
+        Err(ProbeFailure::transport())
     })
     .await
     .ok()
@@ -357,4 +359,132 @@ async fn configuration_ignores_json_object_key_order() {
         configuration(&state, &transport).await.ok().unwrap(),
         before
     );
+}
+
+#[tokio::test]
+async fn first_timeout_leaves_a_full_second_attempt_and_renews_account_lease() {
+    let state = configured_state("codex", "oauth");
+    remember(&state, &plan()).await.ok().unwrap();
+    let calls = AtomicUsize::new(0);
+    tick_with_probe(&state, |_| async {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::future::pending::<ProbeResult>().await
+        } else {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            success()
+        }
+    })
+    .await
+    .ok()
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let prepared = prepare_with_fallback_probe(&state, &plan(), unexpected_probe)
+        .await
+        .ok()
+        .flatten()
+        .unwrap();
+    assert!(
+        prepared.injected,
+        "a round longer than the original lease must publish safely"
+    );
+    let snapshot = diagnostics::read(&state, "provider", "account-a")
+        .await
+        .ok()
+        .unwrap();
+    assert_eq!(snapshot["items"][0]["last_probe"]["attempt"], 2);
+    assert_eq!(snapshot["items"][0]["last_probe"]["accepted"], true);
+    assert!(state
+        .runtime_state
+        .lock_try_acquire("codex-state:global-collector", "after-round", LEASE_TTL)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn cancelled_owner_cannot_publish_a_late_candidate() {
+    let state = configured_state("codex", "oauth");
+    let lease = state
+        .runtime_state
+        .lock_try_acquire("lost-lease", "old", LEASE_TTL)
+        .await
+        .unwrap()
+        .unwrap();
+    state.runtime_state.lock_release(&lease).await.unwrap();
+    let newer = state
+        .runtime_state
+        .lock_try_acquire("lost-lease", "new", LEASE_TTL)
+        .await
+        .unwrap()
+        .unwrap();
+    let result = with_lease(&state, &lease, async {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok(())
+    })
+    .await;
+    assert!(result.is_err());
+    assert!(state
+        .runtime_state
+        .lock_renew(&newer, LEASE_TTL)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn healthy_or_cooling_sessions_do_not_starve_a_missing_session_after_the_batch_limit() {
+    for cooling in [false, true] {
+        let state = configured_state("codex", "oauth");
+        let mut plans = Vec::new();
+        for i in 0..5 {
+            let mut p = plan();
+            p.proxy = Some(
+                serde_json::from_value(
+                    json!({"enabled":true,"url":format!("http://proxy-{i}.example:18080")}),
+                )
+                .unwrap(),
+            );
+            remember(&state, &p).await.ok().unwrap();
+            if i < 4 {
+                if cooling {
+                    state
+                        .runtime_state
+                        .kv_set(
+                            &format!("codex-state:cooldown:v2:{}", state_scope(&state, &p)),
+                            "finished",
+                            Some(Duration::from_secs(3600)),
+                        )
+                        .await
+                        .unwrap();
+                } else {
+                    prepare_with_probe(&state, &p, |_| async { success() })
+                        .await
+                        .ok()
+                        .unwrap();
+                }
+            }
+            plans.push(p);
+        }
+        {
+            let mut sessions = state.codex_turn_state_sessions.0.lock().unwrap();
+            for (i, p) in plans.iter().enumerate() {
+                sessions
+                    .get_mut(&state_scope(&state, p))
+                    .unwrap()
+                    .last_checked = Instant::now() - Duration::from_secs(10 - i as u64);
+            }
+        }
+        tick_with_probe(&state, unexpected_probe)
+            .await
+            .ok()
+            .unwrap();
+        let calls = AtomicUsize::new(0);
+        tick_with_probe(&state, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            success()
+        })
+        .await
+        .ok()
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

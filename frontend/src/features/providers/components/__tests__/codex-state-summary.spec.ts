@@ -35,3 +35,7 @@ describe('current egress summary', () => {
     }
   })
 })
+
+it('shows a running attempt without changing it into collection failure', () => {
+  expect(summary([{ ...item, status: 'unavailable', last_probe: { at: 1, status: 0, accepted: false, reason: 'collecting', attempt: 2, attempt_limit: 6 } }]).status).toBe('collecting')
+})
