@@ -1,9 +1,11 @@
 //! Codex OAuth 同出口 state 管理。秘密只存在于临时派发计划和加密缓存中。
 pub(crate) mod background;
+mod catalog;
 pub(crate) mod compact_route;
 pub(crate) mod diagnostics;
 pub(crate) mod passive;
 mod policy;
+pub(crate) mod priority;
 mod probe;
 use probe::{probe_once, ProbeFailure, ProbeObservation, ProbeResponse, ProbeResult};
 
@@ -35,6 +37,7 @@ pub(crate) const HEADER: &str = "x-codex-turn-state";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const LEASE_TTL: Duration = Duration::from_secs(30);
 const MAX_PROBE_BYTES: usize = 1024 * 1024;
+const MODELS: [&str; 3] = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"];
 
 #[derive(Clone, Copy)]
 pub(crate) struct StateError {
@@ -560,6 +563,9 @@ where
             let cached: Cached =
                 serde_json::from_str(&plaintext).map_err(|_| StateError::runtime())?;
             if policy::accepts(&cached.token, blocks, now()) {
+                if !activate_binding {
+                    priority::remember(state, original, &cached).await;
+                }
                 // 只有实际生成请求选择 state 时才更新 Compact 出口索引；后台不能抢占。
                 if activate_binding {
                     compact_route::remember(state, original, &transport, &cache_key, &cached)
@@ -1001,7 +1007,9 @@ where
         version: uuid::Uuid::new_v4().to_string(),
         source: Some("probe".into()),
     };
-    publish_cache(state, lease, cache_key, &cache).await
+    publish_cache(state, lease, cache_key, &cache).await?;
+    priority::remember(state, plan, &cache).await;
+    Ok(())
 }
 
 async fn publish_cache(

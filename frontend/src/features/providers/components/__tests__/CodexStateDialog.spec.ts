@@ -34,7 +34,7 @@ describe('CodexStateDialog', () => {
     expect(root.querySelector('button')?.disabled).toBe(true)
     resolve({ enabled: true, observed_at: 1, items: [] })
     await flush()
-    expect(root.textContent).toContain('暂无观测')
+    expect(root.textContent).toContain('暂无采集记录')
     expect(api.get).toHaveBeenCalledWith('provider', 'account', { signal: expect.any(AbortSignal) })
   })
 

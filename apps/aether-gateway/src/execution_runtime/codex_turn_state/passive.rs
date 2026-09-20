@@ -155,6 +155,7 @@ impl Candidate {
                 source: Some("response".into()),
             };
             publish_cache(state, &lease, &cache_key, &cache).await?;
+            priority::remember(state, plan, &cache).await;
             Ok("saved")
         }
         .await;

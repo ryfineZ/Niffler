@@ -1,4 +1,4 @@
-//! 每个 Frontdoor 仅为本实例最近活跃的普通生成会话补采。
+//! 每个 Frontdoor 为启用账号及最近活跃的普通生成会话补采。
 use super::*;
 use crate::provider_transport::oauth_refresh::LocalOAuthRefreshAdapter;
 use crate::provider_transport::{
@@ -13,6 +13,7 @@ const MAX_SESSIONS: usize = 1024;
 
 #[derive(Clone)]
 struct Session {
+    catalog: bool,
     encrypted_plan: String,
     configuration: String,
     last_seen: Instant,
@@ -123,6 +124,36 @@ pub(super) async fn remember_with_transport(
     plan: &ExecutionPlan,
     transport: &GatewayProviderTransportSnapshot,
 ) -> Result<(), StateError> {
+    remember_origin(state, plan, transport, false).await
+}
+
+pub(super) async fn remember_catalog(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    transport: &GatewayProviderTransportSnapshot,
+) -> Result<(), StateError> {
+    remember_origin(state, plan, transport, true).await
+}
+
+pub(super) fn retain_catalog(
+    state: &AppState,
+    scopes: &std::collections::HashSet<String>,
+) -> Result<(), StateError> {
+    state
+        .codex_turn_state_sessions
+        .0
+        .lock()
+        .map_err(|_| StateError::runtime())?
+        .retain(|scope, session| !session.catalog || scopes.contains(scope));
+    Ok(())
+}
+
+async fn remember_origin(
+    state: &AppState,
+    plan: &ExecutionPlan,
+    transport: &GatewayProviderTransportSnapshot,
+    catalog: bool,
+) -> Result<(), StateError> {
     if !transport
         .provider
         .provider_type
@@ -144,12 +175,13 @@ pub(super) async fn remember_with_transport(
         .0
         .lock()
         .map_err(|_| StateError::runtime())?;
-    sessions.retain(|_, s| s.last_seen.elapsed() < ACTIVE_FOR);
+    sessions.retain(|_, s| s.catalog || s.last_seen.elapsed() < ACTIVE_FOR);
     if let Some(session) = sessions
         .get_mut(&scope)
         .filter(|s| s.configuration == configuration)
     {
         session.last_seen = Instant::now();
+        session.catalog |= catalog;
         return Ok(());
     }
     let encrypted_plan = encrypt_python_fernet_plaintext(
@@ -157,9 +189,10 @@ pub(super) async fn remember_with_transport(
         &serde_json::to_string(&probe_plan(plan)).map_err(|_| StateError::runtime())?,
     )
     .map_err(|_| StateError::runtime())?;
-    if sessions.len() >= MAX_SESSIONS {
+    if !catalog && sessions.values().filter(|s| !s.catalog).count() >= MAX_SESSIONS {
         if let Some(oldest) = sessions
             .iter()
+            .filter(|(_, s)| !s.catalog)
             .min_by_key(|(_, s)| s.last_seen)
             .map(|(id, _)| id.clone())
         {
@@ -169,6 +202,7 @@ pub(super) async fn remember_with_transport(
     sessions.insert(
         scope,
         Session {
+            catalog,
             encrypted_plan,
             configuration,
             last_seen: Instant::now(),
@@ -255,7 +289,7 @@ where
             .0
             .lock()
             .map_err(|_| StateError::runtime())?;
-        sessions.retain(|_, s| s.last_seen.elapsed() < ACTIVE_FOR);
+        sessions.retain(|_, s| s.catalog || s.last_seen.elapsed() < ACTIVE_FOR);
         sessions
             .iter()
             .map(|(id, s)| (id.clone(), s.clone()))
@@ -285,7 +319,7 @@ where
     F: Fn(ExecutionPlan) -> Fut,
     Fut: Future<Output = ProbeResult>,
 {
-    if session.last_seen.elapsed() >= ACTIVE_FOR || !enabled(state).await? {
+    if (!session.catalog && session.last_seen.elapsed() >= ACTIVE_FOR) || !enabled(state).await? {
         return Ok(());
     }
     // 包括冷却和账号保护在内，检查过的会话都轮转，避免占满每批名额。
@@ -384,8 +418,15 @@ where
 pub(crate) async fn run(state: AppState) {
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut discovered_at = None::<Instant>;
     loop {
         ticker.tick().await;
+        if discovered_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
+            if Box::pin(catalog::discover(&state)).await.is_err() {
+                tracing::warn!(event_name = "codex_state_catalog_discovery_failed");
+            }
+            discovered_at = Some(Instant::now());
+        }
         if tick_with_probe(&state, |plan| {
             let state = &state;
             async move { probe_once(state, &plan).await }

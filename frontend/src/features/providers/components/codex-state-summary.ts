@@ -24,6 +24,7 @@ export function summarizeCodexState(account: Pick<CodexStateAccount, 'diagnostic
     if (items.some(item => item.last_probe?.reason === 'collecting')) return 'collecting'
     if (failed) return 'collection_failed'
     if (items.some(item => item.status === 'cooldown')) return 'cooldown'
+    if (items.some(item => item.status === 'queued')) return 'queued'
     if (items.length) return 'unavailable'
     if (!history.length) return 'unobserved'
     if (history.every(item => item.status === 'account_disabled')) return 'account_disabled'
@@ -32,6 +33,7 @@ export function summarizeCodexState(account: Pick<CodexStateAccount, 'diagnostic
   }
   return {
     status: status(), ready, total: items.length, history,
+    readyModels: [...new Set(items.filter(item => item.status === 'ready').map(item => item.model))],
     warnings: ready > 0 ? ['auth_rejected', 'rate_limited'].filter(status => items.some(item => item.status === status)) : [],
     probe: latest('last_probe'), use: account.read_failed ? null : latest('last_use'),
   }
