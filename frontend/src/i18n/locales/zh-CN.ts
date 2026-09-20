@@ -1,5 +1,6 @@
 export default {
   codexState: {
+    pool: { column: 'State', unobserved: '暂无采集记录', partial: '{ready}/{total} 可用', use: { injected: '最近已注入', passthrough: '最近未注入', invalidated: '回包 state 失效' } },
     overview: {
       title: 'Codex State', description: '所有 Codex OAuth 账号的采集与注入状态，点击账号查看模型和出口明细。',
       refresh: '刷新状态', search: '搜索账号或 Provider', snapshot: '状态快照 · {time}',

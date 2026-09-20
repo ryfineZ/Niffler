@@ -648,6 +648,13 @@
                 >
                   {{ t('poolManagement.account') }}
                 </SortableTableHead>
+                <TableHead
+                  v-if="selectedProviderType === 'codex'"
+                  class="w-px whitespace-nowrap"
+                  data-testid="pool-state-heading"
+                >
+                  {{ t('codexState.pool.column') }}
+                </TableHead>
                 <SortableTableHead
                   v-if="showAccountQuotaColumn"
                   data-testid="pool-account-quota-heading"
@@ -859,6 +866,17 @@
                       </Badge>
                     </div>
                   </div>
+                </TableCell>
+                <TableCell
+                  v-if="selectedProviderType === 'codex'"
+                  class="w-px py-3 align-middle"
+                >
+                  <PoolCodexStateCell
+                    :state="codexStates[key.key_id]"
+                    :name="getPoolAccountDisplayName(key)"
+                    :eligible="key.auth_type.toLowerCase() === 'oauth'"
+                    @details="codexStateDetails = key"
+                  />
                 </TableCell>
                 <TableCell
                   v-if="showAccountQuotaColumn"
@@ -1266,6 +1284,18 @@
                 </button>
               </div>
 
+              <div
+                v-if="selectedProviderType === 'codex'"
+                class="flex items-center gap-2"
+              >
+                <span class="text-xs text-muted-foreground">{{ t('codexState.pool.column') }}</span>
+                <PoolCodexStateCell
+                  :state="codexStates[key.key_id]"
+                  :name="getPoolAccountDisplayName(key)"
+                  :eligible="key.auth_type.toLowerCase() === 'oauth'"
+                  @details="codexStateDetails = key"
+                />
+              </div>
               <PoolCapacityBadge
                 :capacity="key.capacity"
                 @details="capacityDetailsAccount = key"
@@ -1771,6 +1801,14 @@
       </template>
     </Card>
 
+    <CodexStateDialog
+      v-if="codexStateDetails && selectedProviderId"
+      :open="true"
+      :provider-id="selectedProviderId"
+      :key-id="codexStateDetails.key_id"
+      :key-name="getPoolAccountDisplayName(codexStateDetails)"
+      @update:open="value => { if (!value) codexStateDetails = null }"
+    />
     <PoolCapacityDetails
       :account="capacityDetailsAccount"
       @close="capacityDetailsAccount = null"
@@ -1862,6 +1900,9 @@
 </template>
 
 <script setup lang="ts">
+import PoolCodexStateCell from '@/features/pool/components/PoolCodexStateCell.vue'
+import CodexStateDialog from '@/features/providers/components/CodexStateDialog.vue'
+import { usePoolCodexState } from '@/features/pool/composables/usePoolCodexState'
 import PoolCapacityBadge from '@/features/pool/components/PoolCapacityBadge.vue'
 import PoolCapacityDetails from '@/features/pool/components/PoolCapacityDetails.vue'
 
@@ -2629,6 +2670,9 @@ function createEmptyKeyPage(page = 1, pageSizeValue = 50): PoolKeysPageResponse 
 }
 
 const keyPage = ref<PoolKeysPageResponse>(createEmptyKeyPage())
+const codexStateDetails = ref<PoolKeyDetail | null>(null)
+const codexStates = usePoolCodexState(selectedProviderId, selectedProviderType, computed(() => keyPage.value.keys))
+watch(selectedProviderId, () => { codexStateDetails.value = null })
 const keysLoading = ref(false)
 const keysLoadedOnce = ref(false)
 const keysLoadError = ref('')
