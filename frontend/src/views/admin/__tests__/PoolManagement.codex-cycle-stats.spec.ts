@@ -662,27 +662,30 @@ describe('PoolManagement Codex cycle stats mode', () => {
   it('shows each OAuth account state in its own row and opens that account details', async () => {
     endpointMocks.getPoolOverview.mockResolvedValue({ items: [createOverview('codex')] })
     endpointMocks.getProvider.mockResolvedValue(createProvider('codex'))
-    const keys = ['ready', 'empty', 'failed', 'api-key'].map(key_id => createPoolKey('codex', {
+    const keys = ['ready', 'empty', 'failed', 'queued', 'api-key'].map(key_id => createPoolKey('codex', {
       key_id, key_name: key_id, auth_type: key_id === 'api-key' ? 'api_key' : 'oauth',
     }))
     endpointMocks.listPoolKeys.mockResolvedValue({ total: keys.length, page: 1, page_size: 50, keys })
     endpointMocks.getCodexStateDiagnostics.mockImplementation(async (_provider, keyId) => {
       if (keyId === 'failed') throw new Error('offline')
       return { enabled: true, observed_at: 1, items: keyId === 'ready' ? [
-        { status: 'ready', model: 'gpt-5.4', last_use: { at: 1, mode: 'injected' } },
-        { status: 'unavailable', model: 'gpt-5.5', last_use: null },
-      ] : [] }
+        { status: 'ready', model: 'gpt-5.6-sol', last_use: { at: 1, mode: 'injected' } },
+        { status: 'unavailable', model: 'gpt-6-astra', last_use: null },
+      ] : keyId === 'queued' ? [{ status: 'queued', model: 'gpt-5.6-sol', last_use: null }] : [] }
     })
     const root = mountPoolManagement()
     await settle()
     const table = root.querySelector('[data-testid="pool-accounts-desktop-table"]')!
     const rows = [...table.querySelectorAll('tbody tr')]
-    expect(rows[0]?.textContent).toContain('1/2 可用')
+    expect(rows[0]?.textContent).toContain('可优先使用')
+    expect(rows[0]?.textContent).toContain('gpt-5.6-sol')
+    expect(rows[0]?.textContent).not.toContain('gpt-6-astra')
     expect(rows[0]?.textContent).toContain('最近已注入')
     expect(rows[1]?.textContent).toContain('暂无采集记录')
     expect(rows[2]?.textContent).toContain('读取失败')
-    expect(rows[3]?.querySelector('[data-testid="pool-codex-state"]')).toBeNull()
-    expect(endpointMocks.getCodexStateDiagnostics.mock.calls.map(call => call[1])).toEqual(['ready', 'empty', 'failed'])
+    expect(rows[3]?.textContent).toContain('待采集')
+    expect(rows[4]?.querySelector('[data-testid="pool-codex-state"]')).toBeNull()
+    expect(endpointMocks.getCodexStateDiagnostics.mock.calls.map(call => call[1])).toEqual(['ready', 'empty', 'failed', 'queued'])
     rows[0]?.querySelector<HTMLButtonElement>('[data-testid="pool-codex-state"]')?.click()
     await settle()
     expect(root.querySelector('[data-testid="state-dialog"]')?.textContent).toBe('codex-provider/ready')
