@@ -1,12 +1,15 @@
 import client from '../client'
 
 export interface CodexStateObservation {
+  id?: string
   model: string
   egress: 'direct' | 'local_proxy' | 'shared_proxy'
   node_id: string | null
   instance: string | null
   last_seen_at: number
-  status: 'disabled' | 'configuration_changed' | 'rate_limited' | 'auth_rejected' | 'ready' | 'cooldown' | 'unavailable'
+  /** Absent on older servers; infer from historical statuses during rollout. */
+  current?: boolean
+  status: 'credential_changed' | 'egress_changed' | 'account_disabled' | 'credential_expired' | 'disabled' | 'configuration_changed' | 'rate_limited' | 'auth_rejected' | 'ready' | 'cooldown' | 'unavailable'
   expires_at: number | null
   retry_until: number | null
   auth_status: number | null

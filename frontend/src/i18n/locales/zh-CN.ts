@@ -15,9 +15,10 @@ export default {
     empty: '最近 24 小时暂无观测。此账号收到支持模型的普通请求后才会开始记录；打开面板不会触发采集。',
     none: '暂无记录', lastProbe: '最近采集', lastUse: '最近正式请求', expires: 'State 可用至', cooldown: '下一轮采集最早可重试',
     seconds: '约 {count} 秒后', retryAt: '账号限流至', authRejected: '当前凭据被上游拒绝', snapshot: '读取于 {time} · 保留最近 24 小时最多 24 个模型 / 出口组合',
-    status: { disabled: '功能关闭', configuration_changed: '凭据或配置已变化', rate_limited: '账号限流', auth_rejected: '认证拒绝', ready: '有合格 state', cooldown: '等待补采', unavailable: '暂无合格 state' },
+    history: '历史记录', showHistory: '查看历史记录（{count}）', hideHistory: '收起历史记录',
+    status: { unobserved_current: '当前出口暂无采集记录', collection_failed: '采集失败', credential_changed: '登录凭据已更换', egress_changed: '出口已更换', account_disabled: '账号或接口已停用', credential_expired: '登录凭据已过期', disabled: '功能关闭', configuration_changed: '历史配置已变化', rate_limited: '账号限流', auth_rejected: '认证拒绝', ready: '有合格 state', cooldown: '等待补采', unavailable: '暂无合格 state' },
     egress: { direct: '应用实例直连', local_proxy: '实例本地代理', shared_proxy: '共享代理 / Tunnel' },
-    probe: { accepted: '采到合格 state', missing_state: '上游未返回 state', invalid_state: 'State 形状或有效期不合格', upstream_error: '探测未成功完成', transport_error: '连接失败或超时', unknown: '暂无详细原因' },
+    probe: { accepted: '采到合格 state', missing_state: '上游未返回 state', invalid_state: 'State 形状或有效期不合格', upstream_error: '探测未成功完成', timeout: '采集超时', transport_error: '采集执行失败', unknown: '暂无详细原因' },
     use: { injected: '已注入 state', passthrough: '普通转发，未注入', invalidated: '回包 state 不合格，已停止响应' },
   },
 

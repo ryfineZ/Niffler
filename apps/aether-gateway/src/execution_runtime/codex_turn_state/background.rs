@@ -32,17 +32,71 @@ pub(super) async fn configuration(
     state: &AppState,
     transport: &GatewayProviderTransportSnapshot,
 ) -> Result<String, StateError> {
-    // 只保存摘要；凭据轮换、停用、模型权限或出站配置变化均停止旧会话。
+    let mut value = serde_json::to_value(transport).map_err(|_| StateError::runtime())?;
+    // 展示、计价和调度元数据不改变 State 身份；权限、凭据及出站配置仍完整校验。
+    for (section, fields) in [
+        (
+            "provider",
+            &[
+                "name",
+                "website",
+                "keep_priority_on_conversion",
+                "enable_format_conversion",
+                "concurrent_limit",
+                "max_retries",
+                "request_timeout_secs",
+                "stream_first_byte_timeout_secs",
+            ][..],
+        ),
+        ("endpoint", &["max_retries"][..]),
+        (
+            "key",
+            &["name", "rate_multipliers", "global_priority_by_format"][..],
+        ),
+    ] {
+        if let Some(object) = value[section].as_object_mut() {
+            for field in fields {
+                object.remove(*field);
+            }
+        }
+    }
+    Ok(canonical_digest(json!([value, system_proxy(state).await?])))
+}
+
+pub(super) async fn system_proxy(state: &AppState) -> Result<Option<Value>, StateError> {
+    state
+        .read_system_config_json_value("system_proxy_node_id")
+        .await
+        .map_err(|_| StateError::runtime())
+}
+
+pub(super) async fn legacy_configuration(
+    state: &AppState,
+    transport: &GatewayProviderTransportSnapshot,
+) -> Result<String, StateError> {
     Ok(digest(
-        json!([
-            transport,
-            state
-                .read_system_config_json_value("system_proxy_node_id")
-                .await
-                .map_err(|_| StateError::runtime())?
-        ])
-        .to_string(),
+        json!([transport, system_proxy(state).await?]).to_string(),
     ))
+}
+
+pub(super) async fn egress_configuration(
+    state: &AppState,
+    transport: &GatewayProviderTransportSnapshot,
+) -> Result<String, StateError> {
+    Ok(canonical_digest(json!([
+        transport.provider.proxy,
+        transport.endpoint.proxy,
+        transport.key.proxy,
+        transport.key.fingerprint,
+        transport.endpoint.base_url,
+        transport.endpoint.custom_path,
+        system_proxy(state).await?
+    ])))
+}
+
+fn canonical_digest(mut value: Value) -> String {
+    value.sort_all_objects();
+    digest(value.to_string())
 }
 
 #[cfg(test)]

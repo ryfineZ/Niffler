@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Badge, Button, Dialog } from '@/components/ui'
+import { isCurrentCodexState } from './codex-state-summary'
 import { getCodexStateDiagnostics, type CodexStateDiagnostics, type CodexStateObservation } from '@/api/endpoints/codex-state'
 
 const props = defineProps<{ open: boolean; providerId: string; keyId: string; keyName: string }>()
@@ -11,32 +12,57 @@ const data = ref<CodexStateDiagnostics | null>(null)
 const loading = ref(false)
 const error = ref(false)
 let request = 0
+let controller: AbortController | undefined
+let timer: ReturnType<typeof setTimeout> | undefined
+const showHistory = ref(false)
+const history = computed(() => data.value?.items.filter(item => !isCurrentCodexState(item)) ?? [])
+const visibleItems = computed(() => [
+  ...(data.value?.items.filter(isCurrentCodexState) ?? []),
+  ...(showHistory.value ? history.value : []),
+])
 const summary = computed(() => {
   if (!data.value?.enabled) return t('codexState.disabled')
-  const ready = data.value.items.filter(item => item.status === 'ready').length
+  const ready = data.value.items.filter(item => isCurrentCodexState(item) && item.status === 'ready').length
   return ready ? t('codexState.readyCount', { count: ready }) : t('codexState.noReady')
 })
 
 async function refresh() {
+  if (!props.open || loading.value) return
+  clearTimeout(timer)
+  controller?.abort()
+  controller = new AbortController()
   const id = ++request
   loading.value = true
   error.value = false
-  data.value = null
   try {
-    const result = await getCodexStateDiagnostics(props.providerId, props.keyId)
+    const result = await getCodexStateDiagnostics(props.providerId, props.keyId, { signal: controller.signal })
     if (request === id) data.value = result
   } catch {
     if (request === id) error.value = true
   } finally {
-    if (request === id) loading.value = false
+    if (request === id) {
+      loading.value = false
+      if (props.open && !document.hidden) timer = setTimeout(() => { void refresh() }, 10000)
+    }
   }
 }
 
 watch(() => [props.open, props.providerId, props.keyId] as const, ([open]) => {
+  request++
+  controller?.abort()
+  clearTimeout(timer)
+  loading.value = false
+  data.value = null
+  error.value = false
+  showHistory.value = false
   if (open) void refresh()
-  else { request++; loading.value = false; data.value = null }
 }, { immediate: true })
-onUnmounted(() => { request++ })
+function onVisibility() {
+  if (document.hidden) clearTimeout(timer)
+  else if (props.open) void refresh()
+}
+document.addEventListener('visibilitychange', onVisibility)
+onUnmounted(() => { request++; controller?.abort(); clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibility) })
 
 function date(value?: number | null) {
   return value ? new Date(value * 1000).toLocaleString(locale.value) : t('codexState.none')
@@ -48,7 +74,7 @@ function variant(item: CodexStateObservation) {
 }
 function probeReason(item: CodexStateObservation) {
   const reason = item.last_probe?.reason
-  const known = ['accepted', 'missing_state', 'invalid_state', 'upstream_error', 'transport_error']
+  const known = ['accepted', 'missing_state', 'invalid_state', 'upstream_error', 'transport_error', 'timeout']
   return t(`codexState.probe.${reason && known.includes(reason) ? reason : 'unknown'}`)
 }
 </script>
@@ -57,15 +83,18 @@ function probeReason(item: CodexStateObservation) {
   <Dialog :model-value="open" :title="t('codexState.title', { name: keyName })" size="2xl" :z-index="70" @update:model-value="$emit('update:open', $event)">
     <div class="space-y-4">
       <div class="flex items-center justify-between gap-3">
-        <p class="text-sm font-medium" aria-live="polite">{{ loading ? t('codexState.loading') : error ? t('codexState.readFailed') : summary }}</p>
+        <p class="text-sm font-medium" aria-live="polite">{{ loading && !data ? t('codexState.loading') : error ? t('codexState.readFailed') : summary }}</p>
         <Button variant="outline" size="sm" :disabled="loading" @click="refresh">{{ t('codexState.refresh') }}</Button>
       </div>
       <p v-if="error" role="alert" class="text-sm text-destructive">{{ t('codexState.retryRead') }}</p>
-      <template v-else-if="data">
+      <template v-if="data">
         <p class="text-xs text-muted-foreground">{{ t('codexState.explanation') }}</p>
         <p v-if="!data.items.length" class="rounded-md bg-muted p-4 text-sm text-muted-foreground">{{ t('codexState.empty') }}</p>
-        <div v-else class="divide-y divide-border">
-          <section v-for="(item, index) in data.items" :key="index" class="space-y-3 py-4 first:pt-0">
+        <p v-else-if="!data.items.some(isCurrentCodexState)" class="text-sm text-muted-foreground">{{ t('codexState.status.unobserved_current') }}</p>
+        <Button v-if="history.length" variant="ghost" size="sm" :aria-expanded="showHistory" @click="showHistory = !showHistory">{{ t(showHistory ? 'codexState.hideHistory' : 'codexState.showHistory', { count: history.length }) }}</Button>
+        <div v-if="visibleItems.length" class="divide-y divide-border">
+          <section v-for="(item, index) in visibleItems" :key="item.id ?? index" class="space-y-3 py-4 first:pt-0">
+            <p v-if="!isCurrentCodexState(item)" class="text-xs text-muted-foreground">{{ t('codexState.history') }}</p>
             <div class="flex flex-wrap items-center justify-between gap-2">
               <h3 class="text-sm font-medium break-all">{{ item.model }}</h3>
               <Badge :variant="variant(item)">{{ t(`codexState.status.${item.status}`) }}</Badge>
