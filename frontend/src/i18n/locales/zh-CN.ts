@@ -1,5 +1,12 @@
 export default {
   codexState: {
+    overview: {
+      title: 'Codex State', description: '所有 Codex OAuth 账号的采集与注入状态，点击账号查看模型和出口明细。',
+      refresh: '刷新状态', search: '搜索账号或 Provider', snapshot: '状态快照 · {time}',
+      account: '账号 / Provider', state: '当前 State', ready: '{ready} / {total} 个组合可用',
+      details: '查看 {name} 的 State 明细', inactive: '未启用', waiting: '收到适用请求后开始记录',
+      unobserved: '暂无观测', read_failed: '读取失败', noMatches: '没有匹配的 Codex OAuth 账号',
+    },
     button: 'State 状态', title: '{name} · State 状态', loading: '读取中…', refresh: '刷新',
     readFailed: '读取失败', retryRead: '暂时无法读取共享状态，请重试。',
     disabled: 'State 功能已关闭', readyCount: '{count} 个模型 / 出口有可用 state', noReady: '当前没有可用 state',
