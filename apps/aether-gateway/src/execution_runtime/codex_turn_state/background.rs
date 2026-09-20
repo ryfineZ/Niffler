@@ -182,7 +182,7 @@ async fn current_plan(
     state: &AppState,
     session: &Session,
 ) -> Result<Option<ExecutionPlan>, StateError> {
-    let mut plan: ExecutionPlan = serde_json::from_str(
+    let plan: ExecutionPlan = serde_json::from_str(
         &decrypt_python_fernet_ciphertext(
             state.encryption_key().ok_or_else(StateError::runtime)?,
             &session.encrypted_plan,
@@ -190,6 +190,14 @@ async fn current_plan(
         .map_err(|_| StateError::runtime())?,
     )
     .map_err(|_| StateError::runtime())?;
+    revalidate_plan(state, plan, &session.configuration).await
+}
+
+pub(super) async fn revalidate_plan(
+    state: &AppState,
+    mut plan: ExecutionPlan,
+    expected_configuration: &str,
+) -> Result<Option<ExecutionPlan>, StateError> {
     let Some(transport) = state
         .read_provider_transport_snapshot(&plan.provider_id, &plan.endpoint_id, &plan.key_id)
         .await
@@ -205,7 +213,7 @@ async fn current_plan(
             .key
             .expires_at_unix_secs
             .is_some_and(|expires| expires <= now())
-        || configuration(state, &transport).await? != session.configuration
+        || configuration(state, &transport).await? != expected_configuration
     {
         return Ok(None);
     }

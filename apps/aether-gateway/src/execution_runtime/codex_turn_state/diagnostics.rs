@@ -184,13 +184,14 @@ pub(super) async fn record_use(
     status: u16,
     invalidated: bool,
     returned_state: &str,
+    observed_blocks: Option<usize>,
 ) {
     let runtime = state.runtime_state.clone();
     let key = format!(
         "codex-state:last-use:{}",
         state_scope(state, &prepared.plan)
     );
-    let value = json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status, "returned_state": returned_state}).to_string();
+    let value = json!({"at": now(), "mode": if invalidated {"invalidated"} else if prepared.injected {"injected"} else {"passthrough"}, "http_status": status, "returned_state": returned_state, "expected_blocks": prepared.blocks, "observed_blocks": observed_blocks}).to_string();
     best_effort(async move {
         runtime
             .kv_set(&key, value, Some(KEEP))
@@ -288,6 +289,7 @@ pub(crate) async fn read(
             .await
             .map_err(|_| StateError::runtime())?;
         let mut expires_at = None;
+        let mut source = None;
         if let Some(raw) = values[0].as_deref() {
             let plain = decrypt_python_fernet_ciphertext(
                 state.encryption_key().ok_or_else(StateError::runtime)?,
@@ -296,6 +298,7 @@ pub(crate) async fn read(
             .map_err(|_| StateError::runtime())?;
             let cached: Cached = serde_json::from_str(&plain).map_err(|_| StateError::runtime())?;
             if policy::accepts(&cached.token, entry.blocks, now()) {
+                source = Some(cached.source.unwrap_or_else(|| "probe".into()));
                 expires_at = policy::parse(&cached.token)
                     .map(|(issued, _)| issued + policy::TTL_SECONDS - 30);
             }
@@ -354,7 +357,7 @@ pub(crate) async fn read(
             .transpose()
             .map_err(|_| StateError::runtime())?;
         items.push(json!({"id":entry.scope,"model":entry.model,"egress":entry.egress,"node_id":entry.node_id,"instance":entry.instance,"last_seen_at":entry.at,
-            "status":status,"current":current,"expires_at":expires_at.filter(|_|current && enabled),"retry_until":retry_until.filter(|_|current),"auth_status":auth.filter(|_|current).map(|a|a.status),"cooldown_seconds":cooldown,
+            "status":status,"current":current,"source":source.filter(|_|current && enabled),"expires_at":expires_at.filter(|_|current && enabled),"retry_until":retry_until.filter(|_|current),"auth_status":auth.filter(|_|current).map(|a|a.status),"cooldown_seconds":cooldown,
             "last_probe":probe.map(|p| json!({"at":p["at"],"status":p["status"],"accepted":p["accepted"],"reason":p["reason"],"attempt":p["attempt"],"attempt_limit":p["attempt_limit"],"observation":p["observation"]})),"last_use":last_use}));
     }
     Ok(json!({"enabled":enabled,"observed_at":now(),"items":items}))

@@ -3,6 +3,8 @@ use base64::Engine as _;
 
 #[path = "compact_route_tests.rs"]
 mod compact_route_tests;
+#[path = "passive_tests.rs"]
+mod passive_tests;
 #[path = "passthrough_tests.rs"]
 mod passthrough_tests;
 #[path = "sync_tests.rs"]
@@ -275,6 +277,7 @@ async fn native_compaction_never_collects_or_injects_generation_state() {
 async fn one_bad_response_rejects_only_its_own_version() {
     let state = AppState::new().unwrap();
     let p = Prepared {
+        publication: None,
         plan: plan(),
         injected: true,
         cache_key: "state".into(),

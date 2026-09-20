@@ -10,12 +10,13 @@ export interface CodexStateObservation {
   /** Absent on older servers; infer from historical statuses during rollout. */
   current?: boolean
   status: 'credential_changed' | 'egress_changed' | 'account_disabled' | 'credential_expired' | 'disabled' | 'configuration_changed' | 'rate_limited' | 'auth_rejected' | 'ready' | 'cooldown' | 'unavailable'
+  source?: 'probe' | 'response' | null
   expires_at: number | null
   retry_until: number | null
   auth_status: number | null
   cooldown_seconds: number
-  last_probe: { at: number; status: number; accepted: boolean; reason: string | null; attempt?: number; attempt_limit?: number; observation?: { phase: string; elapsed_ms: number; dispatched: boolean | null; headers_ms?: number | null; first_byte_ms?: number | null; completed: boolean; returned_state: string } | null } | null
-  last_use: { at: number; mode: 'injected' | 'passthrough' | 'invalidated'; http_status: number; returned_state?: string } | null
+  last_probe: { at: number; status: number; accepted: boolean; reason: string | null; attempt?: number; attempt_limit?: number; observation?: { phase: string; elapsed_ms: number; dispatched: boolean | null; headers_ms?: number | null; first_byte_ms?: number | null; completed: boolean; returned_state: string; expected_blocks?: number | null; observed_blocks?: number | null } | null } | null
+  last_use: { at: number; mode: 'injected' | 'passthrough' | 'invalidated'; http_status: number; returned_state?: string; expected_blocks?: number | null; observed_blocks?: number | null } | null
 }
 
 export interface CodexStateDiagnostics {

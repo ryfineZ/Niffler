@@ -1,9 +1,10 @@
 export default {
   codexState: {
+    sourceTitle: 'State 来源', source: { probe: '维护探测', response: '正常请求' }, blocks: '实际 {observed} 块 / 预期 {expected} 块', formalReturnedTitle: '正式请求返回 State',
     request: { injected: 'State 已注入', passthrough: 'State 未注入', not_applicable: 'State 不适用', failed: 'State 处理失败', invalidated: 'State 已失效', unknown: 'State 未记录' },
     attemptTitle: '本轮尝试', attempt: '第 {count}/{limit} 次', elapsed: '耗时 {seconds} 秒', phaseTitle: '结束阶段', returnedTitle: '返回 State',
     phase: { unknown: '阶段未记录', dispatch: '连接 / 等待响应头', first_byte: '等待正文', completion: '等待生成完成', validation: '校验结果', revalidation: '复核账号和出口' },
-    returned: { qualified: '通过校验', missing_state: '未返回', invalid_structure: '格式不合格', wrong_blocks: '与账号类型不匹配', future_state: '签发时间异常', expired_state: '已过期或即将过期' },
+    returned: { qualified: '通过校验', missing_state: '未返回', invalid_structure: '格式不合格', wrong_blocks: '未通过块数筛选', future_state: '签发时间异常', expired_state: '已过期或即将过期' },
 
     pool: { column: 'State', unobserved: '暂无采集记录', partial: '{ready}/{total} 可用', use: { injected: '最近已注入', passthrough: '最近未注入', invalidated: '回包 state 失效' } },
     overview: {

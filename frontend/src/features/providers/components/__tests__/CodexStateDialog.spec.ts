@@ -111,11 +111,25 @@ it('shows the failed phase and preserves the HTTP status after a body timeout', 
   api.get.mockResolvedValue({ enabled: true, observed_at: 1, items: [{
     model: 'gpt-6-astra', current: true, egress: 'shared_proxy', status: 'cooldown',
     cooldown_seconds: 30, last_probe: { at: 1, status: 200, accepted: false, reason: 'timeout', attempt: 2, attempt_limit: 6,
-      observation: { phase: 'completion', elapsed_ms: 20000, dispatched: true, completed: false, returned_state: 'wrong_blocks' } }, last_use: null,
+      observation: { phase: 'completion', elapsed_ms: 20000, dispatched: true, completed: false, returned_state: 'wrong_blocks', observed_blocks: 11, expected_blocks: 10 } }, last_use: null,
   }] })
   const { root } = mount(); await flush()
   expect(root.textContent).toContain('第 2/6 次')
   expect(root.textContent).toContain('HTTP 200')
   expect(root.textContent).toContain('等待生成完成')
-  expect(root.textContent).toContain('与账号类型不匹配')
+  expect(root.textContent).toContain('未通过块数筛选')
+  expect(root.textContent).toContain('实际 11 块 / 预期 10 块')
+})
+
+it('shows State saved from a normal request without claiming that request injected it', async () => {
+  api.get.mockResolvedValue({ enabled: true, observed_at: 1, items: [{
+    model: 'gpt-6-astra', current: true, egress: 'direct', status: 'ready', source: 'response',
+    expires_at: 100, cooldown_seconds: 0, last_probe: null,
+    last_use: { at: 1, mode: 'passthrough', http_status: 200, returned_state: 'qualified', expected_blocks: 10, observed_blocks: 10 },
+  }] })
+  const { root } = mount(); await flush()
+  expect(root.textContent).toContain('State 来源正常请求')
+  expect(root.textContent).toContain('普通转发，未注入')
+  expect(root.textContent).toContain('正式请求返回 State通过校验')
+  expect(root.textContent).toContain('实际 10 块 / 预期 10 块')
 })

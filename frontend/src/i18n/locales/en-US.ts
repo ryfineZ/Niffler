@@ -1,9 +1,10 @@
 export default {
   codexState: {
+    sourceTitle: 'State source', source: { probe: 'Maintenance probe', response: 'Successful request' }, blocks: 'Observed {observed} blocks / expected {expected}', formalReturnedTitle: 'Request returned State',
     request: { injected: 'State injected', passthrough: 'State not injected', not_applicable: 'State not applicable', failed: 'State handling failed', invalidated: 'State invalidated', unknown: 'State not recorded' },
     attemptTitle: 'Round attempts', attempt: 'Attempt {count}/{limit}', elapsed: '{seconds} seconds', phaseTitle: 'Last phase', returnedTitle: 'Returned State',
     phase: { unknown: 'Phase not recorded', dispatch: 'Connecting / waiting for headers', first_byte: 'Waiting for response body', completion: 'Waiting for completion', validation: 'Validating result', revalidation: 'Checking account and egress' },
-    returned: { qualified: 'Qualified', missing_state: 'Missing', invalid_structure: 'Invalid structure', wrong_blocks: 'Account type mismatch', future_state: 'Invalid issue time', expired_state: 'Expired or expiring' },
+    returned: { qualified: 'Qualified', missing_state: 'Missing', invalid_structure: 'Invalid structure', wrong_blocks: 'Block count rejected', future_state: 'Invalid issue time', expired_state: 'Expired or expiring' },
 
     pool: { column: 'State', unobserved: 'No collection records', partial: '{ready}/{total} usable', use: { injected: 'Last request: injected', passthrough: 'Last request: not injected', invalidated: 'Response state invalid' } },
     overview: {

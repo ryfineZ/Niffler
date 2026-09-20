@@ -2,6 +2,7 @@
 pub(crate) mod background;
 pub(crate) mod compact_route;
 pub(crate) mod diagnostics;
+pub(crate) mod passive;
 mod policy;
 mod probe;
 use probe::{probe_once, ProbeFailure, ProbeObservation, ProbeResponse, ProbeResult};
@@ -132,6 +133,7 @@ impl StateError {
             response: DirectUpstreamResponse::Buffered(Bytes::from(self.body().to_string())),
             started_at: Instant::now(),
             codex_telemetry: None,
+            codex_state_candidate: None,
         }
     }
 }
@@ -343,6 +345,8 @@ fn route_scope(plan: &ExecutionPlan, instance: &str) -> String {
 struct Cached {
     token: String,
     version: String,
+    #[serde(default)]
+    source: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct AuthRejection {
@@ -362,6 +366,7 @@ pub(super) struct Prepared {
     guard_key: String,
     credential: String,
     blocks: usize,
+    publication: Option<Box<passive::Context>>,
 }
 
 pub(super) async fn prepare(
@@ -456,6 +461,9 @@ async fn prepare_passthrough(
     tracing::info!(event_name="codex_state_passthrough",request_id=%original.request_id,key_id=%original.key_id,"没有可用 state，按已选账号和出口正常转发");
     Ok(Some(Prepared {
         plan,
+        publication: passive::Context::capture(state, original, &transport)
+            .await
+            .map(Box::new),
         injected: false,
         cache_key: String::new(),
         cached_value: String::new(),
@@ -571,6 +579,8 @@ where
                 );
                 return Ok(Some(Prepared {
                     plan,
+                    // 已注入请求不重新发布，避免迟到回包复活被淘汰的版本。
+                    publication: None,
                     injected: true,
                     cache_key,
                     cached_value: stored,
@@ -945,6 +955,8 @@ where
     };
     observation.elapsed_ms = started.elapsed().as_millis() as u64;
     observation.returned_state = policy::state_reason(header(&headers, HEADER), blocks, now());
+    observation.expected_blocks = Some(blocks);
+    observation.observed_blocks = policy::parse(header(&headers, HEADER)).map(|(_, n)| n);
     let parsed = if status == 200 {
         policy::probe_outcome(&body)
     } else {
@@ -984,12 +996,22 @@ where
     }
     check_guard(state, guard_key, credential).await?;
     let token = header(&headers, HEADER).to_owned();
-    let (issued, _) = policy::parse(&token).ok_or_else(StateError::unavailable)?;
     let cache = Cached {
         token,
         version: uuid::Uuid::new_v4().to_string(),
+        source: Some("probe".into()),
     };
-    let plaintext = serde_json::to_string(&cache).map_err(|_| StateError::runtime())?;
+    publish_cache(state, lease, cache_key, &cache).await
+}
+
+async fn publish_cache(
+    state: &AppState,
+    lease: &aether_runtime_state::RuntimeLockLease,
+    cache_key: &str,
+    cache: &Cached,
+) -> Result<(), StateError> {
+    let (issued, _) = policy::parse(&cache.token).ok_or_else(StateError::unavailable)?;
+    let plaintext = serde_json::to_string(cache).map_err(|_| StateError::runtime())?;
     let encrypted = encrypt_python_fernet_plaintext(
         state.encryption_key().ok_or_else(StateError::runtime)?,
         &plaintext,
@@ -1096,7 +1118,7 @@ impl Prepared {
         state: &AppState,
         status: u16,
         headers: &mut BTreeMap<String, String>,
-    ) -> Result<(), StateError> {
+    ) -> Result<Option<Box<passive::Candidate>>, StateError> {
         let returned = header(headers, HEADER).to_owned();
         let returned_state = policy::state_reason(&returned, self.blocks, now());
         strip(headers);
@@ -1124,11 +1146,39 @@ impl Prepared {
                 .await
                 .map_err(|_| StateError::runtime().after_dispatch())?;
             tracing::warn!(event_name="codex_state_response_rejected",request_id=%self.plan.request_id,key_id=%self.plan.key_id,upstream_usage_unknown=true,"正式请求已派发，state 失效；停止当前响应且不重放");
-            diagnostics::record_use(state, self, status, true, returned_state).await;
+            diagnostics::record_use(
+                state,
+                self,
+                status,
+                true,
+                returned_state,
+                policy::parse(&returned).map(|(_, n)| n),
+            )
+            .await;
             return Err(StateError::shape());
         }
-        diagnostics::record_use(state, self, status, false, returned_state).await;
-        Ok(())
+        diagnostics::record_use(
+            state,
+            self,
+            status,
+            false,
+            returned_state,
+            policy::parse(&returned).map(|(_, n)| n),
+        )
+        .await;
+        Ok(self
+            .publication
+            .as_ref()
+            .filter(|_| (200..300).contains(&status) && returned_state == "qualified")
+            .map(|context| {
+                Box::new(passive::Candidate::new(
+                    state,
+                    *context.clone(),
+                    returned,
+                    self.blocks,
+                    headers,
+                ))
+            }))
     }
 }
 
