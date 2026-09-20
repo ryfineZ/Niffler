@@ -2334,11 +2334,7 @@ async fn overview_lists_only_codex_oauth_accounts_and_paginates_search_without_s
     );
     state
         .runtime_state
-        .kv_set(
-            &index,
-            "broken",
-            Some(std::time::Duration::from_secs(60)),
-        )
+        .kv_set(&index, "broken", Some(std::time::Duration::from_secs(60)))
         .await
         .unwrap();
     let partial = admin
