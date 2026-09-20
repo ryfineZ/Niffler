@@ -153,3 +153,5 @@
 发布前采样：最近 15 分钟没有 Codex 使用记录，Redis 有 2 个账号、10 组当前及历史记录且无缓存；若发布后仍无自然请求，不能据健康检查宣称 State 已采集成功。
 
 最终静态验证：Gateway、usage-runtime、admin、data 的库及测试 Clippy（-D warnings）通过，Rust 全仓格式检查和 git diff --check 通过。后台失败五类情形已通过真实后台 tick 的回归验证，正式请求仍可普通转发。
+
+CI 补充修复：Linux Rust 1.95 完整链接库时，State 新增异步层级经管理员视频入口展开触发编译器类型布局递归上限。将 State 公共 prepare 入口的内部 Future 装箱，截断向上游调用者展开的类型层级；行为不变，不提高全仓递归限制。以 CI 完整 Gateway 构建、测试和数据库冒烟复核。

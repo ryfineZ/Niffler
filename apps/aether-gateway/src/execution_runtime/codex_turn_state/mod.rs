@@ -368,9 +368,12 @@ pub(super) async fn prepare(
     state: &AppState,
     original: &ExecutionPlan,
 ) -> Result<Option<Prepared>, StateError> {
-    prepare_with_fallback_probe(state, original, |plan| async move {
-        probe_once(state, &plan).await
-    })
+    // 在公共入口截断采集状态机的 Future 布局，避免上层路由展开过深。
+    Box::pin(prepare_with_fallback_probe(
+        state,
+        original,
+        |plan| async move { probe_once(state, &plan).await },
+    ))
     .await
 }
 
