@@ -63,6 +63,8 @@ export interface SystemConfig {
   // Codex OAuth 身份收敛
   codex_turn_state_enabled: boolean
   codex_turn_state_fallback: 'passthrough' | 'strict'
+  codex_turn_state_probe_attempts: number
+  codex_turn_state_probe_cooldown_seconds: number
   codex_telemetry_enabled: boolean
   codex_oauth_identity_convergence_enabled: boolean
   // 同步生图心跳
@@ -127,6 +129,8 @@ const CONFIG_KEYS = [
   'codex_telemetry_enabled',
   'codex_turn_state_enabled',
   'codex_turn_state_fallback',
+  'codex_turn_state_probe_attempts',
+  'codex_turn_state_probe_cooldown_seconds',
   'codex_oauth_identity_convergence_enabled',
   // 同步生图心跳
   'enable_openai_image_sync_heartbeat',
@@ -297,6 +301,8 @@ function createDefaultConfig(): SystemConfig {
     codex_telemetry_enabled: false,
     codex_turn_state_enabled: false,
     codex_turn_state_fallback: 'passthrough',
+    codex_turn_state_probe_attempts: 3,
+    codex_turn_state_probe_cooldown_seconds: 30,
     codex_oauth_identity_convergence_enabled: false,
     // 同步生图心跳
     enable_openai_image_sync_heartbeat: true,
@@ -458,7 +464,9 @@ export function useSystemConfig() {
       originalConfig.value.codex_oauth_identity_convergence_enabled ||
       systemConfig.value.codex_telemetry_enabled !== originalConfig.value.codex_telemetry_enabled ||
       systemConfig.value.codex_turn_state_enabled !== originalConfig.value.codex_turn_state_enabled ||
-      systemConfig.value.codex_turn_state_fallback !== originalConfig.value.codex_turn_state_fallback
+      systemConfig.value.codex_turn_state_fallback !== originalConfig.value.codex_turn_state_fallback ||
+      systemConfig.value.codex_turn_state_probe_attempts !== originalConfig.value.codex_turn_state_probe_attempts ||
+      systemConfig.value.codex_turn_state_probe_cooldown_seconds !== originalConfig.value.codex_turn_state_probe_cooldown_seconds
     )
   })
 
@@ -516,6 +524,12 @@ export function useSystemConfig() {
           if (key === 'codex_turn_state_fallback' && response.value !== 'passthrough' && response.value !== 'strict') {
             throw new Error('state 兜底策略必须是 passthrough 或 strict')
           }
+          if (key === 'codex_turn_state_probe_attempts' || key === 'codex_turn_state_probe_cooldown_seconds') {
+            const [min, max] = key === 'codex_turn_state_probe_attempts' ? [1, 6] : [30, 3600]
+            if (!Number.isInteger(response.value) || response.value < min || response.value > max) {
+              throw new Error('state 采集设置超出允许范围')
+            }
+          }
           if (key === 'turnstile_secret_key') {
             systemConfig.value.turnstile_secret_key = ''
             systemConfig.value.turnstile_secret_key_is_set = !!response.is_set
@@ -528,7 +542,7 @@ export function useSystemConfig() {
                 : response.value
           }
         } catch (err) {
-          if (key === 'codex_oauth_identity_convergence_enabled' || key === 'codex_telemetry_enabled' || key === 'codex_turn_state_enabled' || key === 'codex_turn_state_fallback') {
+          if (key === 'codex_oauth_identity_convergence_enabled' || key === 'codex_telemetry_enabled' || key === 'codex_turn_state_enabled' || key === 'codex_turn_state_fallback' || key === 'codex_turn_state_probe_attempts' || key === 'codex_turn_state_probe_cooldown_seconds') {
             providerAdvancedConfigReady.value = false
             error(t('systemConfigMessages.providerAdvancedLoadFailed'))
             log.error('加载 Provider 高级设置失败:', err)
@@ -867,7 +881,7 @@ export function useSystemConfig() {
   async function saveProviderAdvancedConfig() {
     providerAdvancedConfigLoading.value = true
     try {
-      for (const key of ['codex_oauth_identity_convergence_enabled', 'codex_telemetry_enabled', 'codex_turn_state_enabled', 'codex_turn_state_fallback'] as const) {
+      for (const key of ['codex_oauth_identity_convergence_enabled', 'codex_telemetry_enabled', 'codex_turn_state_enabled', 'codex_turn_state_fallback', 'codex_turn_state_probe_attempts', 'codex_turn_state_probe_cooldown_seconds'] as const) {
         const value = systemConfig.value[key]
         if (originalConfig.value?.[key] === value) continue
         await adminApi.updateSystemConfig(key, value, 'Codex Provider 高级设置')

@@ -8,7 +8,7 @@ mod passthrough_tests;
 #[path = "sync_tests.rs"]
 mod sync_tests;
 
-fn plan() -> ExecutionPlan {
+pub(super) fn plan() -> ExecutionPlan {
     serde_json::from_value(json!({"request_id":"request", "provider_id":"provider", "endpoint_id":"endpoint", "key_id":"account-a",
         "method":"POST", "url":"https://chatgpt.com/backend-api/codex/responses",
         "headers":{"authorization":"Bearer secret", "chatgpt-account-id":"workspace", "x-codex-turn-state":"client-state", "cookie":"private"},
@@ -478,13 +478,16 @@ fn removes_opaque_state_from_nested_report_headers() {
     );
 }
 
-fn configured_state(provider_type: &str, auth_type: &str) -> AppState {
+pub(super) fn configured_state(provider_type: &str, auth_type: &str) -> AppState {
     AppState::new()
         .unwrap()
         .with_data_state_for_tests(configured_data(provider_type, auth_type))
 }
 
-fn configured_data(provider_type: &str, auth_type: &str) -> crate::data::GatewayDataState {
+pub(super) fn configured_data(
+    provider_type: &str,
+    auth_type: &str,
+) -> crate::data::GatewayDataState {
     use aether_data::repository::provider_catalog::InMemoryProviderCatalogReadRepository;
     use aether_data_contracts::repository::provider_catalog::{
         StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
@@ -505,7 +508,7 @@ fn configured_data(provider_type: &str, auth_type: &str) -> crate::data::Gateway
         true,
     )
     .unwrap();
-    let key = StoredProviderCatalogKey::new(
+    let mut key = StoredProviderCatalogKey::new(
         "account-a".into(),
         "provider".into(),
         "Key".into(),
@@ -514,6 +517,8 @@ fn configured_data(provider_type: &str, auth_type: &str) -> crate::data::Gateway
         true,
     )
     .unwrap();
+    key.encrypted_api_key =
+        Some(encrypt_python_fernet_plaintext("test-encryption-key", "secret").unwrap());
     let catalog =
         InMemoryProviderCatalogReadRepository::seed(vec![provider], vec![endpoint], vec![key]);
     crate::data::GatewayDataState::with_provider_transport_reader_for_tests(
@@ -523,7 +528,7 @@ fn configured_data(provider_type: &str, auth_type: &str) -> crate::data::Gateway
     .with_system_config_values_for_tests([(CONFIG_KEY.to_string(), json!(true))])
 }
 
-fn success() -> ProbeResult {
+pub(super) fn success() -> ProbeResult {
     let mut raw = vec![0; 57 + 10 * 16];
     raw[0] = 0x80;
     raw[1..9].copy_from_slice(&now().to_be_bytes());
@@ -531,7 +536,7 @@ fn success() -> ProbeResult {
         b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n".to_vec()))
 }
 
-async fn unexpected_probe(_: ExecutionPlan) -> ProbeResult {
+pub(super) async fn unexpected_probe(_: ExecutionPlan) -> ProbeResult {
     panic!("unexpected upstream probe")
 }
 
@@ -586,7 +591,7 @@ async fn concurrent_requests_share_one_probe_and_encrypted_cache() {
         .flatten()
         .is_some());
 
-    // 新凭据、模型或出口不可使用旧缓存；账号冷却期间也不可另起采集绕开预算。
+    // 新凭据、模型或出口不可使用旧缓存；普通冷却按会话隔离。
     for changed in ["credential", "model", "egress", "workspace"] {
         let mut changed_plan = original.clone();
         match changed {
@@ -611,18 +616,12 @@ async fn concurrent_requests_share_one_probe_and_encrypted_cache() {
             }
             _ => unreachable!(),
         }
-        if changed == "workspace" {
-            let prepared = prepare_with_probe(&state, &changed_plan, |_| async { success() })
-                .await
-                .ok()
-                .flatten()
-                .unwrap();
-            assert_ne!(prepared.cache_key, a.cache_key);
-        } else {
-            assert!(prepare_with_probe(&state, &changed_plan, unexpected_probe)
-                .await
-                .is_err());
-        }
+        let prepared = prepare_with_probe(&state, &changed_plan, |_| async { success() })
+            .await
+            .ok()
+            .flatten()
+            .unwrap();
+        assert_ne!(prepared.cache_key, a.cache_key);
     }
 }
 
@@ -722,9 +721,12 @@ async fn frontdoors_share_tunnel_state_but_keep_direct_state_separate() {
         .unwrap();
     assert_eq!(first.cache_key, second.cache_key);
     original.proxy = None;
-    assert!(prepare_with_probe(&b, &original, unexpected_probe)
+    let direct = prepare_with_probe(&b, &original, |_| async { success() })
         .await
-        .is_err());
+        .ok()
+        .flatten()
+        .unwrap();
+    assert_ne!(first.cache_key, direct.cache_key);
 }
 
 #[tokio::test]
@@ -764,4 +766,155 @@ async fn excessive_retry_after_does_not_overflow_runtime_ttl() {
             .status,
         429
     );
+}
+
+#[tokio::test]
+async fn transient_probe_failure_retries_in_the_same_round() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let state = configured_state("codex", "oauth");
+    let calls = AtomicUsize::new(0);
+    let prepared = prepare_with_probe(&state, &plan(), |_| async {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(())
+        } else {
+            success()
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("same round should recover");
+    assert!(prepared.injected);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn collection_round_uses_configured_limit_and_stops_on_rejection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for status in [502, 401, 403, 429] {
+        let state = configured_state("codex", "oauth");
+        state
+            .upsert_system_config_json_value(ATTEMPTS_CONFIG_KEY, &json!(2), None)
+            .await
+            .unwrap();
+        let calls = AtomicUsize::new(0);
+        let error = prepare_with_probe(&state, &plan(), |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((status, BTreeMap::new(), vec![]))
+        })
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if status == 502 { 2 } else { 1 }
+        );
+        assert_eq!(error.status, if status == 502 { 503 } else { status });
+    }
+}
+
+#[tokio::test]
+async fn ordinary_cooldown_does_not_block_other_models_or_new_credentials() {
+    let state = configured_state("codex", "oauth");
+    assert!(prepare_with_probe(&state, &plan(), |_| async { Err(()) })
+        .await
+        .is_err());
+    assert!(prepare_with_probe(&state, &plan(), unexpected_probe)
+        .await
+        .is_err());
+    for change in ["model", "credential"] {
+        let mut p = plan();
+        if change == "model" {
+            p.body.json_body.as_mut().unwrap()["model"] = json!("gpt-6-astra");
+        } else {
+            p.headers
+                .insert("authorization".into(), "Bearer new".into());
+        }
+        assert!(
+            prepare_with_probe(&state, &p, |_| async { success() })
+                .await
+                .ok()
+                .flatten()
+                .unwrap()
+                .injected
+        );
+    }
+}
+
+#[tokio::test]
+async fn collection_settings_use_short_defaults_and_reject_invalid_values() {
+    let state = configured_state("codex", "oauth");
+    assert_eq!(
+        collection_setting(&state, COOLDOWN_CONFIG_KEY, 30, 30, 3600)
+            .await
+            .ok(),
+        Some(30)
+    );
+    state
+        .upsert_system_config_json_value(COOLDOWN_CONFIG_KEY, &json!(60), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        collection_setting(&state, COOLDOWN_CONFIG_KEY, 30, 30, 3600)
+            .await
+            .ok(),
+        Some(60)
+    );
+    state
+        .upsert_system_config_json_value(ATTEMPTS_CONFIG_KEY, &json!(0), None)
+        .await
+        .unwrap();
+    assert!(prepare_with_probe(&state, &plan(), unexpected_probe)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn multiple_attempts_share_the_original_twenty_second_budget() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let state = configured_state("codex", "oauth");
+    let calls = AtomicUsize::new(0);
+    let started = Instant::now();
+    let prepared = prepare_with_fallback_probe(&state, &plan(), |_| async {
+        calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        Err(())
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap();
+    assert!(!prepared.injected);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(started.elapsed() < Duration::from_secs(23));
+    let lease = state
+        .runtime_state
+        .lock_try_acquire("codex-state:global-collector", "test", LEASE_TTL)
+        .await
+        .unwrap()
+        .expect("round must release global slot");
+    state.runtime_state.lock_release(&lease).await.unwrap();
+}
+
+#[tokio::test]
+async fn configured_cooldown_begins_after_round_finishes() {
+    let state = configured_state("codex", "oauth");
+    state
+        .upsert_system_config_json_value(COOLDOWN_CONFIG_KEY, &json!(45), None)
+        .await
+        .unwrap();
+    let cooldown = format!("codex-state:cooldown:v2:{}", state_scope(&state, &plan()));
+    assert!(prepare_with_probe(&state, &plan(), |_| async {
+        assert!(!state.runtime_state.kv_exists(&cooldown).await.unwrap());
+        Err(())
+    })
+    .await
+    .is_err());
+    let ttl = state
+        .runtime_state
+        .kv_ttl_seconds(&cooldown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!((44..=45).contains(&ttl));
 }

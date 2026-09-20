@@ -232,6 +232,7 @@ impl AppState {
             execution_runtime_sync_override: None,
             data: Arc::clone(&data),
             runtime_state: runtime_state.clone(),
+            codex_turn_state_sessions: Arc::default(),
             codex_model_fetch_client_version_cache: Arc::new(StdMutex::new(None)),
             usage_runtime: Arc::new(usage::UsageRuntime::disabled()),
             request_candidate_status_write_queue: Arc::new(RequestCandidateStatusWriteQueue::new()),
@@ -1134,6 +1135,16 @@ impl AppState {
             path,
         )?);
         Ok(self)
+    }
+
+    /// 会话依赖本实例的出站上下文，Frontdoor 也需要此轻量补采任务。
+    pub fn spawn_turn_state_background_tasks(&self) -> crate::task_runtime::TaskSupervisor {
+        let mut supervisor = crate::task_runtime::TaskSupervisor::new();
+        supervisor.spawn_named(
+            "codex.state.collect",
+            crate::execution_runtime::codex_turn_state::background::run(self.clone()),
+        );
+        supervisor
     }
 
     pub fn spawn_background_tasks(&self) -> crate::task_runtime::TaskSupervisor {

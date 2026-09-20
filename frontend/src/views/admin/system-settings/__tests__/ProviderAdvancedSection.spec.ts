@@ -6,6 +6,7 @@ import ProviderAdvancedSection from '../ProviderAdvancedSection.vue'
 const mountedApps: Array<{ app: App, root: HTMLElement }> = []
 
 function mountSection(options: {
+  attempts?: number
   enabled?: boolean
   loading?: boolean
   saving?: boolean
@@ -14,6 +15,8 @@ function mountSection(options: {
 } = {}) {
   const root = document.createElement('div')
   document.body.appendChild(root)
+  const onAttemptsUpdate = vi.fn()
+  const onCooldownUpdate = vi.fn()
   const onSave = vi.fn()
   const onUpdate = vi.fn()
   const onTelemetryUpdate = vi.fn()
@@ -21,6 +24,8 @@ function mountSection(options: {
   const onFallbackUpdate = vi.fn()
   const app = createApp(ProviderAdvancedSection, {
     turnStateEnabled: false,
+    turnStateProbeAttempts: options.attempts ?? 3,
+    turnStateProbeCooldownSeconds: 30,
     turnStateFallback: 'passthrough',
     telemetryEnabled: false,
     enabled: options.enabled ?? false,
@@ -29,6 +34,8 @@ function mountSection(options: {
     loadError: options.loadError ?? false,
     hasChanges: options.hasChanges ?? true,
     onSave,
+    'onUpdate:turnStateProbeAttempts': onAttemptsUpdate,
+    'onUpdate:turnStateProbeCooldownSeconds': onCooldownUpdate,
     'onUpdate:enabled': onUpdate,
     'onUpdate:telemetryEnabled': onTelemetryUpdate,
     'onUpdate:turnStateEnabled': onStateUpdate,
@@ -36,7 +43,7 @@ function mountSection(options: {
   })
   app.mount(root)
   mountedApps.push({ app, root })
-  return { root, onSave, onUpdate, onTelemetryUpdate, onStateUpdate, onFallbackUpdate }
+  return { root, onAttemptsUpdate, onCooldownUpdate, onSave, onUpdate, onTelemetryUpdate, onStateUpdate, onFallbackUpdate }
 }
 
 afterEach(() => {
@@ -48,6 +55,27 @@ afterEach(() => {
 })
 
 describe('ProviderAdvancedSection', () => {
+  it('shows short collection defaults and emits numeric settings', async () => {
+    const { root, onAttemptsUpdate, onCooldownUpdate } = mountSection()
+    await nextTick()
+    const attempts = root.querySelector<HTMLInputElement>('#codex-state-attempts')!
+    const cooldown = root.querySelector<HTMLInputElement>('#codex-state-cooldown')!
+    expect(attempts.value).toBe('3')
+    expect(cooldown.value).toBe('30')
+    attempts.value = '2'
+    attempts.dispatchEvent(new Event('input'))
+    cooldown.value = '60'
+    cooldown.dispatchEvent(new Event('input'))
+    expect(onAttemptsUpdate).toHaveBeenCalledWith(2)
+    expect(onCooldownUpdate).toHaveBeenCalledWith(60)
+  })
+  it('prevents saving an invalid collection limit', async () => {
+    const { root } = mountSection({ attempts: 0 })
+    await nextTick()
+    expect(root.querySelector<HTMLButtonElement>('button')?.disabled).toBe(true)
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain('采集次数须为')
+  })
+
   it('keeps state collection opt-in and separate from identity and telemetry', async () => {
     const { root, onStateUpdate, onUpdate, onTelemetryUpdate } = mountSection()
     await nextTick()
