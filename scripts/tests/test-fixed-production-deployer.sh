@@ -235,7 +235,7 @@ export FAKE_CURL_FAIL=false
 run_deployer "$TARGET_COMMIT" >"$TEST_ROOT/success.out" 2>&1
 assert_contains "$TEST_ROOT/success.out" "Deployment verified for origin/main"
 assert_contains "$DOCKER_LOG" "inspect frontdoor-container --format"
-assert_contains "$DOCKER_LOG" "run --rm --network container:frontdoor-container --env-file"
+assert_contains "$DOCKER_LOG" "run --rm --network container:frontdoor-container --volumes-from frontdoor-container:ro --env-file"
 assert_contains "$DOCKER_LOG" "--check-postgres-migration-compatibility"
 test "$(cat "$REMOTE_DIR/.niffler-deployed-commit")" = "$TARGET_COMMIT"
 test ! -e "$REMOTE_DIR/image.tar"
