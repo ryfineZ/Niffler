@@ -1852,6 +1852,7 @@ async fn provider_query_finalize_openai_image_result(
     requested_model: &str,
     mapped_model: &str,
     image_request: &Value,
+    codex_native_generation: bool,
     result: &aether_contracts::ExecutionResult,
 ) -> Result<Option<Value>, GatewayError> {
     let decision = GatewayControlDecision::synthetic(
@@ -1872,6 +1873,7 @@ async fn provider_query_finalize_openai_image_result(
             "needs_conversion": false,
             "has_envelope": false,
             "image_request": image_request,
+            "codex_native_image_generation": codex_native_generation,
         })),
         status_code: result.status_code,
         headers: result.headers.clone(),
@@ -1968,13 +1970,15 @@ async fn provider_query_execute_openai_image_test_candidate(
         .provider_type
         .trim()
         .eq_ignore_ascii_case("grok");
+    let codex_native_generation =
+        crate::ai_serving::openai_image_uses_codex_native_generation(&transport, parts.uri.path());
     let images_passthrough = crate::ai_serving::openai_image_uses_images_passthrough(&transport);
     let mut provider_request_body = if is_chatgpt_web {
         match crate::ai_serving::build_chatgpt_web_image_request_body(&parts, &request_body, None) {
             Ok(body) => body,
             Err(err) => err.to_error_json(),
         }
-    } else if images_passthrough {
+    } else if images_passthrough || codex_native_generation {
         let Some(body) = crate::ai_serving::build_openai_image_passthrough_json_body(
             &request_body,
             &candidate.effective_model,
@@ -1990,13 +1994,13 @@ async fn provider_query_execute_openai_image_test_candidate(
     } else {
         crate::ai_serving::build_openai_image_provider_request_body(&normalized_request)
     };
-    if !is_chatgpt_web && !is_grok && !images_passthrough {
+    if !is_chatgpt_web && !is_grok && !images_passthrough && !codex_native_generation {
         crate::ai_serving::apply_openai_image_tool_model(
             &mut provider_request_body,
             &candidate.effective_model,
         );
     }
-    if !is_chatgpt_web && !images_passthrough {
+    if !is_chatgpt_web && !images_passthrough && !codex_native_generation {
         crate::ai_serving::apply_codex_openai_responses_special_body_edits_with_bridge_model(
             &mut provider_request_body,
             transport.provider.provider_type.as_str(),
@@ -2007,6 +2011,10 @@ async fn provider_query_execute_openai_image_test_candidate(
                 transport.provider.config.as_ref(),
             ),
         );
+    }
+
+    if codex_native_generation {
+        provider_request_body["stream"] = Value::Bool(true);
     }
 
     let oauth_auth = state.resolve_local_oauth_header_auth(&transport).await?;
@@ -2117,7 +2125,7 @@ async fn provider_query_execute_openai_image_test_candidate(
     } else {
         normalized_request.summary_json.clone()
     };
-    let request_url = if images_passthrough {
+    let request_url = if images_passthrough || codex_native_generation {
         crate::ai_serving::build_openai_image_upstream_url_for_request(
             &transport,
             parts.uri.path(),
@@ -2208,6 +2216,7 @@ async fn provider_query_execute_openai_image_test_candidate(
             requested_model,
             &mapped_model,
             &image_request,
+            codex_native_generation,
             &result,
         )
         .await?

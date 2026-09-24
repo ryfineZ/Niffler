@@ -3631,6 +3631,15 @@ async fn gateway_converges_codex_oauth_responses_test_model_identity() {
 
 #[tokio::test]
 async fn gateway_handles_openai_image_test_model_locally() {
+    check_codex_image_model_test(false).await;
+}
+
+#[tokio::test]
+async fn gateway_handles_codex_native_image_test_model_locally() {
+    check_codex_image_model_test(true).await;
+}
+
+async fn check_codex_image_model_test(native: bool) {
     let execution_runtime = Router::new().route(
         "/v1/execute/sync",
         any(move |Json(plan): Json<ExecutionPlan>| async move {
@@ -3639,8 +3648,8 @@ async fn gateway_handles_openai_image_test_model_locally() {
             assert_eq!(plan.key_id, "key-openai-image");
             assert_eq!(plan.client_api_format, "openai:image");
             assert_eq!(plan.provider_api_format, "openai:image");
-            assert_eq!(plan.model_name.as_deref(), Some("gpt-image-1"));
-            assert_eq!(plan.url, "https://api.openai.example/v1/responses");
+            assert_eq!(plan.model_name.as_deref(), Some("gpt-image-2"));
+            assert_eq!(plan.url, if native { "https://api.openai.example/images/generations" } else { "https://api.openai.example/v1/responses" });
             assert!(plan.stream);
             assert_eq!(
                 plan.headers.get("authorization").map(String::as_str),
@@ -3684,41 +3693,51 @@ async fn gateway_handles_openai_image_test_model_locally() {
                 plan.headers.get("x-business-context").map(String::as_str),
                 Some("project-alpha")
             );
-            assert_eq!(
-                plan.body
-                    .json_body
-                    .as_ref()
-                    .and_then(|body| body.get("model")),
-                Some(&json!(crate::ai_serving::CODEX_OPENAI_IMAGE_INTERNAL_MODEL))
-            );
-            assert_eq!(
-                plan.body
-                    .json_body
-                    .as_ref()
-                    .and_then(|body| body.get("input"))
-                    .and_then(|input| input.as_array())
-                    .and_then(|items| items.first())
-                    .and_then(|item| item.get("content"))
-                    .and_then(|value| value.as_str()),
-                Some("Draw a small blue square")
-            );
-            assert_eq!(
-                plan.body
-                    .json_body
-                    .as_ref()
-                    .and_then(|body| body.get("prompt_cache_key"))
-                    .and_then(|value| value.as_str()),
-                Some(thread_id.as_str())
-            );
-            assert_eq!(
-                plan.body
-                    .json_body
-                    .as_ref()
-                    .and_then(|body| body.get("client_metadata"))
-                    .and_then(|metadata| metadata.get("thread_id"))
-                    .and_then(|value| value.as_str()),
-                Some(thread_id.as_str())
-            );
+            if native {
+                let body = plan.body.json_body.as_ref().expect("native JSON body");
+                assert_eq!(body["model"], "gpt-image-2");
+                assert_eq!(body["prompt"], "Draw a small blue square");
+                assert_eq!(body["stream"], true);
+                for field in ["tools", "input", "prompt_cache_key", "client_metadata"] {
+                    assert!(body.get(field).is_none(), "unexpected native field: {field}");
+                }
+            } else {
+                assert_eq!(
+                    plan.body
+                        .json_body
+                        .as_ref()
+                        .and_then(|body| body.get("model")),
+                    Some(&json!(crate::ai_serving::CODEX_OPENAI_IMAGE_INTERNAL_MODEL))
+                );
+                assert_eq!(
+                    plan.body
+                        .json_body
+                        .as_ref()
+                        .and_then(|body| body.get("input"))
+                        .and_then(|input| input.as_array())
+                        .and_then(|items| items.first())
+                        .and_then(|item| item.get("content"))
+                        .and_then(|value| value.as_str()),
+                    Some("Draw a small blue square")
+                );
+                assert_eq!(
+                    plan.body
+                        .json_body
+                        .as_ref()
+                        .and_then(|body| body.get("prompt_cache_key"))
+                        .and_then(|value| value.as_str()),
+                    Some(thread_id.as_str())
+                );
+                assert_eq!(
+                    plan.body
+                        .json_body
+                        .as_ref()
+                        .and_then(|body| body.get("client_metadata"))
+                        .and_then(|metadata| metadata.get("thread_id"))
+                        .and_then(|value| value.as_str()),
+                    Some(thread_id.as_str())
+                );
+            }
             Json(json!({
                 "request_id": plan.request_id,
                 "candidate_id": plan.candidate_id,
@@ -3728,15 +3747,17 @@ async fn gateway_handles_openai_image_test_model_locally() {
                 },
                 "body": {
                     "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(
-                        concat!(
+                        if native {
+                            "event: image_generation.completed\ndata: {\"type\":\"image_generation.completed\",\"created_at\":1776839946,\"b64_json\":\"aGVsbG8=\",\"output_format\":\"png\",\"revised_prompt\":\"revised prompt\",\"usage\":{\"input_tokens\":171,\"output_tokens\":1372,\"total_tokens\":1543}}\n\n".as_bytes()
+                        } else { concat!(
                             "event: response.created\n",
                             "data: {\"type\":\"response.created\",\"response\":{\"created_at\":1776839946}}\n\n",
                             "event: response.output_item.done\n",
                             "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"output_format\":\"png\",\"revised_prompt\":\"revised prompt\",\"result\":\"aGVsbG8=\"}}\n\n",
                             "event: response.completed\n",
-                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_123\",\"model\":\"gpt-image-1\",\"status\":\"completed\",\"tool_usage\":{\"image_gen\":{\"input_tokens\":171,\"output_tokens\":1372,\"total_tokens\":1543}}}}\n\n"
+                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_123\",\"model\":\"gpt-image-2\",\"status\":\"completed\",\"tool_usage\":{\"image_gen\":{\"input_tokens\":171,\"output_tokens\":1372,\"total_tokens\":1543}}}}\n\n"
                         )
-                        .as_bytes()
+                        .as_bytes() }
                     )
                 },
                 "telemetry": {
@@ -3751,12 +3772,18 @@ async fn gateway_handles_openai_image_test_model_locally() {
     provider.provider_type = "codex".to_string();
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![provider],
-        vec![sample_endpoint(
-            "endpoint-openai-image",
-            "provider-openai",
-            "openai:image",
-            "https://api.openai.example",
-        )],
+        vec![{
+            let mut endpoint = sample_endpoint(
+                "endpoint-openai-image",
+                "provider-openai",
+                "openai:image",
+                "https://api.openai.example",
+            );
+            if !native {
+                endpoint.config = Some(json!({"openai_image_transport_mode":"responses_bridge"}));
+            }
+            endpoint
+        }],
         vec![{
             let mut key = sample_key(
                 "key-openai-image",
@@ -3809,7 +3836,7 @@ async fn gateway_handles_openai_image_test_model_locally() {
         .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
         .json(&json!({
             "provider_id": "provider-openai",
-            "model": "gpt-image-1",
+            "model": "gpt-image-2",
             "api_format": "openai:image",
             "message": "Draw a small blue square",
             "request_headers": {
@@ -3836,6 +3863,11 @@ async fn gateway_handles_openai_image_test_model_locally() {
     assert_eq!(
         payload["data"]["response"]["data"][0]["b64_json"],
         json!("aGVsbG8=")
+    );
+
+    assert_eq!(
+        payload["data"]["response"]["usage"]["total_tokens"],
+        json!(1543)
     );
 
     gateway_handle.abort();

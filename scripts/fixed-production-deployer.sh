@@ -340,6 +340,7 @@ else
     chmod 0600 "$CURRENT_ENV_FILE"
     if ! docker run --rm \
         --network "container:$MIGRATION_CONTEXT_CONTAINER" \
+        --volumes-from "$MIGRATION_CONTEXT_CONTAINER:ro" \
         --env-file "$CURRENT_ENV_FILE" \
         --entrypoint /usr/local/bin/aether-gateway \
         "$TARGET_IMAGE" \

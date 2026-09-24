@@ -21,8 +21,18 @@ use sha2::{Digest, Sha256};
 
 #[tokio::test]
 async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth_refresh() {
+    codex_image_stream_after_refresh(false).await;
+}
+
+#[tokio::test]
+async fn gateway_executes_codex_native_image_stream_after_oauth_refresh() {
+    codex_image_stream_after_refresh(true).await;
+}
+
+async fn codex_image_stream_after_refresh(native: bool) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeStreamRequest {
+        request_body: serde_json::Value,
         trace_id: String,
         url: String,
         model: String,
@@ -134,7 +144,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
         )
     }
 
-    fn sample_provider_catalog_endpoint() -> StoredProviderCatalogEndpoint {
+    fn sample_provider_catalog_endpoint(native: bool) -> StoredProviderCatalogEndpoint {
         StoredProviderCatalogEndpoint::new(
             "endpoint-codex-image-stream-local-1".to_string(),
             "provider-codex-image-stream-local-1".to_string(),
@@ -150,7 +160,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
             None,
             Some(2),
             None,
-            Some(serde_json::json!({"upstream_stream_policy":"force_stream"})),
+            Some(if native { json!({"upstream_stream_policy":"force_stream"}) } else { json!({"upstream_stream_policy":"force_stream", "openai_image_transport_mode":"responses_bridge"}) }),
             None,
             None,
         )
@@ -231,6 +241,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
                 *seen_execution_runtime_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeStreamRequest {
+                    request_body: payload["body"]["json_body"].clone(),
                     trace_id: parts
                         .headers
                         .get(TRACE_ID_HEADER)
@@ -297,13 +308,22 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
                         .and_then(|value| value.as_bool())
                         .unwrap_or(false),
                 });
-                let frames = concat!(
+                let frames = if native {
+                    let event = json!({"type":"image_generation.completed","b64_json":"aGVsbG8=",
+                        "usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33}});
+                    [
+                        json!({"type":"headers","payload":{"kind":"headers","status_code":200,"headers":{"content-type":"text/event-stream"}}}),
+                        json!({"type":"data","payload":{"kind":"data","text":"event: image_generation.partial_image\ndata: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"cGFydGlhbA==\",\"partial_image_index\":0}\n\n"}}),
+                        json!({"type":"data","payload":{"kind":"data","text":format!("event: image_generation.completed\ndata: {event}\n\n")}}),
+                        json!({"type":"eof","payload":{"kind":"eof"}}),
+                    ].iter().map(|frame| format!("{frame}\n")).collect::<String>()
+                } else { concat!(
                     "{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}}\n",
                     "{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"event: response.output_item.done\\ndata: {\\\"type\\\":\\\"response.output_item.done\\\",\\\"output_index\\\":0,\\\"item\\\":{\\\"id\\\":\\\"ig_123\\\",\\\"type\\\":\\\"image_generation_call\\\",\\\"result\\\":\\\"aGVsbG8=\\\"}}\\n\\n\"}}\n",
                     "{\"type\":\"data\",\"payload\":{\"kind\":\"data\",\"text\":\"event: response.completed\\ndata: {\\\"type\\\":\\\"response.completed\\\",\\\"response\\\":{\\\"tool_usage\\\":{\\\"image_gen\\\":{\\\"input_tokens\\\":11,\\\"output_tokens\\\":22,\\\"total_tokens\\\":33}}}}\\n\\n\"}}\n",
                     "{\"type\":\"telemetry\",\"payload\":{\"kind\":\"telemetry\",\"telemetry\":{\"elapsed_ms\":41}}}\n",
                     "{\"type\":\"eof\",\"payload\":{\"kind\":\"eof\"}}\n"
-                );
+                ).to_string() };
                 let mut response = http::Response::builder()
                     .status(StatusCode::OK)
                     .body(Body::from(frames))
@@ -331,7 +351,7 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
         ]));
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider_catalog_provider()],
-        vec![sample_provider_catalog_endpoint()],
+        vec![sample_provider_catalog_endpoint(native)],
         vec![sample_provider_catalog_key()],
     ));
 
@@ -415,11 +435,19 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
     );
     assert_eq!(
         seen_execution_runtime_request.url,
-        "https://chatgpt.com/backend-api/codex/responses"
+        if native {
+            "https://chatgpt.com/backend-api/codex/images/generations"
+        } else {
+            "https://chatgpt.com/backend-api/codex/responses"
+        }
     );
     assert_eq!(
         seen_execution_runtime_request.model,
-        CODEX_OPENAI_IMAGE_INTERNAL_MODEL
+        if native {
+            "gpt-image-2"
+        } else {
+            CODEX_OPENAI_IMAGE_INTERNAL_MODEL
+        }
     );
     assert_eq!(
         seen_execution_runtime_request.authorization,
@@ -429,9 +457,24 @@ async fn gateway_executes_codex_image_stream_via_local_decision_gate_after_oauth
         seen_execution_runtime_request.x_client_request_id,
         request_id
     );
-    assert_eq!(seen_execution_runtime_request.tool_type, "image_generation");
-    assert_eq!(seen_execution_runtime_request.tool_action, "generate");
-    assert_eq!(seen_execution_runtime_request.tool_partial_images, Some(1));
+    if native {
+        assert_eq!(
+            seen_execution_runtime_request.request_body["partial_images"],
+            1
+        );
+        assert!(seen_execution_runtime_request
+            .request_body
+            .get("tools")
+            .is_none());
+        assert_eq!(
+            seen_execution_runtime_request.request_body["prompt"],
+            "生成一张中国历史视觉海报"
+        );
+    } else {
+        assert_eq!(seen_execution_runtime_request.tool_type, "image_generation");
+        assert_eq!(seen_execution_runtime_request.tool_action, "generate");
+        assert_eq!(seen_execution_runtime_request.tool_partial_images, Some(1));
+    }
     assert!(seen_execution_runtime_request.request_stream);
     assert!(seen_execution_runtime_request.plan_stream);
 

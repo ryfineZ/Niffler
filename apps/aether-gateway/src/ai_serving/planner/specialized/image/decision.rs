@@ -75,6 +75,12 @@ pub(super) async fn maybe_build_local_openai_image_decision_payload_for_candidat
         extra_fields.insert("proxy".to_string(), proxy_value);
     }
     extra_fields.insert("image_request".to_string(), resolved.input_summary.clone());
+    if resolved.codex_native_generation {
+        extra_fields.insert(
+            "codex_native_image_generation".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     if openai_image_uses_images_passthrough(&transport) {
         extra_fields.insert(
             "openai_image_transport_mode".to_string(),

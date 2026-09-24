@@ -54,6 +54,7 @@ pub(super) struct LocalOpenAiImageCandidatePayloadParts {
     pub(super) upstream_url: String,
     pub(super) input_summary: Value,
     pub(super) transport_profile: Option<ResolvedTransportProfile>,
+    pub(super) codex_native_generation: bool,
 }
 
 const OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY: &str = "openai_image_transport_mode";
@@ -62,10 +63,12 @@ const OPENAI_IMAGE_TRANSPORT_MODE_CONFIG_KEY: &str = "openai_image_transport_mod
 enum OpenAiImageTransportMode {
     ResponsesBridge,
     ImagesPassthrough,
+    CodexNativeGeneration,
 }
 
 fn resolve_openai_image_transport_mode(
     transport: &GatewayProviderTransportSnapshot,
+    request_path: &str,
 ) -> OpenAiImageTransportMode {
     let mode = transport
         .endpoint
@@ -78,9 +81,26 @@ fn resolve_openai_image_transport_mode(
         .unwrap_or_default();
     if mode.eq_ignore_ascii_case("images_passthrough") {
         OpenAiImageTransportMode::ImagesPassthrough
+    } else if !mode.eq_ignore_ascii_case("responses_bridge")
+        && transport
+            .provider
+            .provider_type
+            .trim()
+            .eq_ignore_ascii_case("codex")
+        && request_path == "/v1/images/generations"
+    {
+        OpenAiImageTransportMode::CodexNativeGeneration
     } else {
         OpenAiImageTransportMode::ResponsesBridge
     }
+}
+
+pub(crate) fn openai_image_uses_codex_native_generation(
+    transport: &GatewayProviderTransportSnapshot,
+    request_path: &str,
+) -> bool {
+    resolve_openai_image_transport_mode(transport, request_path)
+        == OpenAiImageTransportMode::CodexNativeGeneration
 }
 
 pub(crate) fn openai_image_uses_images_passthrough(
@@ -97,7 +117,8 @@ pub(crate) fn openai_image_uses_images_passthrough(
     ) {
         return false;
     }
-    resolve_openai_image_transport_mode(transport) == OpenAiImageTransportMode::ImagesPassthrough
+    resolve_openai_image_transport_mode(transport, "")
+        == OpenAiImageTransportMode::ImagesPassthrough
 }
 
 pub(crate) fn build_openai_image_upstream_url_for_request(
@@ -105,7 +126,16 @@ pub(crate) fn build_openai_image_upstream_url_for_request(
     request_path: &str,
     request_query: Option<&str>,
 ) -> Option<String> {
-    if resolve_openai_image_transport_mode(transport) == OpenAiImageTransportMode::ResponsesBridge {
+    let mode = resolve_openai_image_transport_mode(transport, request_path);
+    if mode == OpenAiImageTransportMode::CodexNativeGeneration {
+        return crate::ai_serving::transport::url::build_passthrough_path_url(
+            &transport.endpoint.base_url,
+            "/images/generations",
+            request_query,
+            &[],
+        );
+    }
+    if mode == OpenAiImageTransportMode::ResponsesBridge {
         return Some(build_openai_image_upstream_url(transport, request_query));
     }
     let custom_path = transport
@@ -476,9 +506,11 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
     let image_transport_mode = if is_chatgpt_web || is_grok {
         OpenAiImageTransportMode::ResponsesBridge
     } else {
-        resolve_openai_image_transport_mode(transport)
+        resolve_openai_image_transport_mode(transport, parts.uri.path())
     };
     let images_passthrough = image_transport_mode == OpenAiImageTransportMode::ImagesPassthrough;
+    let codex_native_generation =
+        image_transport_mode == OpenAiImageTransportMode::CodexNativeGeneration;
     let original_content_type = effective_headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -520,18 +552,18 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
             Ok(body) => body,
             Err(err) => err.to_error_json(),
         }
-    } else if images_passthrough {
+    } else if images_passthrough || codex_native_generation {
         Value::Null
     } else {
         build_openai_image_provider_request_body(&normalized_request)
     };
-    if !is_chatgpt_web && !is_grok && !images_passthrough {
+    if !is_chatgpt_web && !is_grok && !images_passthrough && !codex_native_generation {
         apply_openai_image_tool_model(
             &mut provider_request_body,
             prepared_candidate.mapped_model.as_str(),
         );
     }
-    if !is_chatgpt_web && !images_passthrough {
+    if !is_chatgpt_web && !images_passthrough && !codex_native_generation {
         apply_codex_openai_responses_special_body_edits_with_bridge_model(
             &mut provider_request_body,
             transport.provider.provider_type.as_str(),
@@ -544,89 +576,98 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         );
     }
 
-    let (provider_request_body, provider_request_body_base64, content_type) = if images_passthrough
-    {
-        match build_openai_image_passthrough_body_parts(
-            body_json,
-            body_base64,
-            prepared_candidate.mapped_model.as_str(),
-            transport.endpoint.body_rules.as_ref(),
-            effective_headers,
-        ) {
-            Ok(body_parts) => {
-                let is_binary = body_parts.provider_request_body_base64.is_some();
-                (
-                    body_parts.provider_request_body,
-                    body_parts.provider_request_body_base64,
-                    if is_binary {
-                        original_content_type.clone()
-                    } else {
-                        Some("application/json".to_string())
-                    },
-                )
+    let (mut provider_request_body, provider_request_body_base64, content_type) =
+        if images_passthrough || codex_native_generation {
+            match build_openai_image_passthrough_body_parts(
+                body_json,
+                body_base64,
+                prepared_candidate.mapped_model.as_str(),
+                transport.endpoint.body_rules.as_ref(),
+                effective_headers,
+            ) {
+                Ok(body_parts) => {
+                    let is_binary = body_parts.provider_request_body_base64.is_some();
+                    (
+                        body_parts.provider_request_body,
+                        body_parts.provider_request_body_base64,
+                        if is_binary {
+                            original_content_type.clone()
+                        } else {
+                            Some("application/json".to_string())
+                        },
+                    )
+                }
+                Err(OpenAiImagePassthroughBodyError::BodyRulesUnsupportedForBinary) => {
+                    mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+                        state,
+                        input,
+                        trace_id,
+                        candidate,
+                        attempt.candidate_index,
+                        &attempt.candidate_id,
+                        "transport_body_rules_unsupported_for_binary_upload",
+                        CandidateFailureDiagnostic::body_rules_unsupported_for_binary_upload(
+                            spec_metadata.api_format,
+                            spec_metadata.api_format,
+                            "openai_image_multipart_passthrough",
+                        ),
+                    )
+                    .await;
+                    return None;
+                }
+                Err(OpenAiImagePassthroughBodyError::BodyRulesApplyFailed) => {
+                    mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+                        state,
+                        input,
+                        trace_id,
+                        candidate,
+                        attempt.candidate_index,
+                        &attempt.candidate_id,
+                        "transport_body_rules_apply_failed",
+                        CandidateFailureDiagnostic::body_rules_apply_failed(
+                            spec_metadata.api_format,
+                            spec_metadata.api_format,
+                            "openai_image_passthrough_body_rules",
+                        ),
+                    )
+                    .await;
+                    return None;
+                }
+                Err(OpenAiImagePassthroughBodyError::MultipartModelRewriteFailed) => {
+                    mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+                        state,
+                        input,
+                        trace_id,
+                        candidate,
+                        attempt.candidate_index,
+                        &attempt.candidate_id,
+                        "openai_image_multipart_model_rewrite_failed",
+                        CandidateFailureDiagnostic::provider_request_body_missing(
+                            spec_metadata.api_format,
+                            spec_metadata.api_format,
+                            "openai_image_multipart_model_rewrite",
+                        ),
+                    )
+                    .await;
+                    return None;
+                }
             }
-            Err(OpenAiImagePassthroughBodyError::BodyRulesUnsupportedForBinary) => {
-                mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
-                    state,
-                    input,
-                    trace_id,
-                    candidate,
-                    attempt.candidate_index,
-                    &attempt.candidate_id,
-                    "transport_body_rules_unsupported_for_binary_upload",
-                    CandidateFailureDiagnostic::body_rules_unsupported_for_binary_upload(
-                        spec_metadata.api_format,
-                        spec_metadata.api_format,
-                        "openai_image_multipart_passthrough",
-                    ),
-                )
-                .await;
-                return None;
-            }
-            Err(OpenAiImagePassthroughBodyError::BodyRulesApplyFailed) => {
-                mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
-                    state,
-                    input,
-                    trace_id,
-                    candidate,
-                    attempt.candidate_index,
-                    &attempt.candidate_id,
-                    "transport_body_rules_apply_failed",
-                    CandidateFailureDiagnostic::body_rules_apply_failed(
-                        spec_metadata.api_format,
-                        spec_metadata.api_format,
-                        "openai_image_passthrough_body_rules",
-                    ),
-                )
-                .await;
-                return None;
-            }
-            Err(OpenAiImagePassthroughBodyError::MultipartModelRewriteFailed) => {
-                mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
-                    state,
-                    input,
-                    trace_id,
-                    candidate,
-                    attempt.candidate_index,
-                    &attempt.candidate_id,
-                    "openai_image_multipart_model_rewrite_failed",
-                    CandidateFailureDiagnostic::provider_request_body_missing(
-                        spec_metadata.api_format,
-                        spec_metadata.api_format,
-                        "openai_image_multipart_model_rewrite",
-                    ),
-                )
-                .await;
-                return None;
-            }
+        } else {
+            (
+                Some(provider_request_body),
+                None,
+                Some("application/json".to_string()),
+            )
+        };
+    if codex_native_generation {
+        // Codex's native Images endpoint returns SSE even for synchronous clients.
+        if let Some(object) = provider_request_body
+            .as_mut()
+            .and_then(Value::as_object_mut)
+        {
+            object.insert("stream".to_string(), Value::Bool(true));
         }
-    } else {
-        (
-            Some(provider_request_body),
-            None,
-            Some("application/json".to_string()),
-        )
-    };
+    }
     let provider_request_body_for_rules = provider_request_body.as_ref().unwrap_or(body_json);
 
     let Some(mut provider_request_headers) = (if is_grok {
@@ -719,6 +760,7 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         upstream_url,
         input_summary,
         transport_profile,
+        codex_native_generation,
     })
 }
 
@@ -908,6 +950,7 @@ async fn resolve_local_openai_image_to_gemini_candidate_payload_parts(
         upstream_url,
         input_summary: converted.summary_json,
         transport_profile: None,
+        codex_native_generation: false,
     })
 }
 
@@ -1001,6 +1044,33 @@ mod tests {
             )
             .as_deref(),
             Some("https://niffler.org/v1/responses")
+        );
+    }
+
+    #[test]
+    fn codex_generations_use_native_path_but_edits_keep_bridge() {
+        let mut transport = sample_transport();
+        transport.provider.provider_type = "codex".to_string();
+        transport.endpoint.base_url = "https://chatgpt.com/backend-api/codex".to_string();
+        assert_eq!(
+            build_openai_image_upstream_url_for_request(
+                &transport,
+                "/v1/images/generations",
+                Some("trace=1")
+            )
+            .as_deref(),
+            Some("https://chatgpt.com/backend-api/codex/images/generations?trace=1")
+        );
+        assert_eq!(
+            build_openai_image_upstream_url_for_request(&transport, "/v1/images/edits", None)
+                .as_deref(),
+            Some("https://chatgpt.com/backend-api/codex/responses")
+        );
+        transport.endpoint.config = Some(json!({"openai_image_transport_mode":"responses_bridge"}));
+        assert_eq!(
+            build_openai_image_upstream_url_for_request(&transport, "/v1/images/generations", None)
+                .as_deref(),
+            Some("https://chatgpt.com/backend-api/codex/responses")
         );
     }
 
