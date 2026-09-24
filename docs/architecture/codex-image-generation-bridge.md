@@ -19,6 +19,16 @@
 
 ## 行为变化
 
+### 2026-09-24：Images 生成接口改用 Codex 原生图片接口
+
+- 目标：修复 `/v1/images/generations` 依赖已不支持的默认桥接主模型导致失败的问题。Codex 供应商的该入口默认调用上游 `/images/generations`，保留映射后的图片模型、提示词和图片参数，不注入 Responses 主模型、input 或 tools。
+- 上游强制按 SSE 处理；客户端同步调用仍得到 Images JSON，流式调用得到图片事件。保留 OAuth 刷新、账号认证、身份请求头、错误传播和图片用量统计；原生图片正文不注入 Responses 的 prompt_cache_key/client_metadata。
+- Endpoint 显式设置 `openai_image_transport_mode: responses_bridge` 可以保留原桥接；已有 `images_passthrough` 配置继续按原语义执行。原生生成路径不额外拼接 `/v1`。
+- 后台模型测试与正式请求共用原生图片模式判断，使用同一生成地址、顶层图片模型和 SSE 完成校验；显式 Responses 桥接与 Images 透传保持兼容。回归验证覆盖原生与显式桥接两种后台测试路径。
+- 管理端对 Codex 图片端点将未配置模式显示为“Codex 原生图片接口”。切回 Responses 桥接时显式保存 `responses_bridge`，避免删除配置后实际又进入原生接口；选回原生模式时删除覆盖值。
+- 非目标：不切换尚未实测的 Images 编辑接口、普通 Responses 请求、其他供应商或跨协议图片转换；不承诺修复上游忽略精确尺寸的问题。
+- 验证：回归覆盖原生路径和图片模型、OAuth 刷新和账号头、同步 SSE 聚合、流式图片完成事件、错误和不完整事件流、图片用量；用隔离网关进行真实账号验收。只有终态包含非空图片结果才算成功，不能把 keepalive 或局部图片当成完成。
+
 - Codex / ChatGPT OAuth 的普通 `openai:responses` 请求默认补充原生 `image_generation` 工具；没有设置 `tool_choice` 时使用 `auto`。
 - 模型读取完整会话并按语义选择工具。Niffler 不读取最后一条用户消息做关键词匹配，也不把自然语言请求提前改路由到 `openai:image`。
 - 顶层模型保持用户选择的 Responses 模型，图片工具模型默认使用 `gpt-image-2`。

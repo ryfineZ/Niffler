@@ -56,7 +56,7 @@ pub(crate) use self::planner::{
     codex_openai_image_bridge_model_from_provider_config, extract_pool_sticky_session_token,
     maybe_build_stream_decision_payload, maybe_build_stream_plan_payload,
     maybe_build_sync_decision_payload, maybe_build_sync_plan_payload,
-    openai_image_uses_images_passthrough,
+    openai_image_uses_codex_native_generation, openai_image_uses_images_passthrough,
     openai_responses_image_generation_tool_enabled_from_transport_config,
     planner_is_matching_stream_request, provider_key_pool_score_id, provider_key_pool_score_scope,
     read_candidate_transport_snapshot, record_local_runtime_candidate_skip_reason,

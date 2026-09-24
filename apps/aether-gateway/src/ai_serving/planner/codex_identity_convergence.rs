@@ -71,6 +71,7 @@ struct ConvergedCodexIdentity {
 enum CodexOAuthIdentityConvergenceSurface {
     Responses,
     Compact,
+    Images,
 }
 
 pub(crate) fn build_codex_oauth_identity_convergence_request_context(
@@ -184,6 +185,11 @@ pub(crate) async fn apply_codex_oauth_identity_convergence_to_request(
         return Ok(None);
     };
     enforce_codex_oauth_compact_request_contract(surface, headers, body)?;
+    let surface = if provider_api_format == "openai:image" && body.get("prompt").is_some() {
+        CodexOAuthIdentityConvergenceSurface::Images
+    } else {
+        surface
+    };
     if !codex_oauth_identity_convergence_enabled(state, context).await? {
         return Ok(None);
     }
@@ -204,7 +210,7 @@ pub(crate) async fn apply_codex_oauth_identity_convergence_to_request(
         .await;
     rewrite_outbound_headers(headers, &identity, transport, client_version, surface);
     rewrite_outbound_body(body, &identity, transport, surface)?;
-    Ok(Some(identity.thread_id))
+    Ok((surface != CodexOAuthIdentityConvergenceSurface::Images).then_some(identity.thread_id))
 }
 
 fn enforce_codex_oauth_compact_request_contract(
@@ -431,7 +437,7 @@ fn rewrite_outbound_headers(
     );
     headers.insert(SESSION_ID_HEADER.to_string(), identity.session_id.clone());
     headers.insert(THREAD_ID_HEADER.to_string(), identity.thread_id.clone());
-    if surface == CodexOAuthIdentityConvergenceSurface::Responses {
+    if surface != CodexOAuthIdentityConvergenceSurface::Compact {
         headers.insert(
             CLIENT_REQUEST_ID_HEADER.to_string(),
             identity.thread_id.clone(),
@@ -524,6 +530,9 @@ fn rewrite_outbound_body(
     transport: &GatewayProviderTransportSnapshot,
     surface: CodexOAuthIdentityConvergenceSurface,
 ) -> Result<(), GatewayError> {
+    if surface == CodexOAuthIdentityConvergenceSurface::Images {
+        return Ok(());
+    }
     let object = body.as_object_mut().ok_or_else(|| {
         GatewayError::Internal("Codex 身份收敛的出站请求正文必须是 JSON 对象".to_string())
     })?;

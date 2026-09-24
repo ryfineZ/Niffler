@@ -20,6 +20,7 @@ pub struct OpenAiImageStreamState {
     emitted_partial_count: u64,
     saw_upstream_partial: bool,
     emitted_failure: bool,
+    emitted_native_completion: bool,
 }
 
 #[derive(Clone)]
@@ -83,11 +84,25 @@ impl OpenAiImageStreamState {
     }
 
     pub fn finish(&mut self, report_context: &Value) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
-        if self.buffered.is_empty() {
-            return Ok(Vec::new());
+        let mut output = if self.buffered.is_empty() {
+            Vec::new()
+        } else {
+            let block = std::mem::take(&mut self.buffered);
+            self.transform_block(report_context, &block)?
+        };
+        if is_codex_native_image_generation(report_context)
+            && !self.emitted_native_completion
+            && !self.emitted_failure
+        {
+            output.extend(self.handle_failed(
+                report_context,
+                &serde_json::json!({
+                    "error":{"message":"Upstream image stream ended without a completed image",
+                        "type":"server_error","code":"image_generation_incomplete"}
+                }),
+            )?);
         }
-        let block = std::mem::take(&mut self.buffered);
-        self.transform_block(report_context, &block)
+        Ok(output)
     }
 
     fn transform_block(
@@ -118,9 +133,29 @@ impl OpenAiImageStreamState {
             .or(event_name.as_deref())
             .unwrap_or_default();
         match event_type {
-            "error" | "response.failed" => self.handle_failed(report_context, &event),
-            "response.image_generation_call.partial_image" => {
+            "error" | "response.failed" | "image_generation.failed" | "image_edit.failed" => {
+                self.handle_failed(report_context, &event)
+            }
+            "response.image_generation_call.partial_image"
+            | "image_generation.partial_image"
+            | "image_edit.partial_image" => {
                 self.handle_image_generation_partial(report_context, &event)
+            }
+            "image_generation.completed" | "image_edit.completed" => {
+                if self.emitted_failure || self.emitted_native_completion {
+                    return Ok(Vec::new());
+                }
+                if event
+                    .get("b64_json")
+                    .and_then(Value::as_str)
+                    .is_none_or(|v| v.trim().is_empty())
+                {
+                    return self.handle_failed(report_context, &serde_json::json!({
+                        "error":{"message":"Upstream returned an empty completed image", "type":"server_error"}
+                    }));
+                }
+                self.emitted_native_completion = true;
+                encode_json_sse(Some(event_type), &event)
             }
             "response.output_item.done" => self.handle_output_item_done(report_context, &event),
             "response.completed" => self.handle_completed(report_context, &event),
@@ -770,7 +805,13 @@ impl OpenAiImageStreamTerminalState {
         report_context: &Value,
     ) -> Result<Option<ExecutionStreamTerminalSummary>, AiSurfaceFinalizeError> {
         self.flush_event(report_context)?;
-        if self.image_count > 0 && !self.observed_finish {
+        if is_codex_native_image_generation(report_context)
+            && (self.image_count == 0 || !self.observed_finish)
+        {
+            self.parser_error.get_or_insert_with(|| {
+                "Upstream image stream ended without a completed image".to_string()
+            });
+        } else if self.image_count > 0 && !self.observed_finish {
             self.observed_finish = true;
         }
         Ok(self.latest_summary(report_context))
@@ -1453,8 +1494,32 @@ pub fn maybe_build_openai_image_sync_finalize_product(
                     .and_then(Value::as_i64)
                     .or(created);
             }
-            "error" | "response.failed" => {
+            "error" | "response.failed" | "image_generation.failed" | "image_edit.failed" => {
                 saw_failure = true;
+            }
+            "image_generation.completed" | "image_edit.completed" => {
+                let Some(result) = event
+                    .get("b64_json")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                else {
+                    continue;
+                };
+                // A native completion is both the image and its terminal usage event.
+                if completed_response.is_some() {
+                    continue;
+                }
+                created = event.get("created_at").and_then(Value::as_i64).or(created);
+                images.push(serde_json::json!({
+                    "b64_json":result,"output_format":event.get("output_format"),
+                    "revised_prompt":event.get("revised_prompt")
+                }));
+                completed_response = serde_json::json!({
+                    "id":event.get("generation_id"),"status":"completed",
+                    "model":image_bridge_model(Some(report_context)),"usage":event.get("usage")
+                })
+                .as_object()
+                .cloned();
             }
             "response.output_item.done" => {
                 let Some(item) = event.get("item").and_then(Value::as_object) else {
@@ -1493,6 +1558,14 @@ pub fn maybe_build_openai_image_sync_finalize_product(
         }
     }
 
+    if is_codex_native_image_generation(report_context)
+        && (images.is_empty() || completed_response.is_none())
+        && !saw_failure
+    {
+        return Err(AiSurfaceFinalizeError::new(
+            "Upstream image stream ended without a completed image",
+        ));
+    }
     if images.is_empty() {
         return Ok(None);
     }
@@ -1548,6 +1621,13 @@ pub fn maybe_build_openai_image_sync_finalize_product(
     }))
 }
 
+fn is_codex_native_image_generation(context: &Value) -> bool {
+    context
+        .get("codex_native_image_generation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;
@@ -1569,6 +1649,122 @@ mod tests {
 
     fn utf8(bytes: Vec<u8>) -> String {
         String::from_utf8(bytes).expect("utf8 should decode")
+    }
+
+    #[test]
+    fn codex_native_image_sync_and_stream_keep_result_and_usage() {
+        let context = json!({
+            "provider_api_format":"openai:image", "client_api_format":"openai:image",
+            "mapped_model":"gpt-image-2", "codex_native_image_generation":true,
+            "image_request":{"operation":"generate"}
+        });
+        let event = json!({"type":"image_generation.completed","created_at":1790222706,
+            "generation_id":"native-image-1","b64_json":"aGVsbG8=",
+            "size":"1254x1254","quality":"low","output_format":"png",
+            "usage":{"input_tokens":14,"output_tokens":515,"total_tokens":529}});
+        let sse = format!("event: keepalive\r\ndata: {{\"type\":\"keepalive\"}}\r\n\r\nevent: image_generation.completed\r\ndata: {event}\r\n\r\n");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(sse.as_bytes());
+        let product = maybe_build_openai_image_sync_finalize_product(
+            crate::contracts::OPENAI_IMAGE_SYNC_FINALIZE_REPORT_KIND,
+            200,
+            Some(&context),
+            None,
+            Some(&encoded),
+        )
+        .unwrap()
+        .expect("native completed image should produce sync JSON");
+        assert_eq!(product.client_body_json["data"][0]["b64_json"], "aGVsbG8=");
+        assert_eq!(product.client_body_json["created"], 1790222706);
+        assert_eq!(product.client_body_json["usage"], event["usage"]);
+        assert_eq!(product.provider_body_json["usage"], event["usage"]);
+        assert!(!product.provider_body_json.to_string().contains("aGVsbG8="));
+        let mut state = OpenAiImageStreamState::default();
+        let mut output = Vec::new();
+        for chunk in sse.as_bytes().chunks(17) {
+            output.extend(state.push_chunk(&context, chunk).unwrap());
+        }
+        output.extend(state.finish(&context).unwrap());
+        let output = utf8(output);
+        assert!(output.contains("event: image_generation.completed"));
+        assert!(output.contains("aGVsbG8="));
+        assert!(output.contains("\"output_tokens\":515"));
+    }
+
+    #[test]
+    fn codex_native_image_empty_or_interrupted_stream_is_failure() {
+        for sse in [
+            "data: {\"type\":\"keepalive\"}\n\n",
+            "data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"aGVsbG8=\"}\n\n",
+            "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"\"}\n\n",
+        ] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(sse);
+            assert!(maybe_build_openai_image_sync_finalize_product(
+                crate::contracts::OPENAI_IMAGE_SYNC_FINALIZE_REPORT_KIND, 200,
+                Some(&json!({"provider_api_format":"openai:image","client_api_format":"openai:image",
+                    "codex_native_image_generation":true})), None, Some(&encoded),
+            ).is_err(), "incomplete native stream must not finalize as success");
+            let context =
+                json!({"codex_native_image_generation":true,"mapped_model":"gpt-image-2"});
+            let mut stream = OpenAiImageStreamState::default();
+            let mut output = stream.push_chunk(&context, sse.as_bytes()).unwrap();
+            output.extend(stream.finish(&context).unwrap());
+            assert!(utf8(output).contains("event: image_generation.failed"));
+            let mut terminal = super::OpenAiImageStreamTerminalState::default();
+            for line in sse.lines() {
+                terminal
+                    .push_line(&context, line.as_bytes().to_vec())
+                    .unwrap();
+            }
+            assert!(terminal
+                .finish(&context)
+                .unwrap()
+                .unwrap()
+                .parser_error
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn codex_native_image_failure_remains_failure_after_completion() {
+        let context = json!({"provider_api_format":"openai:image","client_api_format":"openai:image",
+            "codex_native_image_generation":true,"mapped_model":"gpt-image-2"});
+        let sse = concat!(
+            "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"aGVsbG8=\",\"usage\":{\"input_tokens\":14,\"output_tokens\":515,\"total_tokens\":529}}\n\n",
+            "data: {\"type\":\"image_generation.failed\",\"error\":{\"message\":\"failed upstream\",\"code\":\"server_error\"}}\n\n"
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(sse);
+        assert!(maybe_extract_openai_image_sync_failure_body(
+            crate::contracts::OPENAI_IMAGE_SYNC_FINALIZE_REPORT_KIND,
+            200,
+            None,
+            Some(&encoded)
+        )
+        .unwrap()
+        .is_some());
+        assert!(maybe_build_openai_image_sync_finalize_product(
+            crate::contracts::OPENAI_IMAGE_SYNC_FINALIZE_REPORT_KIND,
+            200,
+            Some(&context),
+            None,
+            Some(&encoded)
+        )
+        .unwrap()
+        .is_none());
+        let mut stream = OpenAiImageStreamState::default();
+        let output = utf8(stream.push_chunk(&context, sse.as_bytes()).unwrap());
+        assert!(output.contains("event: image_generation.failed"));
+        let mut terminal = super::OpenAiImageStreamTerminalState::default();
+        for line in sse.lines() {
+            terminal
+                .push_line(&context, line.as_bytes().to_vec())
+                .unwrap();
+        }
+        assert!(terminal
+            .finish(&context)
+            .unwrap()
+            .unwrap()
+            .parser_error
+            .is_some());
     }
 
     #[test]

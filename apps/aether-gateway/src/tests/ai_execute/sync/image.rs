@@ -752,8 +752,34 @@ async fn gateway_converts_gemini_image_sync_to_openai_image_provider_impl() {
 
 #[tokio::test]
 async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_refresh() {
+    codex_image_sync_after_refresh(false, false).await;
+}
+
+#[tokio::test]
+async fn gateway_executes_codex_native_image_sync_after_oauth_refresh() {
+    codex_image_sync_after_refresh(true, false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly supplied Codex OAuth test credentials; generates one image"]
+async fn live_codex_native_image_generation() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        codex_image_sync_after_refresh(true, true),
+    )
+    .await
+    .expect("live image probe timed out");
+}
+
+async fn codex_image_sync_after_refresh(native: bool, live: bool) {
     #[derive(Debug, Clone)]
     struct SeenExecutionRuntimeSyncRequest {
+        request_body: serde_json::Value,
+        account_id: String,
         trace_id: String,
         url: String,
         model: String,
@@ -881,7 +907,7 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         )
     }
 
-    fn sample_provider_catalog_endpoint() -> StoredProviderCatalogEndpoint {
+    fn sample_provider_catalog_endpoint(native: bool) -> StoredProviderCatalogEndpoint {
         StoredProviderCatalogEndpoint::new(
             "endpoint-codex-image-local-1".to_string(),
             "provider-codex-image-local-1".to_string(),
@@ -897,7 +923,7 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
             None,
             Some(2),
             None,
-            Some(serde_json::json!({"upstream_stream_policy":"force_stream"})),
+            Some(if native { json!({"upstream_stream_policy":"force_stream"}) } else { json!({"upstream_stream_policy":"force_stream", "openai_image_transport_mode":"responses_bridge"}) }),
             None,
             None,
         )
@@ -907,7 +933,7 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
     fn sample_provider_catalog_key() -> StoredProviderCatalogKey {
         let encrypted_auth_config = encrypt_python_fernet_plaintext(
             DEVELOPMENT_ENCRYPTION_KEY,
-            r#"{"provider_type":"codex","refresh_token":"rt-codex-image-local-123"}"#,
+            r#"{"provider_type":"codex","refresh_token":"rt-codex-image-local-123","account_id":"codex-image-account"}"#,
         )
         .expect("auth config should encrypt");
         StoredProviderCatalogKey::new(
@@ -982,6 +1008,8 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                 *seen_execution_runtime_inner
                     .lock()
                     .expect("mutex should lock") = Some(SeenExecutionRuntimeSyncRequest {
+                    request_body: payload["body"]["json_body"].clone(),
+                    account_id: payload["headers"]["chatgpt-account-id"].as_str().unwrap_or_default().to_string(),
                     trace_id: parts
                         .headers
                         .get(TRACE_ID_HEADER)
@@ -1175,6 +1203,12 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                     },
                     "body": {
                         "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(
+                            if native {
+                                format!("data: {}\n\n", json!({"type":"image_generation.completed",
+                                    "created_at":1776839946,"generation_id":"ig_native_123",
+                                    "b64_json":"aGVsbG8=","revised_prompt":"中国历史视觉海报",
+                                    "output_format":"png","usage":{"input_tokens":171,"output_tokens":1372,"total_tokens":1543}}))
+                            } else {
                             concat!(
                                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_img_123\",\"created_at\":1776839946}}\n\n",
                                 "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"ig_123\",\"type\":\"image_generation_call\",\"status\":\"generating\",\"output_format\":\"png\",\"quality\":\"medium\",\"size\":\"1024x1024\",\"revised_prompt\":\"中国历史视觉海报\",\"result\":\"aGVsbG8=\"}}\n\n",
@@ -1185,6 +1219,7 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                                 "__CODEX_IMAGE_MODEL__",
                                 CODEX_OPENAI_IMAGE_INTERNAL_MODEL,
                             )
+                            }
                         )
                     },
                     "telemetry": {
@@ -1204,10 +1239,28 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         Arc::new(InMemoryMinimalCandidateSelectionReadRepository::seed(vec![
             sample_candidate_row(),
         ]));
+    let mut provider_key = sample_provider_catalog_key();
+    if live {
+        let token = std::env::var("NIFFLER_TEST_CODEX_TOKEN").expect("missing test OAuth token");
+        let account_id =
+            std::env::var("NIFFLER_TEST_CODEX_ACCOUNT_ID").expect("missing test account ID");
+        let proxy = std::env::var("NIFFLER_TEST_CODEX_PROXY").expect("missing test proxy");
+        provider_key.encrypted_api_key =
+            Some(encrypt_python_fernet_plaintext(DEVELOPMENT_ENCRYPTION_KEY, &token).unwrap());
+        provider_key.encrypted_auth_config = Some(
+            encrypt_python_fernet_plaintext(
+                DEVELOPMENT_ENCRYPTION_KEY,
+                &json!({"provider_type":"codex","account_id":account_id}).to_string(),
+            )
+            .unwrap(),
+        );
+        provider_key.expires_at_unix_secs = Some(4_102_444_800);
+        provider_key.proxy = Some(json!({"enabled":true,"url":proxy}));
+    }
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider_catalog_provider()],
-        vec![sample_provider_catalog_endpoint()],
-        vec![sample_provider_catalog_key()],
+        vec![sample_provider_catalog_endpoint(native)],
+        vec![provider_key],
     ));
 
     let (refresh_url, refresh_handle) = start_server(refresh).await;
@@ -1219,13 +1272,15 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
                     .with_token_url_for_tests("codex", format!("{refresh_url}/oauth/token")),
             ),
         ]);
-    let gateway_state = build_state_with_execution_runtime_override(execution_runtime_url.clone())
+    let request_candidates = Arc::new(InMemoryRequestCandidateRepository::default());
+    let gateway_state = (if live { crate::AppState::new().expect("gateway should build") }
+        else { build_state_with_execution_runtime_override(execution_runtime_url.clone()) })
         .with_data_state_for_tests(
             crate::data::GatewayDataState::with_auth_candidate_selection_provider_catalog_and_request_candidate_repository_for_tests(
                 auth_repository,
                 candidate_selection_repository,
                 provider_catalog_repository.clone(),
-                Arc::new(InMemoryRequestCandidateRepository::default()),
+                request_candidates.clone(),
                 DEVELOPMENT_ENCRYPTION_KEY,
             )
             .with_system_config_values_for_tests([
@@ -1267,13 +1322,56 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         .header("accept-language", "zh-CN")
         .header("x-app", "third-party-client")
         .header("x-business-context", "project-alpha")
-        .body("{\"model\":\"gpt-image-2\",\"prompt\":\"生成一张中国历史视觉海报\",\"size\":\"1024x1024\",\"n\":1,\"response_format\":\"b64_json\"}")
+        .json(&if live { json!({"model":"gpt-image-2","prompt":"A simple blue circle on a white background.","quality":"low","size":"1024x1024","response_format":"b64_json"}) }
+            else { json!({"model":"gpt-image-2","prompt":"生成一张中国历史视觉海报","size":"1024x1024","n":1,"response_format":"b64_json"}) })
         .send()
         .await
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
     let response_json: serde_json::Value = response.json().await.expect("body should parse");
+    if live {
+        use aether_data_contracts::repository::candidates::RequestCandidateReadRepository;
+        for candidate in request_candidates
+            .list_by_request_id("trace-codex-image-local-123")
+            .await
+            .unwrap()
+        {
+            println!(
+                "live candidate: status {:?}, code {:?}, skip {:?}, error {:?}",
+                candidate.status,
+                candidate.status_code,
+                candidate.skip_reason,
+                candidate.error_message
+            );
+        }
+        println!(
+            "live response fields: {:?}; error: {}",
+            response_json
+                .as_object()
+                .map(|v| v.keys().collect::<Vec<_>>()),
+            response_json
+                .get("error")
+                .unwrap_or(&serde_json::Value::Null)
+        );
+        let encoded = response_json["data"][0]["b64_json"]
+            .as_str()
+            .expect("missing completed image");
+        let image = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("invalid image Base64");
+        assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"), "expected PNG");
+        assert!(image.len() > 100);
+        println!(
+            "live native image: PNG {} bytes, usage {}",
+            image.len(),
+            response_json["usage"]
+        );
+        gateway_handle.abort();
+        execution_runtime_handle.abort();
+        refresh_handle.abort();
+        return;
+    }
     assert_eq!(response_json["created"], 1776839946);
     assert_eq!(response_json["data"][0]["b64_json"], "aGVsbG8=");
     assert_eq!(
@@ -1314,9 +1412,20 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
     );
     assert_eq!(
         seen_execution_runtime_request.url,
-        "https://chatgpt.com/backend-api/codex/responses"
+        if native {
+            "https://chatgpt.com/backend-api/codex/images/generations"
+        } else {
+            "https://chatgpt.com/backend-api/codex/responses"
+        }
     );
-    assert_eq!(seen_execution_runtime_request.model, "gpt-5.5");
+    assert_eq!(
+        seen_execution_runtime_request.model,
+        if native { "gpt-image-2" } else { "gpt-5.5" }
+    );
+    assert_eq!(
+        seen_execution_runtime_request.account_id,
+        "codex-image-account"
+    );
     assert_eq!(
         seen_execution_runtime_request.authorization,
         "Bearer refreshed-codex-image-access-token"
@@ -1334,29 +1443,48 @@ async fn gateway_executes_codex_image_sync_via_local_decision_gate_after_oauth_r
         seen_execution_runtime_request.business_context,
         "project-alpha"
     );
-    assert_eq!(
-        seen_execution_runtime_request.prompt_cache_key,
-        seen_execution_runtime_request.thread_id
-    );
-    assert_eq!(
-        seen_execution_runtime_request.metadata_thread_id,
-        seen_execution_runtime_request.thread_id
-    );
-    assert_eq!(
-        seen_execution_runtime_request.prompt,
-        "生成一张中国历史视觉海报"
-    );
-    assert!(seen_execution_runtime_request.content_is_string);
-    assert_eq!(seen_execution_runtime_request.tool_type, "image_generation");
-    assert_eq!(seen_execution_runtime_request.tool_size, "1024x1024");
-    assert_eq!(seen_execution_runtime_request.tool_quality, "high");
-    assert_eq!(seen_execution_runtime_request.tool_background, "auto");
-    assert_eq!(seen_execution_runtime_request.tool_model, "gpt-image-2");
-    assert_eq!(
-        seen_execution_runtime_request.tool_choice_type,
-        "image_generation"
-    );
-    assert!(!seen_execution_runtime_request.tool_has_n);
+    if native {
+        let body = &seen_execution_runtime_request.request_body;
+        assert_eq!(body["prompt"], "生成一张中国历史视觉海报");
+        assert_eq!(body["size"], "1024x1024");
+        assert_eq!(body["n"], 1);
+        for field in [
+            "tools",
+            "tool_choice",
+            "input",
+            "prompt_cache_key",
+            "client_metadata",
+        ] {
+            assert!(
+                body.get(field).is_none(),
+                "unexpected Responses field: {field}"
+            );
+        }
+    } else {
+        assert_eq!(
+            seen_execution_runtime_request.prompt_cache_key,
+            seen_execution_runtime_request.thread_id
+        );
+        assert_eq!(
+            seen_execution_runtime_request.metadata_thread_id,
+            seen_execution_runtime_request.thread_id
+        );
+        assert_eq!(
+            seen_execution_runtime_request.prompt,
+            "生成一张中国历史视觉海报"
+        );
+        assert!(seen_execution_runtime_request.content_is_string);
+        assert_eq!(seen_execution_runtime_request.tool_type, "image_generation");
+        assert_eq!(seen_execution_runtime_request.tool_size, "1024x1024");
+        assert_eq!(seen_execution_runtime_request.tool_quality, "high");
+        assert_eq!(seen_execution_runtime_request.tool_background, "auto");
+        assert_eq!(seen_execution_runtime_request.tool_model, "gpt-image-2");
+        assert_eq!(
+            seen_execution_runtime_request.tool_choice_type,
+            "image_generation"
+        );
+        assert!(!seen_execution_runtime_request.tool_has_n);
+    }
     assert!(seen_execution_runtime_request.request_stream);
     assert!(!seen_execution_runtime_request.plan_stream);
 
